@@ -1,0 +1,19 @@
+[package]
+name = "gema-wasm"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+gema-core = { path = "../gema-core" }
+wasm-bindgen = "0.2"
+
+# lopdf (vía rand) arrastra getrandom 0.3, que en wasm32-unknown-unknown
+# necesita el backend `wasm_js` activado explícitamente. Lo declaramos
+# como dep directo SOLO para wasm para encender esa feature en el grafo;
+# el cfg `getrandom_backend="wasm_js"` se fija en .cargo/config.toml.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
