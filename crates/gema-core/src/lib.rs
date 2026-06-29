@@ -1,5 +1,8 @@
 //! gema-core: compresión PDF portable (Rust puro → WASM + nativo).
 
+pub mod error;
+pub use error::GemaError;
+
 #[cfg(test)]
 mod smoke {
     #[test]
