@@ -14,6 +14,8 @@ pub use analyze::analyze;
 
 pub mod image_opt;
 
+pub mod rewrite;
+
 #[cfg(test)]
 mod smoke {
     use super::*;
