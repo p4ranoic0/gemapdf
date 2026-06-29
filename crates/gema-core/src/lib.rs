@@ -6,6 +6,9 @@ pub use error::GemaError;
 pub mod report;
 pub use report::{ImageAction, ImageStat, Report, Warning};
 
+pub mod options;
+pub use options::{CompressOptions, Profile, ProfileParams, SignaturePolicy};
+
 #[cfg(test)]
 mod smoke {
     #[test]
