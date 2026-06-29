@@ -12,6 +12,8 @@ pub use options::{CompressOptions, Profile, ProfileParams, SignaturePolicy};
 pub mod analyze;
 pub use analyze::analyze;
 
+pub mod image_opt;
+
 #[cfg(test)]
 mod smoke {
     use super::*;
