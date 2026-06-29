@@ -40,17 +40,19 @@ fn run(cli: Cli) -> Result<(), String> {
             let bytes = fs::read(&input).map_err(|e| e.to_string())?;
             let profile = match profile.as_str() {
                 "screen" => Profile::Screen,
+                "ebook" => Profile::Ebook,
                 "printer" => Profile::Printer,
-                _ => Profile::Ebook,
+                other => return Err(format!("perfil desconocido: {other} (usa screen|ebook|printer)")),
             };
             let res = compress(&bytes, &CompressOptions { profile, ..Default::default() })
                 .map_err(|e| e.to_string())?;
             fs::write(&output, &res.output).map_err(|e| e.to_string())?;
             let r = res.report;
+            // ratio = output/input → "% del original" (más bajo = más comprimido).
             println!(
                 "{} → {}  ({:.1}% del original, {} imágenes)",
                 bytes.len(),
-                res_len(&output),
+                res.output.len(),
                 r.ratio.unwrap_or(1.0) * 100.0,
                 r.images.len()
             );
@@ -63,8 +65,4 @@ fn run(cli: Cli) -> Result<(), String> {
             Ok(())
         }
     }
-}
-
-fn res_len(path: &str) -> u64 {
-    fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }

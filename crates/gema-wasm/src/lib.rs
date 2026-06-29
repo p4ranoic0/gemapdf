@@ -7,8 +7,9 @@ use wasm_bindgen::prelude::*;
 pub fn compress(input: &[u8], profile: &str) -> Result<Vec<u8>, JsError> {
     let profile = match profile {
         "screen" => Profile::Screen,
+        "ebook" => Profile::Ebook,
         "printer" => Profile::Printer,
-        _ => Profile::Ebook,
+        _ => return Err(JsError::new("perfil desconocido (usa screen|ebook|printer)")),
     };
     let opts = CompressOptions { profile, ..Default::default() };
     let res = core_compress(input, &opts).map_err(|e| JsError::new(&e.to_string()))?;
@@ -20,20 +21,21 @@ mod tests {
     use gema_core::Profile;
 
     /// Réplica del mapeo de `compress` para poder testearlo sin un PDF real.
-    fn map(profile: &str) -> Profile {
+    fn map(profile: &str) -> Option<Profile> {
         match profile {
-            "screen" => Profile::Screen,
-            "printer" => Profile::Printer,
-            _ => Profile::Ebook,
+            "screen" => Some(Profile::Screen),
+            "ebook" => Some(Profile::Ebook),
+            "printer" => Some(Profile::Printer),
+            _ => None,
         }
     }
 
     #[test]
     fn maps_profile_strings() {
-        assert_eq!(map("screen"), Profile::Screen);
-        assert_eq!(map("printer"), Profile::Printer);
-        assert_eq!(map("ebook"), Profile::Ebook);
-        // valor desconocido cae en el default (Ebook)
-        assert_eq!(map("otro"), Profile::Ebook);
+        assert_eq!(map("screen"), Some(Profile::Screen));
+        assert_eq!(map("printer"), Some(Profile::Printer));
+        assert_eq!(map("ebook"), Some(Profile::Ebook));
+        // valor desconocido es un error explícito (no cae en un default)
+        assert_eq!(map("otro"), None);
     }
 }
