@@ -29,6 +29,8 @@ pub struct Report {
     pub ratio: Option<f32>,
     pub images: Vec<ImageStat>,
     pub is_signed: bool,
+    /// No se computa en v1: reservado para el módulo de OCR de v2. Actualmente
+    /// siempre es `false`.
     pub has_scanned_pages: bool,
     pub warnings: Vec<Warning>,
 }

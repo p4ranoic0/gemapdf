@@ -31,6 +31,8 @@ pub struct CompressOptions {
     pub downsample: bool,
     pub recompress_streams: bool,
     pub remove_metadata: bool,
+    /// Reservado para v2. Actualmente es un no-op: la deduplicación de imágenes
+    /// idénticas aún no está implementada, por lo que este flag no tiene efecto.
     pub dedupe_images: bool,
     pub signatures: SignaturePolicy,
 }
