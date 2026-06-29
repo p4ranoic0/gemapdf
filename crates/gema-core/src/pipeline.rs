@@ -239,8 +239,24 @@ pub fn compress(input: &[u8], opts: &CompressOptions) -> Result<CompressResult, 
     // sumamos las de imágenes.
     let mut report = report0;
     report.warnings.extend(img_warnings);
-    report.output_size = Some(output.len() as u64);
     report.images = stats;
+
+    // F10: piso a nivel-documento. Si tras serializar el output recomprimido
+    // resulta MÁS grande que el input (p. ej. la sobrecarga de reescritura
+    // supera el ahorro en un PDF ya pequeño), descartamos el output y
+    // devolvemos los bytes originales. El reporte refleja que no hubo mejora
+    // (output_size = input.len(), ratio = 1.0). La ruta de SignaturePolicy::Strict
+    // ya devuelve el original más arriba y no pasa por aquí.
+    if output.len() > input.len() {
+        report.output_size = Some(input.len() as u64);
+        report
+            .warnings
+            .push(Warning::Other("sin mejora: se conservó el documento original".into()));
+        let report = report.with_ratio();
+        return Ok(CompressResult { output: input.to_vec(), report });
+    }
+
+    report.output_size = Some(output.len() as u64);
     let report = report.with_ratio();
 
     Ok(CompressResult { output, report })
@@ -482,9 +498,11 @@ mod tests {
 
     #[test]
     fn never_grows_output() {
-        // un PDF ya minúsculo no debe crecer de forma absurda
+        // un PDF ya minúsculo no debe crecer. El piso a nivel-documento (F10)
+        // garantiza esto: si el output recomprimido crece, se descarta y se
+        // conserva el input original, así que output.len() <= input.len() siempre.
         let input = pdf_with_jpeg();
         let res = compress(&input, &CompressOptions::default()).unwrap();
-        assert!(res.output.len() <= input.len() + input.len() / 10);
+        assert!(res.output.len() <= input.len());
     }
 }
