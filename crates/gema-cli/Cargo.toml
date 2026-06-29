@@ -1,0 +1,13 @@
+[package]
+name = "gema-cli"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gema"
+path = "src/main.rs"
+
+[dependencies]
+gema-core = { path = "../gema-core" }
+clap = { version = "4", features = ["derive"] }

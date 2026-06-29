@@ -3,7 +3,7 @@ resolver = "2"
 members = [
     "crates/gema-core",
     "crates/gema-wasm",
-    # "crates/gema-cli",
+    "crates/gema-cli",
 ]
 
 [workspace.package]
