@@ -1,0 +1,16 @@
+[package]
+name = "gema-core"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# reservados para v2 (no implementados en v1):
+# native = []  ; mozjpeg = []  ; webp = []  ; ghostscript = []  ; ocr = []
+
+[dependencies]
+lopdf.workspace = true
+image.workspace = true
+flate2.workspace = true
+thiserror.workspace = true
