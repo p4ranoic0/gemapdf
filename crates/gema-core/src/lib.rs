@@ -16,6 +16,9 @@ pub mod image_opt;
 
 pub mod rewrite;
 
+pub mod pipeline;
+pub use pipeline::{compress, CompressResult};
+
 #[cfg(test)]
 mod smoke {
     use super::*;
