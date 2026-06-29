@@ -9,6 +9,9 @@ pub use report::{ImageAction, ImageStat, Report, Warning};
 pub mod options;
 pub use options::{CompressOptions, Profile, ProfileParams, SignaturePolicy};
 
+pub mod analyze;
+pub use analyze::analyze;
+
 #[cfg(test)]
 mod smoke {
     use super::*;
