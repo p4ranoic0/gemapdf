@@ -3,6 +3,9 @@
 pub mod error;
 pub use error::GemaError;
 
+pub mod report;
+pub use report::{ImageAction, ImageStat, Report, Warning};
+
 #[cfg(test)]
 mod smoke {
     #[test]
