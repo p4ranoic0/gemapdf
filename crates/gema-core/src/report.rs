@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageAction {
     Kept,
     Recompressed,
@@ -14,7 +14,7 @@ pub struct ImageStat {
     pub action: ImageAction,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Warning {
     SignedDocument,
     ImageSkipped(u32),

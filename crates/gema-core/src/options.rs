@@ -3,6 +3,8 @@ pub enum Profile {
     Screen,
     Ebook,
     Printer,
+    /// Usa valores base tipo Ebook; pensado para sobreescribirse vía
+    /// `image_dpi`/`jpeg_quality` en `CompressOptions`.
     Custom,
 }
 

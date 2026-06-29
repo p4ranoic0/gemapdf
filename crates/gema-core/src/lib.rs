@@ -11,8 +11,11 @@ pub use options::{CompressOptions, Profile, ProfileParams, SignaturePolicy};
 
 #[cfg(test)]
 mod smoke {
+    use super::*;
     #[test]
-    fn it_builds() {
-        assert_eq!(2 + 2, 4);
+    fn public_api_constructs() {
+        let opts = CompressOptions::default();
+        let _report = Report::default();
+        assert_eq!(opts.resolved().image_dpi, 150);
     }
 }
