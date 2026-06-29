@@ -49,6 +49,23 @@ fn process_image(
         if dict.get(b"Subtype").and_then(|o| o.as_name()).ok()? != b"Image" {
             return None;
         }
+        // F1: una imagen con máscara de transparencia externa (/SMask) se
+        // preserva sin tocar. Recomprimirla a JPEG perdería el canal alfa y
+        // dejaría el XObject de la máscara huérfano (lo borraría prune). El
+        // soporte real de máscaras se difiere a v2.
+        if dict.has(b"SMask") {
+            return Some(ImageOutcome {
+                stat: ImageStat {
+                    object_id: id.0,
+                    original_bytes: stream.content.len() as u64,
+                    output_bytes: stream.content.len() as u64,
+                    action: ImageAction::Skipped,
+                },
+                warnings: vec![Warning::Other(
+                    "imagen con máscara de transparencia (/SMask) preservada sin recomprimir".into(),
+                )],
+            });
+        }
         let w = dict.get(b"Width").and_then(|o| o.as_i64()).ok()? as u32;
         let h = dict.get(b"Height").and_then(|o| o.as_i64()).ok()? as u32;
         (stream.content.len() as u64, w, h, stream.content.clone())
@@ -56,7 +73,8 @@ fn process_image(
 
     // decodificar: intentar como imagen estándar (JPEG embebido = DCTDecode).
     // Si `image` no soporta el filtro PDF (Flate raw, CCITT, JPX), la marcamos
-    // como omitida en vez de descartarla en silencio.
+    // como omitida en vez de descartarla en silencio: el stream original se
+    // preserva intacto (comportamiento seguro de v1; F8).
     let decoded = match image::load_from_memory(&raw_bytes) {
         Ok(d) => d,
         Err(_) => return Some(skipped(id, orig_len)),
@@ -104,24 +122,46 @@ fn process_image(
         });
     }
 
-    // reemplazar el stream
-    if let Ok(obj) = doc.get_object_mut(id) {
-        if let Ok(stream) = obj.as_stream_mut() {
-            stream.set_content(enc.bytes.clone());
+    // reemplazar el stream. F2: solo reportamos el tamaño recomprimido si el
+    // reemplazo realmente ocurrió; si el acceso mutable falla, el stream original
+    // sigue intacto y debemos reportar Skipped (no mentir con el tamaño menor).
+    // F5: guardamos la longitud antes de mover `enc.bytes` (sin clonar).
+    let new_len = enc.bytes.len() as u64;
+    let replaced = match doc.get_object_mut(id).and_then(|obj| obj.as_stream_mut()) {
+        Ok(stream) => {
+            stream.set_content(enc.bytes);
             stream.dict.set("Filter", Object::Name(enc.filter.as_bytes().to_vec()));
             stream.dict.set("Width", Object::Integer(width as i64));
             stream.dict.set("Height", Object::Integer(height as i64));
             stream.dict.set("BitsPerComponent", Object::Integer(8));
             stream.dict.set("ColorSpace", Object::Name(b"DeviceRGB".to_vec()));
             stream.dict.remove(b"DecodeParms");
-            stream.dict.remove(b"SMask");
+            // NB: no tocamos /SMask aquí; las imágenes con máscara ya se
+            // descartaron arriba (F1), así que este stream no la tiene.
+            true
         }
+        Err(_) => false,
+    };
+
+    if !replaced {
+        // el reemplazo no se aplicó: original intacto → omitida
+        warnings.push(Warning::ImageSkipped(id.0));
+        return Some(ImageOutcome {
+            stat: ImageStat {
+                object_id: id.0,
+                original_bytes: orig_len,
+                output_bytes: orig_len,
+                action: ImageAction::Skipped,
+            },
+            warnings,
+        });
     }
+
     Some(ImageOutcome {
         stat: ImageStat {
             object_id: id.0,
             original_bytes: orig_len,
-            output_bytes: enc.bytes.len() as u64,
+            output_bytes: new_len,
             action,
         },
         warnings,
@@ -129,7 +169,13 @@ fn process_image(
 }
 
 pub fn compress(input: &[u8], opts: &CompressOptions) -> Result<CompressResult, GemaError> {
-    let report0 = crate::analyze::analyze(input)?;
+    // F4: parseamos el PDF una sola vez y derivamos el reporte base del mismo
+    // doc (antes se hacía load_mem dentro de analyze() y otra vez aquí).
+    let mut doc = Document::load_mem(input).map_err(|e| GemaError::Parse(e.to_string()))?;
+    if doc.is_encrypted() {
+        return Err(GemaError::Encrypted);
+    }
+    let report0 = crate::analyze::report_from_doc(&doc, input.len() as u64);
 
     // política de firma
     if report0.is_signed && opts.signatures == SignaturePolicy::Strict {
@@ -144,7 +190,6 @@ pub fn compress(input: &[u8], opts: &CompressOptions) -> Result<CompressResult, 
         });
     }
 
-    let mut doc = Document::load_mem(input).map_err(|e| GemaError::Parse(e.to_string()))?;
     let params = opts.resolved();
 
     // recolectar ids de imágenes (XObject /Subtype /Image)
@@ -179,16 +224,13 @@ pub fn compress(input: &[u8], opts: &CompressOptions) -> Result<CompressResult, 
     crate::rewrite::cleanup_and_compress(&mut doc, opts.recompress_streams);
     let output = crate::rewrite::serialize(&mut doc)?;
 
-    let mut warnings = report0.warnings.clone();
-    warnings.extend(img_warnings);
-
-    let report = Report {
-        output_size: Some(output.len() as u64),
-        images: stats,
-        warnings,
-        ..report0
-    }
-    .with_ratio();
+    // F5: movemos las warnings del reporte base en vez de clonarlas; luego le
+    // sumamos las de imágenes.
+    let mut report = report0;
+    report.warnings.extend(img_warnings);
+    report.output_size = Some(output.len() as u64);
+    report.images = stats;
+    let report = report.with_ratio();
 
     Ok(CompressResult { output, report })
 }
@@ -256,6 +298,93 @@ mod tests {
             res.report.ratio.unwrap(),
             input.len(),
             res.output.len()
+        );
+    }
+
+    /// PDF con una imagen JPEG que referencia un /SMask (XObject de máscara).
+    /// Devuelve (bytes, contenido original del stream de la imagen, img_id).
+    fn pdf_with_smask_image() -> (Vec<u8>, Vec<u8>, u32) {
+        use image::codecs::jpeg::JpegEncoder;
+        use image::{ImageEncoder, RgbImage};
+        use lopdf::{dictionary, Document, Object, Stream};
+
+        let mut rgb = RgbImage::new(400, 400);
+        for (x, y, px) in rgb.enumerate_pixels_mut() {
+            *px = image::Rgb([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8]);
+        }
+        let mut jpeg = Vec::new();
+        JpegEncoder::new_with_quality(&mut jpeg, 95)
+            .write_image(rgb.as_raw(), 400, 400, image::ExtendedColorType::Rgb8)
+            .unwrap();
+
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+
+        // máscara de transparencia (grayscale, 1 componente)
+        let smask_stream = Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Image",
+                "Width" => 400, "Height" => 400,
+                "BitsPerComponent" => 8, "ColorSpace" => "DeviceGray",
+                "Filter" => "DCTDecode",
+            },
+            jpeg.clone(),
+        );
+        let smask_id = doc.add_object(smask_stream);
+
+        let img_content = jpeg.clone();
+        let img_stream = Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Image",
+                "Width" => 400, "Height" => 400,
+                "BitsPerComponent" => 8, "ColorSpace" => "DeviceRGB",
+                "Filter" => "DCTDecode",
+                "SMask" => smask_id,
+            },
+            img_content.clone(),
+        );
+        let img_id = doc.add_object(img_stream);
+        let content_id = doc.add_object(Stream::new(dictionary! {}, b"q 400 0 0 400 0 0 cm /Im0 Do Q".to_vec()));
+        let resources_id = doc.add_object(dictionary! { "XObject" => dictionary! { "Im0" => img_id } });
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages_id, "Contents" => content_id,
+            "Resources" => resources_id,
+            "MediaBox" => vec![0.into(), 0.into(), 400.into(), 400.into()],
+        });
+        doc.objects.insert(pages_id, Object::Dictionary(dictionary! {
+            "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
+        }));
+        let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", catalog_id);
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf).unwrap();
+        (buf, img_content, img_id.0)
+    }
+
+    #[test]
+    fn smask_image_is_preserved_untouched() {
+        let (input, orig_content, img_id) = pdf_with_smask_image();
+        let opts = CompressOptions { profile: crate::options::Profile::Screen, ..Default::default() };
+        let res = compress(&input, &opts).unwrap();
+
+        // el output debe re-parsear
+        let out_doc = Document::load_mem(&res.output).expect("el output debe re-parsear");
+
+        // el stream de la imagen debe quedar byte-idéntico (no recomprimido)
+        let out_stream = out_doc.get_object((img_id, 0)).unwrap().as_stream().unwrap();
+        assert_eq!(out_stream.content, orig_content, "la imagen con /SMask no debe recomprimirse");
+
+        // /SMask debe conservarse
+        assert!(out_stream.dict.has(b"SMask"), "/SMask debe preservarse");
+
+        // el stat debe marcarla Skipped (original == output) y haber un warning /SMask
+        let stat = res.report.images.iter().find(|s| s.object_id == img_id).expect("stat de la imagen");
+        assert_eq!(stat.action, ImageAction::Skipped);
+        assert_eq!(stat.original_bytes, stat.output_bytes);
+        assert!(
+            res.report.warnings.iter().any(|w| matches!(w, Warning::Other(m) if m.contains("/SMask"))),
+            "debe haber un warning de /SMask preservado, warnings={:?}",
+            res.report.warnings
         );
     }
 
