@@ -2,23 +2,46 @@ use crate::error::GemaError;
 use crate::report::Report;
 use lopdf::Document;
 
-/// Detecta firma criptográfica.
+/// Detecta firma criptográfica, con sesgo deliberado hacia la seguridad.
 ///
-/// Un diccionario cuenta como firma si tiene `/ByteRange` (presente en todo
-/// objeto de firma real), O bien tiene `/Sig` Y su `/Type` es el nombre `Sig`.
-/// La condición sobre `/Type` evita falsos positivos por una clave `/Sig`
-/// suelta en un dict que no es una firma (que bajo SignaturePolicy::Strict
-/// bloquearía erróneamente la compresión).
+/// Devuelve `true` si CUALQUIERA de estas condiciones se cumple:
+///   - algún diccionario tiene `/ByteRange` (presente en toda firma real); O
+///   - algún diccionario tiene `/Type` con nombre `Sig` o `DocTimeStamp`
+///     (firmas normales y sellos de tiempo); O
+///   - el `/AcroForm` del catálogo tiene `/SigFlags` con un entero != 0
+///     (bit 1 = SignaturesExist).
+///
+/// El sesgo es intencional: un falso positivo (negarse a comprimir) es
+/// aceptable; un falso negativo (corromper una firma) no lo es. Por eso ya
+/// NO exigimos `/ByteRange` ni `/Type == Sig` juntos: basta cualquier señal.
+/// Nota: una clave `/Sig` suelta —sin `/ByteRange`, sin `/Type` de firma y sin
+/// `/SigFlags`— sigue sin marcar el documento como firmado.
 fn detect_signed(doc: &Document) -> bool {
-    doc.objects.values().any(|obj| {
+    let by_type_or_byterange = doc.objects.values().any(|obj| {
         obj.as_dict()
             .map(|d| {
                 d.has(b"ByteRange")
-                    || (d.has(b"Sig")
-                        && d.get(b"Type").and_then(|o| o.as_name()).is_ok_and(|n| n == b"Sig"))
+                    || d.get(b"Type")
+                        .and_then(|o| o.as_name())
+                        .is_ok_and(|n| n == b"Sig" || n == b"DocTimeStamp")
             })
             .unwrap_or(false)
-    })
+    });
+    by_type_or_byterange || acroform_has_sigflags(doc)
+}
+
+/// Comprueba si el `/AcroForm` del catálogo declara `/SigFlags` con un valor
+/// entero distinto de cero. `/AcroForm` puede ser una referencia indirecta, así
+/// que la resolvemos vía `dereference`.
+fn acroform_has_sigflags(doc: &Document) -> bool {
+    let Ok(catalog) = doc.catalog() else { return false };
+    let Some(acroform_obj) = catalog.get(b"AcroForm").ok() else { return false };
+    let Ok((_, resolved)) = doc.dereference(acroform_obj) else { return false };
+    let Ok(acroform) = resolved.as_dict() else { return false };
+    acroform
+        .get(b"SigFlags")
+        .and_then(|o| o.as_i64())
+        .is_ok_and(|v| v != 0)
 }
 
 pub fn analyze(input: &[u8]) -> Result<Report, GemaError> {
@@ -26,19 +49,26 @@ pub fn analyze(input: &[u8]) -> Result<Report, GemaError> {
     if doc.is_encrypted() {
         return Err(GemaError::Encrypted);
     }
+    Ok(report_from_doc(&doc, input.len() as u64))
+}
+
+/// Construye un `Report` a partir de un documento ya parseado (conteo de
+/// páginas, detección de firma, tamaño original). Permite reutilizar un único
+/// parseo entre `analyze()` y `compress()` (evita un doble `load_mem`).
+pub(crate) fn report_from_doc(doc: &Document, original_size: u64) -> Report {
     let pages = doc.get_pages().len();
-    let is_signed = detect_signed(&doc);
+    let is_signed = detect_signed(doc);
 
     let mut report = Report {
         pages,
-        original_size: input.len() as u64,
+        original_size,
         is_signed,
         ..Default::default()
     };
     if is_signed {
         report.warnings.push(crate::report::Warning::SignedDocument);
     }
-    Ok(report)
+    report
 }
 
 #[cfg(test)]
@@ -129,5 +159,65 @@ mod tests {
         );
         let report = analyze(&bytes).unwrap();
         assert!(report.is_signed, "/ByteRange debe marcar el documento como firmado");
+    }
+
+    /// PDF mínimo con un objeto suelto extra y/o claves añadidas al catálogo.
+    fn pdf_with_loose_object_and_catalog_extras(
+        loose: Option<lopdf::Dictionary>,
+        catalog_extras: lopdf::Dictionary,
+    ) -> Vec<u8> {
+        use lopdf::{dictionary, Document, Object, Stream};
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let content_id = doc.add_object(Stream::new(dictionary! {}, b"BT ET".to_vec()));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "Contents" => content_id,
+            "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+        });
+        doc.objects.insert(pages_id, Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![page_id.into()],
+            "Count" => 1,
+        }));
+        let mut catalog = dictionary! { "Type" => "Catalog", "Pages" => pages_id };
+        if let Some(d) = loose {
+            let loose_id = doc.add_object(d);
+            // referencia desde el catálogo para que el objeto no se considere huérfano
+            catalog.set("__GemaTestRef", loose_id);
+        }
+        for (k, v) in catalog_extras.iter() {
+            catalog.set(k.clone(), v.clone());
+        }
+        let catalog_id = doc.add_object(catalog);
+        doc.trailer.set("Root", catalog_id);
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf).unwrap();
+        buf
+    }
+
+    #[test]
+    fn doctimestamp_type_is_detected_as_signed() {
+        use lopdf::dictionary;
+        // un objeto con /Type /DocTimeStamp (sello de tiempo) debe marcar firma
+        let bytes = pdf_with_loose_object_and_catalog_extras(
+            Some(dictionary! { "Type" => "DocTimeStamp" }),
+            dictionary! {},
+        );
+        let report = analyze(&bytes).unwrap();
+        assert!(report.is_signed, "/Type /DocTimeStamp debe marcar firma");
+    }
+
+    #[test]
+    fn acroform_sigflags_is_detected_as_signed() {
+        use lopdf::dictionary;
+        // AcroForm inline con /SigFlags 3 (SignaturesExist | AppendOnly)
+        let bytes = pdf_with_loose_object_and_catalog_extras(
+            None,
+            dictionary! { "AcroForm" => dictionary! { "SigFlags" => 3 } },
+        );
+        let report = analyze(&bytes).unwrap();
+        assert!(report.is_signed, "AcroForm /SigFlags != 0 debe marcar firma");
     }
 }
