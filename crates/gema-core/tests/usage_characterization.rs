@@ -88,22 +88,26 @@ fn non_dct_image_is_skipped_not_corrupted() {
     assert_eq!(res.report.images[0].original_bytes, res.report.images[0].output_bytes);
 }
 
-/// Hallazgo 1 del análisis: el downsampling por DPI es inerte en v1 — ni una sola
-/// imagen se reduce de resolución, por grande que sea, porque `process_image` no
-/// lee el CTM real. Este test fija la limitación; v2 (TODO item 2) lo invertirá.
+/// P2 (v2.0) invierte la limitación de v1: ahora `process_image` lee el CTM real
+/// del content stream, así que una imagen de alta resolución dibujada en una caja
+/// pequeña SÍ se downsamplea. El content stream de `pdf_with_image` es
+/// `q 1 0 0 1 0 0 cm /Im0 Do Q`, es decir la imagen se pinta en un cuadrado de
+/// 1pt: 1500px / (1/72) = 108 000 DPI, muy por encima del objetivo → Downsampled.
 #[test]
-fn large_image_is_not_downsampled_in_v1() {
-    // Imagen grande (1500x1500) en una página pequeña: en un compresor con DPI real
-    // se reduciría; en v1 NO.
+fn high_dpi_image_is_downsampled() {
     let input = pdf_with_image(jpeg_image_stream(1500, 90), 300, 300);
     let res = compress(&input, &CompressOptions { profile: Profile::Screen, ..Default::default() }).unwrap();
 
-    assert!(Document::load_mem(&res.output).is_ok());
-    let downsampled = res
-        .report
-        .images
-        .iter()
-        .filter(|s| s.action == ImageAction::Downsampled)
-        .count();
-    assert_eq!(downsampled, 0, "v1: el downsampling por DPI no debe disparar (limitación conocida)");
+    // El output sigue siendo un PDF válido y no crece.
+    assert!(Document::load_mem(&res.output).is_ok(), "el output debe re-parsear");
+    assert!(res.output.len() <= input.len(), "el output no debe crecer");
+
+    // Exactamente una imagen, ahora marcada Downsampled (P2 activo).
+    assert_eq!(res.report.images.len(), 1);
+    assert_eq!(
+        res.report.images[0].action,
+        ImageAction::Downsampled,
+        "P2: una imagen muy sobre-resolución debe downsamplearse, images={:?}",
+        res.report.images
+    );
 }
