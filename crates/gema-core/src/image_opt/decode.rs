@@ -121,6 +121,12 @@ fn supported_color(dict: &lopdf::Dictionary) -> Option<FlateColor> {
     }
 }
 
+/// Techo de bytes descomprimidos permitidos (~805 MB para RGB 16 384×16 384).
+/// Evita que un PDF malicioso con dimensiones enormes (p. ej. 100 000×100 000)
+/// provoque una pre-reserva de ~30 GB con `Vec::with_capacity` antes de que el
+/// `.take()` pueda acotar la lectura real.
+const MAX_DECODE_BYTES: usize = 16_384 * 16_384 * 3; // ≈ 805 MB
+
 /// Descomprime un stream de imagen FlateDecode a un `DynamicImage`, o devuelve
 /// `None` si no es un caso soportado (predicho, colorspace/bpc no soportado,
 /// filtro encadenado, o longitud descomprimida que no cuadra). Nunca hace
@@ -148,6 +154,12 @@ pub(crate) fn decode_flate_image(
     let expected = (width as usize)
         .checked_mul(height as usize)?
         .checked_mul(color.channels())?;
+
+    // Techo de seguridad: rechaza imágenes cuyo tamaño descomprimido supera
+    // MAX_DECODE_BYTES para evitar una pre-reserva gigante ante PDFs hostiles.
+    if expected > MAX_DECODE_BYTES {
+        return None;
+    }
 
     // Inflar el zlib. Limitamos la lectura a `expected + 1` bytes: si el stream
     // produce más (o menos) de lo esperado lo detectamos y saltamos, y de paso
@@ -352,5 +364,28 @@ mod tests {
             vec![0xFF, 0x00, 0x13, 0x37, 0xAB],
         );
         assert!(decode_flate_image(&s, 4, 4).is_none());
+    }
+
+    /// Verifica que dimensiones enormes (100 000×100 000, DeviceRGB) se rechacen
+    /// *antes* de cualquier asignación gigante: expected ≈ 30 GB > MAX_DECODE_BYTES.
+    /// El stream tiene contenido vacío; la función debe devolver `None` inmediatamente.
+    #[test]
+    fn refuses_oversized_dimensions() {
+        let s = Stream::new(
+            dictionary! {
+                "Type"             => "XObject",
+                "Subtype"          => "Image",
+                "Width"            => 100_000_i64,
+                "Height"           => 100_000_i64,
+                "BitsPerComponent" => 8,
+                "ColorSpace"       => "DeviceRGB",
+                "Filter"           => "FlateDecode",
+            },
+            vec![], // contenido vacío; jamás llega a descomprimirse
+        );
+        assert!(
+            decode_flate_image(&s, 100_000, 100_000).is_none(),
+            "debe rechazar dimensiones que superan MAX_DECODE_BYTES"
+        );
     }
 }
