@@ -34,3 +34,25 @@ Each lists a one-line rationale and the file(s) it concerns.
    Skips currently go via `Warning::ImageSkipped`. Decide whether to use this
    error variant or remove it.
    _File: `crates/gema-core/src/error.rs`._
+
+7. **Recurse into Form XObjects for DPI (v2.1).**
+   `effective_dpi_map` only walks the page content streams and their direct
+   image XObjects. Images drawn *inside* a Form XObject (`/Subtype /Form` with
+   its own content + `/Resources`) are never reached, so their effective DPI is
+   unknown and they are not downsampled (conservative fallback). v2.1 should
+   recurse into Form XObjects, composing the form's `/Matrix` and the `cm` from
+   the outer `Do`.
+   _File: `crates/gema-core/src/geometry.rs`._
+
+8. **Inline images (`BI`/`ID`/`EI`) are ignored.**
+   Images embedded inline in a content stream are not XObjects and never enter
+   the image pipeline, so they are neither DPI-analyzed nor recompressed.
+   Uncommon in real corpora and acceptable to skip for now.
+   _Files: `crates/gema-core/src/geometry.rs`, `crates/gema-core/src/pipeline.rs`._
+
+9. **Regression test for `/Contents` as an array of streams.**
+   A page's `/Contents` may be an array of stream references (a single logical
+   content stream split across objects). `get_and_decode_page_content` handles
+   this, but there is no test pinning that DPI accumulation works across a split
+   content array. Add one.
+   _File: `crates/gema-core/src/geometry.rs` (tests)._

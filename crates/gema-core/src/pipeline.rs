@@ -114,11 +114,19 @@ fn process_image(
     let mut action = ImageAction::Recompressed;
     if downsample_on {
         if let Some(dpi_eff) = effective_dpi.filter(|d| d.is_finite() && *d > 0.0) {
-            let disp_w = width as f32 / (dpi_eff / 72.0);
-            let disp_h = height as f32 / (dpi_eff / 72.0);
-            if let Some((nw, nh)) = target_dimensions(width, height, disp_w, disp_h, target_dpi) {
-                img = downsample(&img, nw, nh);
-                action = ImageAction::Downsampled;
+            // Headroom del 5%: sólo downsampleamos si el DPI efectivo supera el
+            // objetivo con margen (>1.05×). Así una imagen a 151 DPI con objetivo
+            // 150 no se re-encoda para arañar un píxel — el coste (recompresión +
+            // posible pérdida) no compensa. Las imágenes muy sobre-resolución (los
+            // tests high_dpi usan DPIs miles de veces el objetivo) no se ven
+            // afectadas por este umbral.
+            if dpi_eff > target_dpi as f32 * 1.05 {
+                let disp_w = width as f32 / (dpi_eff / 72.0);
+                let disp_h = height as f32 / (dpi_eff / 72.0);
+                if let Some((nw, nh)) = target_dimensions(width, height, disp_w, disp_h, target_dpi) {
+                    img = downsample(&img, nw, nh);
+                    action = ImageAction::Downsampled;
+                }
             }
         }
     }
