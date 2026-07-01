@@ -21,8 +21,6 @@ pub(crate) struct FlateEncoded {
     pub bytes: Vec<u8>,
     /// Nombre del ColorSpace PDF: `DeviceRGB` o `DeviceGray`.
     pub color_space: &'static str,
-    /// Canales por píxel (informativo / consistencia).
-    pub channels: u8,
 }
 
 /// Deflatea los píxeles crudos de `img` como un stream FlateDecode sin pérdida.
@@ -34,17 +32,17 @@ pub(crate) struct FlateEncoded {
 pub(crate) fn encode_flate_lossless(img: &image::DynamicImage) -> Option<FlateEncoded> {
     // Elegimos canales según el tipo real de la imagen decodificada. Gray se
     // mantiene gris (no lo inflamos a RGB como haría el path JPEG).
-    let (raw, color_space, channels): (Vec<u8>, &'static str, u8) = match img {
-        image::DynamicImage::ImageLuma8(g) => (g.as_raw().clone(), "DeviceGray", 1),
-        image::DynamicImage::ImageRgb8(r) => (r.as_raw().clone(), "DeviceRGB", 3),
-        other => (other.to_rgb8().into_raw(), "DeviceRGB", 3),
+    let (raw, color_space): (Vec<u8>, &'static str) = match img {
+        image::DynamicImage::ImageLuma8(g) => (g.as_raw().clone(), "DeviceGray"),
+        image::DynamicImage::ImageRgb8(r) => (r.as_raw().clone(), "DeviceRGB"),
+        other => (other.to_rgb8().into_raw(), "DeviceRGB"),
     };
 
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::best());
     encoder.write_all(&raw).ok()?;
     let bytes = encoder.finish().ok()?;
 
-    Some(FlateEncoded { bytes, color_space, channels })
+    Some(FlateEncoded { bytes, color_space })
 }
 
 #[cfg(test)]
@@ -64,7 +62,6 @@ mod tests {
         let dynimg = image::DynamicImage::ImageRgb8(src.clone());
         let enc = encode_flate_lossless(&dynimg).unwrap();
         assert_eq!(enc.color_space, "DeviceRGB");
-        assert_eq!(enc.channels, 3);
 
         // reconstruimos un stream FlateDecode y lo decodificamos con el módulo real.
         let s = Stream::new(
@@ -86,6 +83,5 @@ mod tests {
         let dynimg = image::DynamicImage::ImageLuma8(g);
         let enc = encode_flate_lossless(&dynimg).unwrap();
         assert_eq!(enc.color_space, "DeviceGray");
-        assert_eq!(enc.channels, 1);
     }
 }

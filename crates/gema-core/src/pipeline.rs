@@ -46,7 +46,7 @@ fn process_image(
     // degenerado: en ese caso NO se hace downsampling (fallback conservador).
     effective_dpi: Option<f32>,
 ) -> Option<ImageOutcome> {
-    let (orig_len, width, height, raw_bytes) = {
+    let (orig_len, mut width, mut height, raw_bytes, stream_for_flate) = {
         let stream = doc.get_object(id).ok()?.as_stream().ok()?;
         let dict = &stream.dict;
         // solo XObject de tipo Image
@@ -83,21 +83,47 @@ fn process_image(
         }
         let w = w_i64 as u32;
         let h = h_i64 as u32;
-        (stream.content.len() as u64, w, h, stream.content.clone())
+        // Clonamos el stream completo para la ruta Flate: el decodificador
+        // necesita el dict (Filter/ColorSpace/DecodeParms) además del contenido.
+        (stream.content.len() as u64, w, h, stream.content.clone(), stream.clone())
     };
 
-    // decodificar: intentar como imagen estándar (JPEG embebido = DCTDecode).
-    // Si `image` no soporta el filtro PDF (Flate raw, CCITT, JPX), la marcamos
-    // como omitida en vez de descartarla en silencio: el stream original se
-    // preserva intacto (comportamiento seguro de v1; F8).
-    let decoded = match image::load_from_memory(&raw_bytes) {
-        Ok(d) => d,
-        Err(_) => return Some(skipped(id, orig_len)),
+    // Estrategia de codec de salida para esta imagen.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Codec {
+        /// Recomprimir a JPEG (DCTDecode). Foto / imagen ya en formato con pérdida.
+        Jpeg,
+        /// Re-encode sin pérdida a FlateDecode. Línea/texto: nunca DCT (halos).
+        FlateLossless,
+    }
+
+    // decodificar. Dos rutas:
+    // 1. Formato que `image` abre directo (DCTDecode/PNG) → ruta foto → JPEG.
+    // 2. FlateDecode crudo soportado (P1): inflar a píxeles según ColorSpace/BPC,
+    //    luego clasificar contenido para elegir JPEG (foto) vs Flate (línea).
+    // Si ninguna aplica (predicho, colorspace/bpc no soportado, longitud que no
+    // cuadra, CCITT/JPX…) → Skipped, preservando el stream original (v1, F8).
+    let (decoded, codec) = match image::load_from_memory(&raw_bytes) {
+        Ok(d) => (d, Codec::Jpeg),
+        Err(_) => {
+            match crate::image_opt::decode::decode_flate_image(&stream_for_flate, width, height) {
+                Some(d) => {
+                    // Clasificación content-aware: sólo las fotos se vuelven JPEG;
+                    // línea/texto se mantiene sin pérdida para no crear halos.
+                    let codec = match crate::image_opt::classify::classify(&d) {
+                        crate::image_opt::classify::Content::Photo => Codec::Jpeg,
+                        crate::image_opt::classify::Content::LineArt => Codec::FlateLossless,
+                    };
+                    (d, codec)
+                }
+                None => return Some(skipped(id, orig_len)),
+            }
+        }
     };
 
     let mut warnings: Vec<Warning> = Vec::new();
-    // Si la imagen tiene canal alfa, el re-encode a JPEG lo descarta.
-    if decoded.color().has_alpha() {
+    // Si la imagen tiene canal alfa y vamos a JPEG, el re-encode lo descarta.
+    if decoded.color().has_alpha() && codec == Codec::Jpeg {
         warnings.push(Warning::Other("alpha descartado al recomprimir".into()));
     }
 
@@ -125,22 +151,42 @@ fn process_image(
                 let disp_h = height as f32 / (dpi_eff / 72.0);
                 if let Some((nw, nh)) = target_dimensions(width, height, disp_w, disp_h, target_dpi) {
                     img = downsample(&img, nw, nh);
+                    // Actualizamos las dimensiones que se escribirán en el dict:
+                    // tras remuestrear, el /Width /Height del PDF debe coincidir
+                    // con los píxeles reales. Crítico para el path Flate (bytes =
+                    // W*H*canales); en JPEG evita un dict inconsistente con el SOF.
+                    width = nw;
+                    height = nh;
                     action = ImageAction::Downsampled;
                 }
             }
         }
     }
 
-    let enc = match JpegRecompressor.recompress(&RawImage { image: img }, quality) {
-        Some(e) => e,
-        None => {
-            // no se pudo recomprimir → omitida
-            let mut out = skipped(id, orig_len);
-            out.warnings.extend(warnings);
-            return Some(out);
-        }
+    // Codificar según el codec elegido. Ambas ramas producen los bytes de salida
+    // más los metadatos de dict (filtro + colorspace). El path JPEG siempre emite
+    // DeviceRGB; el path Flate preserva gris como gris (no lo infla a RGB).
+    let (out_bytes, out_filter, out_colorspace): (Vec<u8>, &'static str, &'static str) = match codec {
+        Codec::Jpeg => match JpegRecompressor.recompress(&RawImage { image: img }, quality) {
+            Some(e) => (e.bytes, e.filter, "DeviceRGB"),
+            None => {
+                // no se pudo recomprimir → omitida
+                let mut out = skipped(id, orig_len);
+                out.warnings.extend(warnings);
+                return Some(out);
+            }
+        },
+        Codec::FlateLossless => match crate::image_opt::flate::encode_flate_lossless(&img) {
+            Some(e) => (e.bytes, "FlateDecode", e.color_space),
+            None => {
+                let mut out = skipped(id, orig_len);
+                out.warnings.extend(warnings);
+                return Some(out);
+            }
+        },
     };
-    if enc.bytes.len() as u64 >= orig_len {
+
+    if out_bytes.len() as u64 >= orig_len {
         // no mejora → dejar original
         return Some(ImageOutcome {
             stat: ImageStat {
@@ -156,16 +202,16 @@ fn process_image(
     // reemplazar el stream. F2: solo reportamos el tamaño recomprimido si el
     // reemplazo realmente ocurrió; si el acceso mutable falla, el stream original
     // sigue intacto y debemos reportar Skipped (no mentir con el tamaño menor).
-    // F5: guardamos la longitud antes de mover `enc.bytes` (sin clonar).
-    let new_len = enc.bytes.len() as u64;
+    // F5: guardamos la longitud antes de mover `out_bytes` (sin clonar).
+    let new_len = out_bytes.len() as u64;
     let replaced = match doc.get_object_mut(id).and_then(|obj| obj.as_stream_mut()) {
         Ok(stream) => {
-            stream.set_content(enc.bytes);
-            stream.dict.set("Filter", Object::Name(enc.filter.as_bytes().to_vec()));
+            stream.set_content(out_bytes);
+            stream.dict.set("Filter", Object::Name(out_filter.as_bytes().to_vec()));
             stream.dict.set("Width", Object::Integer(width as i64));
             stream.dict.set("Height", Object::Integer(height as i64));
             stream.dict.set("BitsPerComponent", Object::Integer(8));
-            stream.dict.set("ColorSpace", Object::Name(b"DeviceRGB".to_vec()));
+            stream.dict.set("ColorSpace", Object::Name(out_colorspace.as_bytes().to_vec()));
             stream.dict.remove(b"DecodeParms");
             // NB: no tocamos /SMask aquí; las imágenes con máscara ya se
             // descartaron arriba (F1), así que este stream no la tiene.
