@@ -41,6 +41,10 @@ fn process_image(
     quality: u8,
     target_dpi: u32,
     downsample_on: bool,
+    // DPI efectivo real de la imagen (máximo entre sus usos), derivado del CTM
+    // del content stream. `None` si nunca se encontró pintada o el CTM es
+    // degenerado: en ese caso NO se hace downsampling (fallback conservador).
+    effective_dpi: Option<f32>,
 ) -> Option<ImageOutcome> {
     let (orig_len, width, height, raw_bytes) = {
         let stream = doc.get_object(id).ok()?.as_stream().ok()?;
@@ -97,17 +101,25 @@ fn process_image(
         warnings.push(Warning::Other("alpha descartado al recomprimir".into()));
     }
 
-    // downsample por DPI efectivo (asumimos display = tamaño nativo a 72dpi si no
-    // tenemos la caja; heurística conservadora: usar pulgadas = px/target como tope)
+    // Downsample por DPI efectivo REAL (P2). El DPI viene del CTM del content
+    // stream: `effective_dpi`. Derivamos el tamaño de display en puntos como
+    // `display_pt = px / (dpi_eff / 72)` y se lo pasamos a `target_dimensions`,
+    // que dispara sólo si el DPI actual supera el objetivo.
+    //
+    // Fallback conservador: si no conocemos el DPI efectivo (la imagen nunca se
+    // encontró en un content stream, o su CTM es degenerado), NO hacemos
+    // downsampling — preservamos el comportamiento seguro de v1. Nunca dividimos
+    // por cero: `effective_dpi` ya excluye escalas nulas.
     let mut img = decoded;
     let mut action = ImageAction::Recompressed;
     if downsample_on {
-        // display estimado: tratamos la imagen como colocada a su tamaño en pt = px (72dpi)
-        let disp_w = width as f32;
-        let disp_h = height as f32;
-        if let Some((nw, nh)) = target_dimensions(width, height, disp_w, disp_h, target_dpi) {
-            img = downsample(&img, nw, nh);
-            action = ImageAction::Downsampled;
+        if let Some(dpi_eff) = effective_dpi.filter(|d| d.is_finite() && *d > 0.0) {
+            let disp_w = width as f32 / (dpi_eff / 72.0);
+            let disp_h = height as f32 / (dpi_eff / 72.0);
+            if let Some((nw, nh)) = target_dimensions(width, height, disp_w, disp_h, target_dpi) {
+                img = downsample(&img, nw, nh);
+                action = ImageAction::Downsampled;
+            }
         }
     }
 
@@ -203,6 +215,11 @@ pub fn compress(input: &[u8], opts: &CompressOptions) -> Result<CompressResult, 
 
     let params = opts.resolved();
 
+    // P2: DPI efectivo real de cada imagen a partir del CTM del content stream.
+    // Se calcula una vez, antes del bucle de imágenes. Las imágenes ausentes del
+    // mapa (nunca pintadas / CTM degenerado) no se downsamplean (fallback v1).
+    let dpi_map = crate::geometry::effective_dpi_map(&doc);
+
     // recolectar ids de imágenes (XObject /Subtype /Image)
     let image_ids: Vec<lopdf::ObjectId> = doc
         .objects
@@ -220,10 +237,16 @@ pub fn compress(input: &[u8], opts: &CompressOptions) -> Result<CompressResult, 
     let mut stats = Vec::new();
     let mut img_warnings = Vec::new();
     for id in image_ids {
+        let eff_dpi = dpi_map.get(&id).copied();
         // las imágenes no soportadas (no-Image) simplemente no generan stat
-        if let Some(outcome) =
-            process_image(&mut doc, id, params.jpeg_quality, params.image_dpi, opts.downsample)
-        {
+        if let Some(outcome) = process_image(
+            &mut doc,
+            id,
+            params.jpeg_quality,
+            params.image_dpi,
+            opts.downsample,
+            eff_dpi,
+        ) {
             stats.push(outcome.stat);
             img_warnings.extend(outcome.warnings);
         }

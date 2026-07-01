@@ -321,7 +321,7 @@ mod tests {
     }
 
     #[test]
-    fn map_respects_q_Q_nesting() {
+    fn map_respects_q_q_nesting() {
         // el `cm` dentro de q/Q no debe filtrarse al Do posterior fuera del bloque.
         // Bloque 1: escala 50 (288 DPI para 200px) dentro de q/Q.
         // Tras Q, el CTM vuelve a identidad; el Do exterior usa cm 100 (144 DPI).
