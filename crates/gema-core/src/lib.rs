@@ -14,6 +14,8 @@ pub use analyze::analyze;
 
 pub mod image_opt;
 
+pub(crate) mod geometry;
+
 pub mod rewrite;
 
 pub mod pipeline;
