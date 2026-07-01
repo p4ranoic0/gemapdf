@@ -1,4 +1,7 @@
 pub mod jpeg;
+pub(crate) mod classify;
+pub(crate) mod decode;
+pub(crate) mod flate;
 
 /// Imagen decodificada lista para recomprimir.
 pub struct RawImage {
