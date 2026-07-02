@@ -86,14 +86,15 @@ fn resolve<'a>(doc: &'a Document, obj: &'a Object) -> Option<&'a Object> {
 }
 
 /// Lee `/N` (número de componentes) de un stream ICCBased (resolviendo la ref al
-/// stream) y lo mapea a un `FlateColor`. `/N` ausente o ∉{1,3,4} → `None`.
+/// stream) y lo mapea a un `FlateColor`. Sólo acepta un `Object::Stream` (como
+/// exige el spec PDF): un diccionario suelto → `None` (SKIP), para no
+/// malinterpretar un dict ajeno que casualmente tenga una clave `/N`. `/N`
+/// ausente o ∉{1,3,4} → `None`.
 fn icc_base(doc: &Document, stream_ref: &Object) -> Option<FlateColor> {
     let obj = resolve(doc, stream_ref)?;
     let dict = match obj {
         Object::Stream(s) => &s.dict,
-        // Algunos productores dejan el ICCBased como diccionario suelto.
-        Object::Dictionary(d) => d,
-        _ => return None,
+        _ => return None, // bare dict u otro objeto → SKIP
     };
     let n = dict.get(b"N").and_then(|o| o.as_i64()).ok()?;
     FlateColor::from_n(n)
@@ -441,6 +442,31 @@ mod tests {
             zlib(&vec![0u8; (w * h * 3) as usize]),
         );
         assert!(decode_flate_image(&doc, &s, w, h).is_none(), "ICCBased sin /N → SKIP");
+    }
+
+    /// ICCBased cuyo objeto es un diccionario suelto (no stream) → SKIP (M1).
+    /// Un ICCBased malformado como bare dict no debe interpretarse: podría ser un
+    /// dict ajeno que casualmente tenga una clave `/N`.
+    #[test]
+    fn iccbased_bare_dictionary_is_skipped() {
+        let (w, h) = (4u32, 4u32);
+        let mut doc = lopdf::Document::new();
+        // Diccionario suelto (NO stream) con una `/N` válida.
+        let bare = doc.add_object(Object::Dictionary(dictionary! { "N" => 3 }));
+        let s = Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Image",
+                "Width" => w as i64, "Height" => h as i64,
+                "BitsPerComponent" => 8,
+                "ColorSpace" => vec![Object::Name(b"ICCBased".to_vec()), Object::Reference(bare)],
+                "Filter" => "FlateDecode",
+            },
+            zlib(&vec![0u8; (w * h * 3) as usize]),
+        );
+        assert!(
+            decode_flate_image(&doc, &s, w, h).is_none(),
+            "ICCBased como diccionario suelto → SKIP"
+        );
     }
 
     /// Indexed base DeviceRGB, índice 8-bit: cada píxel = su entrada de paleta.
