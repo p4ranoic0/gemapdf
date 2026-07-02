@@ -184,30 +184,112 @@ fn supported_flate_image_is_decoded_and_handled_losslessly() {
     assert_eq!(filter, b"FlateDecode", "línea/texto debe quedar en Flate, no en JPEG");
 }
 
-/// Cobertura del path de SKIP con un caso GENUINAMENTE no soportado: una imagen
-/// Flate con `/Predictor 15` (PNG) en DecodeParms. Los datos predichos necesitan
-/// un des-filtrado fuera de alcance en v2.0, así que se SALTA sin corromper.
+/// P1b: una imagen Flate con `/Predictor 15` (PNG) en DecodeParms ahora se
+/// DECODIFICA correctamente (antes se saltaba). Construimos un fixture PNG-predicho
+/// de verdad (byte de tipo por fila + filtro Paeth, luego zlib) y comprobamos que
+/// se maneja (no se salta) y que el output re-parsea y no crece.
 #[test]
-fn predicted_flate_image_is_skipped_not_corrupted() {
+fn predicted_flate_image_is_decoded() {
+    use flate2::write::ZlibEncoder;
+    use flate2::Compression;
     use lopdf::dictionary;
+    use std::io::Write;
+
+    let (w, h) = (40usize, 40usize);
+    // Patrón determinista (no plano) para que el predictor tenga qué diferenciar.
+    let mut pixels = Vec::with_capacity(w * h * 3);
+    for y in 0..h {
+        for x in 0..w {
+            pixels.push(((x * 7 + y * 3) % 256) as u8);
+            pixels.push(((x * 13 + y * 5 + 11) % 256) as u8);
+            pixels.push(((x * 3 + y * 17 + 200) % 256) as u8);
+        }
+    }
+    // Paeth predictor.
+    let paeth = |a: u8, b: u8, c: u8| -> u8 {
+        let p = a as i32 + b as i32 - c as i32;
+        let (pa, pb, pc) = ((p - a as i32).abs(), (p - b as i32).abs(), (p - c as i32).abs());
+        if pa <= pb && pa <= pc { a } else if pb <= pc { b } else { c }
+    };
+    let bpp = 3usize;
+    let rl = w * 3;
+    let mut filtered = Vec::with_capacity(h * (rl + 1));
+    let zero = vec![0u8; rl];
+    for y in 0..h {
+        let cur = &pixels[y * rl..(y + 1) * rl];
+        let prev: &[u8] = if y == 0 { &zero } else { &pixels[(y - 1) * rl..y * rl] };
+        filtered.push(4u8); // Paeth
+        for i in 0..rl {
+            let a = if i >= bpp { cur[i - bpp] } else { 0 };
+            let b = prev[i];
+            let c = if i >= bpp { prev[i - bpp] } else { 0 };
+            filtered.push(cur[i].wrapping_sub(paeth(a, b, c)));
+        }
+    }
+    let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+    enc.write_all(&filtered).unwrap();
+    let content = enc.finish().unwrap();
+
+    let img = Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image",
+            "Width" => w as i64, "Height" => h as i64,
+            "BitsPerComponent" => 8, "ColorSpace" => "DeviceRGB",
+            "Filter" => "FlateDecode",
+            "DecodeParms" => dictionary! { "Predictor" => 15, "Colors" => 3, "Columns" => w as i64 },
+        },
+        content,
+    );
+    let input = pdf_with_image(img, w as i64, h as i64);
+    let res = compress(&input, &CompressOptions::default()).unwrap();
+
+    // Sigue siendo un PDF válido y no crece.
+    assert!(Document::load_mem(&res.output).is_ok());
+    assert!(res.output.len() <= input.len(), "el output no debe crecer");
+    // Exactamente una imagen, y NO se saltó (P1b la decodifica).
+    assert_eq!(res.report.images.len(), 1);
+    assert_ne!(
+        res.report.images[0].action,
+        ImageAction::Skipped,
+        "una imagen predicha ahora se maneja, images={:?}",
+        res.report.images
+    );
+}
+
+/// Cobertura del path de SKIP con un caso GENUINAMENTE no soportado: una cadena
+/// de filtros con `LZWDecode` (que no des-encadenamos). Se SALTA sin corromper.
+#[test]
+fn unsupported_filter_chain_is_skipped_not_corrupted() {
+    use flate2::write::ZlibEncoder;
+    use flate2::Compression;
+    use lopdf::dictionary;
+    use std::io::Write;
+
     let side = 40u32;
     let raw = vec![137u8; (side * side * 3) as usize];
-    let mut img = Stream::new(
+    let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+    enc.write_all(&raw).unwrap();
+    let content = enc.finish().unwrap();
+
+    let img = Stream::new(
         dictionary! {
             "Type" => "XObject", "Subtype" => "Image",
             "Width" => side as i64, "Height" => side as i64,
             "BitsPerComponent" => 8, "ColorSpace" => "DeviceRGB",
-            "DecodeParms" => dictionary! { "Predictor" => 15, "Colors" => 3, "Columns" => side as i64 },
+            // LZWDecode no está soportado en la cadena → SKIP.
+            "Filter" => vec![
+                Object::Name(b"LZWDecode".to_vec()),
+                Object::Name(b"FlateDecode".to_vec()),
+            ],
         },
-        raw,
+        content,
     );
-    img.compress().unwrap(); // -> Filter FlateDecode
     let input = pdf_with_image(img, side as i64, side as i64);
     let res = compress(&input, &CompressOptions::default()).unwrap();
 
     // Sigue siendo un PDF válido.
     assert!(Document::load_mem(&res.output).is_ok());
-    // Exactamente una imagen, marcada como Skipped (predicho → fuera de alcance).
+    // Exactamente una imagen, marcada como Skipped (filtro no soportado).
     assert_eq!(res.report.images.len(), 1);
     assert_eq!(res.report.images[0].action, ImageAction::Skipped);
     assert!(res.report.warnings.iter().any(|w| matches!(w, Warning::ImageSkipped(_))));
