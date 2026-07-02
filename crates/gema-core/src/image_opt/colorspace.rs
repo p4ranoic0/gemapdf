@@ -129,7 +129,14 @@ fn indexed_lookup_bytes(doc: &Document, lookup: &Object) -> Option<Vec<u8>> {
         Object::String(bytes, _) => Some(bytes.clone()),
         Object::Stream(s) => {
             // La paleta puede venir comprimida (FlateDecode, etc.). Reusamos el
-            // des-encadenador; sin filtros devolvemos el contenido tal cual.
+            // des-encadenador. `filter_chain` devuelve `None` en dos casos muy
+            // distintos, y sólo uno es seguro (M2):
+            //  - hay `/Filter` que sabemos aplicar → des-encadenamos;
+            //  - NO hay `/Filter` en absoluto → usamos `s.content` tal cual
+            //    (stream sin filtro: los bytes YA son la paleta);
+            //  - hay `/Filter` pero NO lo soportamos (p. ej. LZWDecode) → SKIP:
+            //    devolver `s.content` daría bytes comprimidos como si fueran
+            //    la paleta.
             match filter_chain(&s.dict) {
                 Some(chain) => {
                     let mut data = s.content.clone();
@@ -139,7 +146,13 @@ fn indexed_lookup_bytes(doc: &Document, lookup: &Object) -> Option<Vec<u8>> {
                     }
                     Some(data)
                 }
-                None => Some(s.content.clone()),
+                None => {
+                    if s.dict.has(b"Filter") {
+                        None // filtro presente pero no soportado → SKIP
+                    } else {
+                        Some(s.content.clone()) // sin filtro: contenido crudo
+                    }
+                }
             }
         }
         _ => None,
@@ -714,5 +727,37 @@ mod tests {
         let rgb = img.to_rgb8();
         assert_eq!(rgb.get_pixel(0, 0).0, [44, 55, 66]); // idx 1
         assert_eq!(rgb.get_pixel(1, 0).0, [11, 22, 33]); // idx 0
+    }
+
+    /// Indexed con lookup-stream que declara un `/Filter` NO soportado (LZWDecode)
+    /// → SKIP (M2/T2). No debe devolver los bytes comprimidos como si fueran la
+    /// paleta.
+    #[test]
+    fn indexed_lookup_unsupported_filter_is_skipped() {
+        let (w, h) = (2u32, 1u32);
+        // El contenido no importa: el filtro LZW no lo sabemos aplicar.
+        let lookup_stream = Stream::new(dictionary! { "Filter" => "LZWDecode" }, vec![0u8; 6]);
+        let mut doc = lopdf::Document::new();
+        let pal_ref = doc.add_object(Object::Stream(lookup_stream));
+        let indices: Vec<u8> = vec![1, 0];
+        let s = Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Image",
+                "Width" => w as i64, "Height" => h as i64,
+                "BitsPerComponent" => 8,
+                "ColorSpace" => vec![
+                    Object::Name(b"Indexed".to_vec()),
+                    Object::Name(b"DeviceRGB".to_vec()),
+                    Object::Integer(1),
+                    Object::Reference(pal_ref),
+                ],
+                "Filter" => "FlateDecode",
+            },
+            zlib(&indices),
+        );
+        assert!(
+            decode_flate_image(&doc, &s, w, h).is_none(),
+            "lookup-stream con filtro no soportado → SKIP"
+        );
     }
 }
