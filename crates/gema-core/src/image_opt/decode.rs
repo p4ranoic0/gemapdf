@@ -344,13 +344,16 @@ fn apply_predictor(data: Vec<u8>, parms: Option<&lopdf::Dictionary>) -> Option<V
 }
 
 /// Bytes por píxel: `ceil(colors * bpc / 8)`, mínimo 1.
-fn bytes_per_pixel(colors: usize, bpc: usize) -> usize {
-    (colors * bpc).div_ceil(8).max(1)
+/// Devuelve `None` si la multiplicación desborda `usize`.
+fn bytes_per_pixel(colors: usize, bpc: usize) -> Option<usize> {
+    Some(colors.checked_mul(bpc)?.div_ceil(8).max(1))
 }
 
 /// Longitud de fila en bytes: `ceil(colors * bpc * columns / 8)`.
-fn row_len(colors: usize, bpc: usize, columns: usize) -> usize {
-    (colors * bpc * columns).div_ceil(8)
+/// Devuelve `None` si cualquier operación desborda `usize`.
+fn row_len(colors: usize, bpc: usize, columns: usize) -> Option<usize> {
+    let bits = colors.checked_mul(bpc)?.checked_mul(columns)?;
+    Some(bits.div_ceil(8))
 }
 
 /// Predictor 2 de TIFF: diferenciación horizontal. Sólo soportamos 8 bpc
@@ -360,11 +363,11 @@ fn tiff_predictor2(mut data: Vec<u8>, p: &PredictorParams) -> Option<Vec<u8>> {
     if p.bpc != 8 {
         return None; // sólo TIFF 8-bpc en alcance
     }
-    let rl = row_len(p.colors, p.bpc, p.columns);
+    let rl = row_len(p.colors, p.bpc, p.columns)?;
     if rl == 0 || !data.len().is_multiple_of(rl) {
         return None; // longitud no cuadra
     }
-    let bpp = bytes_per_pixel(p.colors, p.bpc); // = colors para 8 bpc
+    let bpp = bytes_per_pixel(p.colors, p.bpc)?; // = colors para 8 bpc
     let rows = data.len() / rl;
     for r in 0..rows {
         let base = r * rl;
@@ -381,15 +384,15 @@ fn tiff_predictor2(mut data: Vec<u8>, p: &PredictorParams) -> Option<Vec<u8>> {
 /// (la fila previa arranca en ceros). Devuelve `None` si la longitud no cuadra
 /// o si aparece un tipo de filtro inválido.
 fn png_predictor(data: Vec<u8>, p: &PredictorParams) -> Option<Vec<u8>> {
-    let rl = row_len(p.colors, p.bpc, p.columns);
+    let rl = row_len(p.colors, p.bpc, p.columns)?;
     if rl == 0 {
         return None;
     }
-    let stride = rl + 1; // byte de tipo + fila
+    let stride = rl.checked_add(1)?; // byte de tipo + fila
     if !data.len().is_multiple_of(stride) {
         return None; // longitud no cuadra
     }
-    let bpp = bytes_per_pixel(p.colors, p.bpc);
+    let bpp = bytes_per_pixel(p.colors, p.bpc)?;
     let rows = data.len() / stride;
     let mut out = Vec::with_capacity(rows * rl);
     let mut prev = vec![0u8; rl];
@@ -1101,5 +1104,102 @@ mod tests {
         assert_eq!(decode_run_length(&[254, 9, 128]).unwrap(), vec![9, 9, 9]);
         // truncado → None
         assert!(decode_run_length(&[5, 1, 2]).is_none());
+    }
+
+    // ---- pruebas de seguridad: entradas hostiles / desbordamiento ----
+
+    /// Ataque de desbordamiento: Colors=2_000_000_000, Columns=2_000_000_000 con
+    /// predictor TIFF 2 y payload zlib mínimo válido. Sin el fix, `row_len` y
+    /// `bytes_per_pixel` harían `usize` overflow → panic en debug. Con el fix
+    /// devuelven `None` sin panic.
+    #[test]
+    fn overflow_attack_tiff_predictor_huge_colors_columns_returns_none_without_panic() {
+        // Un stream zlib válido pero trivial (1 byte de contenido).
+        let payload = zlib(&[0u8]);
+        let s = Stream::new(
+            dictionary! {
+                "Type"             => "XObject",
+                "Subtype"          => "Image",
+                "Width"            => 4_i64,
+                "Height"           => 4_i64,
+                "BitsPerComponent" => 8,
+                "ColorSpace"       => "DeviceRGB",
+                "Filter"           => "FlateDecode",
+                "DecodeParms"      => dictionary! {
+                    "Predictor"        => 2_i64,
+                    "Colors"           => 2_000_000_000_i64,
+                    "BitsPerComponent" => 8_i64,
+                    "Columns"          => 2_000_000_000_i64
+                },
+            },
+            payload,
+        );
+        // Debe devolver None sin hacer panic (tanto en debug como en release).
+        assert!(
+            decode_flate_image(&s, 4, 4).is_none(),
+            "Colors/Columns gigantes con predictor TIFF deben producir None, no panic"
+        );
+    }
+
+    /// Misma prueba con predictor PNG (10–15) para cubrir también `png_predictor`.
+    #[test]
+    fn overflow_attack_png_predictor_huge_colors_columns_returns_none_without_panic() {
+        let payload = zlib(&[0u8]);
+        let s = Stream::new(
+            dictionary! {
+                "Type"             => "XObject",
+                "Subtype"          => "Image",
+                "Width"            => 4_i64,
+                "Height"           => 4_i64,
+                "BitsPerComponent" => 8,
+                "ColorSpace"       => "DeviceRGB",
+                "Filter"           => "FlateDecode",
+                "DecodeParms"      => dictionary! {
+                    "Predictor"        => 15_i64,
+                    "Colors"           => 2_000_000_000_i64,
+                    "BitsPerComponent" => 8_i64,
+                    "Columns"          => 2_000_000_000_i64
+                },
+            },
+            payload,
+        );
+        assert!(
+            decode_flate_image(&s, 4, 4).is_none(),
+            "Colors/Columns gigantes con predictor PNG deben producir None, no panic"
+        );
+    }
+
+    /// `decode_ascii85` con un grupo de un solo carácter (no forma ningún byte)
+    /// → debe devolver `None`, no panic.
+    #[test]
+    fn ascii85_lone_char_group_returns_none() {
+        // Un único carácter válido base-85 seguido de EOD: grupo parcial de longitud 1
+        // es explícitamente inválido según el spec y nuestro decoder.
+        assert!(
+            decode_ascii85(b"!~>").is_none(),
+            "grupo de 1 carácter en ASCII85 debe devolver None"
+        );
+    }
+
+    /// `decode_run_length` con byte de repetición pero sin el byte de datos
+    /// → debe devolver `None`, no panic.
+    #[test]
+    fn runlength_repeat_byte_with_no_data_returns_none() {
+        // 0xFE = 254 → modo repetición (257-254=3 veces), pero no hay byte siguiente.
+        assert!(
+            decode_run_length(&[0xFE]).is_none(),
+            "byte de repetición sin dato siguiente debe devolver None"
+        );
+    }
+
+    /// `decode_ascii_hex` con un carácter no-hex y sin EOD `>`
+    /// → debe devolver `None` al encontrar el carácter inválido.
+    #[test]
+    fn ascii_hex_non_hex_char_no_eod_returns_none() {
+        // 'G' no es un dígito hex válido.
+        assert!(
+            decode_ascii_hex(b"4G").is_none(),
+            "carácter no-hex sin EOD debe devolver None"
+        );
     }
 }
