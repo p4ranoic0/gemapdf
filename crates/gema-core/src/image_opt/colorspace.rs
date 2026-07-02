@@ -78,6 +78,13 @@ pub(super) enum ColorSpaceKind {
 
 /// Resuelve un `Object` que puede ser una referencia indirecta a su objeto
 /// concreto, de forma segura (nunca panic; ref rota/ausente → `None`).
+///
+/// Resuelve un ÚNICO nivel de indirección (un solo salto): si el objeto
+/// resuelto es a su vez otra `Object::Reference`, NO se sigue. Las cadenas de
+/// referencias multi-salto caen intencionadamente por un SKIP seguro. NO debe
+/// añadirse resolución multi-salto aquí: una cadena cíclica de referencias
+/// (`a → b → a`) haría bucle infinito. Un solo salto cubre el caso real —los
+/// productores no encadenan refs sobre `/ColorSpace`— sin ese riesgo. (M3)
 fn resolve<'a>(doc: &'a Document, obj: &'a Object) -> Option<&'a Object> {
     match obj {
         Object::Reference(id) => doc.get_object(*id).ok(),
