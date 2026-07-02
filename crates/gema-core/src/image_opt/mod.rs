@@ -1,5 +1,6 @@
 pub mod jpeg;
 pub(crate) mod classify;
+pub(crate) mod colorspace;
 pub(crate) mod decode;
 pub(crate) mod flate;
 
