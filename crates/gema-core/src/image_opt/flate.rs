@@ -73,7 +73,8 @@ mod tests {
             },
             enc.bytes,
         );
-        let back = decode_flate_image(&s, 9, 7).unwrap().to_rgb8();
+        let doc = lopdf::Document::new();
+        let back = decode_flate_image(&doc, &s, 9, 7).unwrap().to_rgb8();
         assert_eq!(back.as_raw(), src.as_raw(), "round-trip sin pérdida");
     }
 

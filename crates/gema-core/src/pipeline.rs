@@ -106,7 +106,7 @@ fn process_image(
     let (decoded, codec) = match image::load_from_memory(&raw_bytes) {
         Ok(d) => (d, Codec::Jpeg),
         Err(_) => {
-            match crate::image_opt::decode::decode_flate_image(&stream_for_flate, width, height) {
+            match crate::image_opt::decode::decode_flate_image(doc, &stream_for_flate, width, height) {
                 Some(d) => {
                     // Clasificación content-aware: sólo las fotos se vuelven JPEG;
                     // línea/texto se mantiene sin pérdida para no crear halos.
