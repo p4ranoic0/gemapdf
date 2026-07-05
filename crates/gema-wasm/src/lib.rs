@@ -2,18 +2,28 @@ use gema_core::{
     compress as core_compress, compress_with_progress, CompressOptions, ImageAction, Phase,
     Profile, Report, SignaturePolicy,
 };
+use serde_wasm_bindgen::Serializer;
 use wasm_bindgen::prelude::*;
+
+/// Serializa a `JsValue` como objeto JS plano (`{ key: value }`), no como
+/// `Map`. `serde_wasm_bindgen::to_value` por defecto produce `Map` para
+/// structs, lo cual rompe el acceso `obj.campo` esperado por JS/TS
+/// consumidores; `json_compatible()` fuerza la forma "objeto llano" que
+/// coincide con `JSON.parse(JSON.stringify(x))`.
+fn to_js_object<T: serde::Serialize + ?Sized>(value: &T) -> Result<JsValue, JsError> {
+    value
+        .serialize(&Serializer::json_compatible())
+        .map_err(|e| JsError::new(&e.to_string()))
+}
 
 /// Comprime un PDF. `profile`: "screen" | "ebook" | "printer".
 /// Devuelve los bytes del PDF optimizado. (API v1: se mantiene sin cambios;
 /// para reporte/opciones/progreso usa `compress_with_report`.)
 #[wasm_bindgen]
 pub fn compress(input: &[u8], profile: &str) -> Result<Vec<u8>, JsError> {
-    let profile = parse_profile(profile).map_err(|e| JsError::new(&e))?;
-    let opts = CompressOptions {
-        profile,
-        ..Default::default()
-    };
+    // Un solo sitio de construcción de `CompressOptions` (compartido con
+    // `compress_with_report`) para que ambos caminos no puedan divergir.
+    let opts = to_compress_options(profile, &JsOptions::default()).map_err(|e| JsError::new(&e))?;
     let res = core_compress(input, &opts).map_err(|e| JsError::new(&e.to_string()))?;
     Ok(res.output)
 }
@@ -25,7 +35,7 @@ pub fn compress(input: &[u8], profile: &str) -> Result<Vec<u8>, JsError> {
 #[wasm_bindgen]
 pub fn analyze(input: &[u8]) -> Result<JsValue, JsError> {
     let report = gema_core::analyze(input).map_err(|e| JsError::new(&e.to_string()))?;
-    serde_wasm_bindgen::to_value(&to_js_report(&report)).map_err(|e| JsError::new(&e.to_string()))
+    to_js_object(&to_js_report(&report))
 }
 
 /// Comprime un PDF devolviendo `{ output: Uint8Array, report: {...} }`.
@@ -37,7 +47,10 @@ pub fn analyze(input: &[u8]) -> Result<JsValue, JsError> {
 /// - `on_phase`: función opcional que recibe `{ phase, done?, total? }` con
 ///   `phase` ∈ "analyzing" | "optimizing" | "rewriting" | "done" (`done`/`total`
 ///   sólo en "optimizing"). Si el callback lanza, el error se ignora: un fallo
-///   de UI nunca aborta la compresión.
+///   de UI nunca aborta la compresión. Los eventos "optimizing" se limitan a
+///   ~100 llamadas JS (siempre el primero, el último, y cada ~1% del total)
+///   para no saturar el borde wasm en PDFs con miles de imágenes; el resto de
+///   fases (analyzing/rewriting/done) siempre se reenvían.
 #[wasm_bindgen]
 pub fn compress_with_report(
     input: &[u8],
@@ -55,15 +68,34 @@ pub fn compress_with_report(
 
     let mut emit = |phase: Phase| {
         if let Some(cb) = on_phase.as_ref() {
-            // Si el callback JS lanza, lo ignoramos deliberadamente.
-            let _ = cb.call1(&JsValue::UNDEFINED, &phase_to_js(phase));
+            // El core emite `OptimizingImages` una vez POR IMAGEN (exacto a
+            // propósito, ver progress.rs) — correcto para el CLI, pero un PDF
+            // de ~1900 imágenes dispararía ~1900 llamadas JS a través del
+            // límite wasm-bindgen, lo cual es caro (marshalling + reflow de
+            // UI) sin aportar granularidad útil. Acá, en el borde wasm,
+            // reducimos a ~100 cruces: siempre el primero (done == 0), el
+            // último (done == total), y cada `step`-ésimo entremedio. El
+            // core en sí queda intacto/exacto; esto es puramente una
+            // decisión de la capa de bindings.
+            let should_forward = match phase {
+                Phase::OptimizingImages { done, total } => {
+                    let step = (total / 100).max(1);
+                    done == 0 || done == total || done % step == 0
+                }
+                // Analyzing/Rewriting/Done no llevan progreso granular:
+                // siempre se reenvían.
+                _ => true,
+            };
+            if should_forward {
+                // Si el callback JS lanza, lo ignoramos deliberadamente.
+                let _ = cb.call1(&JsValue::UNDEFINED, &phase_to_js(phase));
+            }
         }
     };
     let res = compress_with_progress(input, &opts, &mut emit)
         .map_err(|e| JsError::new(&e.to_string()))?;
 
-    let report = serde_wasm_bindgen::to_value(&to_js_report(&res.report))
-        .map_err(|e| JsError::new(&e.to_string()))?;
+    let report = to_js_object(&to_js_report(&res.report))?;
     let out = js_sys::Object::new();
     js_sys::Reflect::set(
         &out,
