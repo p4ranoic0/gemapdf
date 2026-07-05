@@ -12,7 +12,7 @@
 ///   (retorno temprano, no se toca nada).
 /// - PDF sin imágenes: se emite `OptimizingImages { done: 0, total: 0 }` una
 ///   sola vez antes de pasar a `Rewriting`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     /// Parseo del PDF y análisis inicial (páginas, firma, tamaño).
     Analyzing,
