@@ -21,6 +21,18 @@ pub enum Warning {
     Other(String),
 }
 
+impl std::fmt::Display for Warning {
+    /// Render legible para humanos; lo consumen los bindings (wasm) y la CLI
+    /// para exponer las warnings como texto plano.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Warning::SignedDocument => write!(f, "documento firmado criptográficamente"),
+            Warning::ImageSkipped(id) => write!(f, "imagen omitida (object {id})"),
+            Warning::Other(msg) => f.write_str(msg),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Report {
     pub pages: usize,
@@ -59,5 +71,11 @@ mod tests {
     fn ratio_none_when_no_output() {
         let r = Report { original_size: 100, ..Default::default() }.with_ratio();
         assert_eq!(r.ratio, None);
+    }
+    #[test]
+    fn warnings_render_human_readable() {
+        assert!(Warning::SignedDocument.to_string().contains("firmado"));
+        assert!(Warning::ImageSkipped(7).to_string().contains('7'));
+        assert_eq!(Warning::Other("texto libre".into()).to_string(), "texto libre");
     }
 }
