@@ -32,7 +32,10 @@ pub struct CompressOptions {
     pub recompress_streams: bool,
     pub remove_metadata: bool,
     /// Reservado para v2. Actualmente es un no-op: la deduplicación de imágenes
-    /// idénticas aún no está implementada, por lo que este flag no tiene efecto.
+    /// idénticas aún no está implementada, por lo que este flag no tiene efecto
+    /// pase lo que pase. Default `false` (no `true`) precisamente porque un
+    /// default `true` prometería un comportamiento que el código no realiza
+    /// todavía; se pondrá en `true` cuando la implementación exista de verdad.
     pub dedupe_images: bool,
     pub signatures: SignaturePolicy,
 }
@@ -46,7 +49,7 @@ impl Default for CompressOptions {
             downsample: true,
             recompress_streams: true,
             remove_metadata: true,
-            dedupe_images: true,
+            dedupe_images: false,
             signatures: SignaturePolicy::Strict,
         }
     }
