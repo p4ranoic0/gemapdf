@@ -24,15 +24,21 @@ fn photo_pdf(side: u32, jpeg_q: u8) -> Vec<u8> {
         },
         jpeg,
     ));
-    let content_id = doc.add_object(Stream::new(dictionary! {}, b"q 1 0 0 1 0 0 cm /Im0 Do Q".to_vec()));
+    let content_id = doc.add_object(Stream::new(
+        dictionary! {},
+        b"q 1 0 0 1 0 0 cm /Im0 Do Q".to_vec(),
+    ));
     let resources_id = doc.add_object(dictionary! { "XObject" => dictionary! { "Im0" => img_id } });
     let page_id = doc.add_object(dictionary! {
         "Type" => "Page", "Parent" => pages_id, "Contents" => content_id, "Resources" => resources_id,
         "MediaBox" => vec![0.into(), 0.into(), (side as i64).into(), (side as i64).into()],
     });
-    doc.objects.insert(pages_id, Object::Dictionary(dictionary! {
-        "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
-    }));
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
+        }),
+    );
     let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
     doc.trailer.set("Root", catalog_id);
     let mut buf = Vec::new();
@@ -70,9 +76,12 @@ fn photo_pdf_boxed(side: u32, jpeg_q: u8, box_pt: i64) -> Vec<u8> {
         "Type" => "Page", "Parent" => pages_id, "Contents" => content_id, "Resources" => resources_id,
         "MediaBox" => vec![0.into(), 0.into(), box_pt.into(), box_pt.into()],
     });
-    doc.objects.insert(pages_id, Object::Dictionary(dictionary! {
-        "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
-    }));
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
+        }),
+    );
     let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
     doc.trailer.set("Root", catalog_id);
     let mut buf = Vec::new();
@@ -85,7 +94,12 @@ fn first_image(pdf: &[u8]) -> image::DynamicImage {
     let doc = Document::load_mem(pdf).unwrap();
     for obj in doc.objects.values() {
         if let Ok(s) = obj.as_stream() {
-            if s.dict.get(b"Subtype").and_then(|o| o.as_name()).map(|n| n == b"Image").unwrap_or(false) {
+            if s.dict
+                .get(b"Subtype")
+                .and_then(|o| o.as_name())
+                .map(|n| n == b"Image")
+                .unwrap_or(false)
+            {
                 return image::load_from_memory(&s.content).unwrap();
             }
         }
@@ -103,7 +117,9 @@ fn psnr(a: &image::RgbImage, b: &image::RgbImage) -> f64 {
         }
     }
     mse /= (a.width() * a.height() * 3) as f64;
-    if mse == 0.0 { return 100.0; }
+    if mse == 0.0 {
+        return 100.0;
+    }
     20.0 * (255f64).log10() - 10.0 * mse.log10()
 }
 
@@ -111,9 +127,22 @@ fn psnr(a: &image::RgbImage, b: &image::RgbImage) -> f64 {
 fn corpus_outputs_reparse_and_shrink() {
     for side in [400u32, 800, 1200] {
         let input = photo_pdf(side, 95);
-        let res = compress(&input, &CompressOptions { profile: Profile::Ebook, ..Default::default() }).unwrap();
-        assert!(Document::load_mem(&res.output).is_ok(), "side={side}: output debe re-parsear");
-        assert!(res.output.len() <= input.len(), "side={side}: no debe crecer");
+        let res = compress(
+            &input,
+            &CompressOptions {
+                profile: Profile::Ebook,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            Document::load_mem(&res.output).is_ok(),
+            "side={side}: output debe re-parsear"
+        );
+        assert!(
+            res.output.len() <= input.len(),
+            "side={side}: no debe crecer"
+        );
         assert_eq!(res.report.pages, 1);
         eprintln!(
             "side={side}: {} → {} bytes ({:.1}% del original)",
@@ -135,17 +164,28 @@ fn high_dpi_image_downsamples_and_saves_more() {
 
     let with_ds = compress(
         &input,
-        &CompressOptions { profile: Profile::Ebook, downsample: true, ..Default::default() },
+        &CompressOptions {
+            profile: Profile::Ebook,
+            downsample: true,
+            ..Default::default()
+        },
     )
     .unwrap();
     let without_ds = compress(
         &input,
-        &CompressOptions { profile: Profile::Ebook, downsample: false, ..Default::default() },
+        &CompressOptions {
+            profile: Profile::Ebook,
+            downsample: false,
+            ..Default::default()
+        },
     )
     .unwrap();
 
     // el output con downsampling re-parsea y no crece
-    assert!(Document::load_mem(&with_ds.output).is_ok(), "el output debe re-parsear");
+    assert!(
+        Document::load_mem(&with_ds.output).is_ok(),
+        "el output debe re-parsear"
+    );
     assert!(with_ds.output.len() < input.len(), "el output debe encoger");
 
     // la imagen se marca Downsampled
@@ -178,7 +218,15 @@ fn quality_stays_above_psnr_threshold() {
     // imagen grande recomprimida a Ebook: la calidad perceptual no debe colapsar.
     let input = photo_pdf(1000, 95);
     let before = first_image(&input).to_rgb8();
-    let res = compress(&input, &CompressOptions { profile: Profile::Ebook, downsample: false, ..Default::default() }).unwrap();
+    let res = compress(
+        &input,
+        &CompressOptions {
+            profile: Profile::Ebook,
+            downsample: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let after = first_image(&res.output).to_rgb8();
     // con downsample desactivado, las dimensiones coinciden → PSNR comparable
     let score = psnr(&before, &after);
@@ -186,5 +234,8 @@ fn quality_stays_above_psnr_threshold() {
     // Umbral medido: recomprimir un gradiente suave de calidad 95 a calidad Ebook (65)
     // da ~PSNR alto porque el contenido es de banda baja; ver salida del test para el
     // valor real. Mantenemos 30 dB como piso de "no colapsa" sin subir la calidad Ebook.
-    assert!(score > 30.0, "PSNR demasiado bajo: {score:.2} dB (esperado > 30)");
+    assert!(
+        score > 30.0,
+        "PSNR demasiado bajo: {score:.2} dB (esperado > 30)"
+    );
 }

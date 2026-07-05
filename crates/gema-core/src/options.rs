@@ -56,10 +56,22 @@ impl CompressOptions {
     /// Resuelve DPI y calidad finales (override > perfil).
     pub fn resolved(&self) -> ProfileParams {
         let base = match self.profile {
-            Profile::Screen => ProfileParams { image_dpi: 72, jpeg_quality: 40 },
-            Profile::Ebook => ProfileParams { image_dpi: 150, jpeg_quality: 65 },
-            Profile::Printer => ProfileParams { image_dpi: 300, jpeg_quality: 80 },
-            Profile::Custom => ProfileParams { image_dpi: 150, jpeg_quality: 65 },
+            Profile::Screen => ProfileParams {
+                image_dpi: 72,
+                jpeg_quality: 40,
+            },
+            Profile::Ebook => ProfileParams {
+                image_dpi: 150,
+                jpeg_quality: 65,
+            },
+            Profile::Printer => ProfileParams {
+                image_dpi: 300,
+                jpeg_quality: 80,
+            },
+            Profile::Custom => ProfileParams {
+                image_dpi: 150,
+                jpeg_quality: 65,
+            },
         };
         ProfileParams {
             image_dpi: self.image_dpi.unwrap_or(base.image_dpi),
@@ -79,7 +91,11 @@ mod tests {
     }
     #[test]
     fn override_wins_over_profile() {
-        let opts = CompressOptions { profile: Profile::Screen, image_dpi: Some(120), ..Default::default() };
+        let opts = CompressOptions {
+            profile: Profile::Screen,
+            image_dpi: Some(120),
+            ..Default::default()
+        };
         assert_eq!(opts.resolved().image_dpi, 120);
         assert_eq!(opts.resolved().jpeg_quality, 40); // del perfil Screen
     }

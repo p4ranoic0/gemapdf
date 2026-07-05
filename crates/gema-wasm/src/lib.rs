@@ -10,7 +10,10 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
 pub fn compress(input: &[u8], profile: &str) -> Result<Vec<u8>, JsError> {
     let profile = parse_profile(profile).map_err(|e| JsError::new(&e))?;
-    let opts = CompressOptions { profile, ..Default::default() };
+    let opts = CompressOptions {
+        profile,
+        ..Default::default()
+    };
     let res = core_compress(input, &opts).map_err(|e| JsError::new(&e.to_string()))?;
     Ok(res.output)
 }
@@ -56,8 +59,8 @@ pub fn compress_with_report(
             let _ = cb.call1(&JsValue::UNDEFINED, &phase_to_js(phase));
         }
     };
-    let res =
-        compress_with_progress(input, &opts, &mut emit).map_err(|e| JsError::new(&e.to_string()))?;
+    let res = compress_with_progress(input, &opts, &mut emit)
+        .map_err(|e| JsError::new(&e.to_string()))?;
 
     let report = serde_wasm_bindgen::to_value(&to_js_report(&res.report))
         .map_err(|e| JsError::new(&e.to_string()))?;
@@ -134,7 +137,9 @@ fn parse_profile(profile: &str) -> Result<Profile, String> {
         "screen" => Ok(Profile::Screen),
         "ebook" => Ok(Profile::Ebook),
         "printer" => Ok(Profile::Printer),
-        other => Err(format!("perfil desconocido: {other} (usa screen|ebook|printer)")),
+        other => Err(format!(
+            "perfil desconocido: {other} (usa screen|ebook|printer)"
+        )),
     }
 }
 
@@ -147,7 +152,9 @@ fn to_compress_options(profile: &str, o: &JsOptions) -> Result<CompressOptions, 
         None | Some("strict") => SignaturePolicy::Strict,
         Some("ignore") => SignaturePolicy::Ignore,
         Some(other) => {
-            return Err(format!("política de firmas desconocida: {other} (usa strict|ignore)"))
+            return Err(format!(
+                "política de firmas desconocida: {other} (usa strict|ignore)"
+            ))
         }
     };
     Ok(CompressOptions {
@@ -187,8 +194,16 @@ fn phase_to_js(p: Phase) -> JsValue {
         &JsValue::from_str(phase_name(p)),
     );
     if let Some((done, total)) = phase_progress(p) {
-        let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("done"), &JsValue::from_f64(done as f64));
-        let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("total"), &JsValue::from_f64(total as f64));
+        let _ = js_sys::Reflect::set(
+            &obj,
+            &JsValue::from_str("done"),
+            &JsValue::from_f64(done as f64),
+        );
+        let _ = js_sys::Reflect::set(
+            &obj,
+            &JsValue::from_str("total"),
+            &JsValue::from_f64(total as f64),
+        );
     }
     obj.into()
 }
@@ -231,8 +246,14 @@ mod tests {
         assert_eq!(opts.jpeg_quality, Some(55));
         assert_eq!(opts.signatures, SignaturePolicy::Ignore);
 
-        let o = JsOptions { signatures: Some("strict".into()), ..Default::default() };
-        assert_eq!(to_compress_options("ebook", &o).unwrap().signatures, SignaturePolicy::Strict);
+        let o = JsOptions {
+            signatures: Some("strict".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            to_compress_options("ebook", &o).unwrap().signatures,
+            SignaturePolicy::Strict
+        );
     }
 
     #[test]
@@ -240,14 +261,22 @@ mod tests {
         // perfil desconocido → error (mismo comportamiento que `compress` v1)
         assert!(to_compress_options("otro", &JsOptions::default()).is_err());
         // política de firmas desconocida → error explícito
-        let bad = JsOptions { signatures: Some("aggressive".into()), ..Default::default() };
+        let bad = JsOptions {
+            signatures: Some("aggressive".into()),
+            ..Default::default()
+        };
         let err = to_compress_options("ebook", &bad).unwrap_err();
         assert!(err.contains("strict|ignore"), "err={err}");
     }
 
     #[test]
     fn report_mapper_aggregates_actions_and_warnings() {
-        let stat = |action| ImageStat { object_id: 1, original_bytes: 10, output_bytes: 5, action };
+        let stat = |action| ImageStat {
+            object_id: 1,
+            original_bytes: 10,
+            output_bytes: 5,
+            action,
+        };
         let r = Report {
             pages: 3,
             original_size: 1000,
@@ -288,10 +317,16 @@ mod tests {
     #[test]
     fn phase_maps_to_js_names_and_progress() {
         assert_eq!(phase_name(Phase::Analyzing), "analyzing");
-        assert_eq!(phase_name(Phase::OptimizingImages { done: 1, total: 2 }), "optimizing");
+        assert_eq!(
+            phase_name(Phase::OptimizingImages { done: 1, total: 2 }),
+            "optimizing"
+        );
         assert_eq!(phase_name(Phase::Rewriting), "rewriting");
         assert_eq!(phase_name(Phase::Done), "done");
-        assert_eq!(phase_progress(Phase::OptimizingImages { done: 1, total: 2 }), Some((1, 2)));
+        assert_eq!(
+            phase_progress(Phase::OptimizingImages { done: 1, total: 2 }),
+            Some((1, 2))
+        );
         assert_eq!(phase_progress(Phase::Analyzing), None);
         assert_eq!(phase_progress(Phase::Done), None);
     }

@@ -28,7 +28,14 @@ pub(crate) struct Matrix {
 }
 
 impl Matrix {
-    pub(crate) const IDENTITY: Matrix = Matrix { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: 0.0, f: 0.0 };
+    pub(crate) const IDENTITY: Matrix = Matrix {
+        a: 1.0,
+        b: 0.0,
+        c: 0.0,
+        d: 1.0,
+        e: 0.0,
+        f: 0.0,
+    };
 
     /// Multiplicación de matrices PDF: `self × other` (self a la izquierda).
     ///
@@ -154,7 +161,14 @@ fn accumulate_page(doc: &Document, page_id: ObjectId, out: &mut HashMap<ObjectId
                     let vals: Option<Vec<f32>> =
                         op.operands[..6].iter().map(|o| o.as_float().ok()).collect();
                     if let Some(v) = vals {
-                        let cm = Matrix { a: v[0], b: v[1], c: v[2], d: v[3], e: v[4], f: v[5] };
+                        let cm = Matrix {
+                            a: v[0],
+                            b: v[1],
+                            c: v[2],
+                            d: v[3],
+                            e: v[4],
+                            f: v[5],
+                        };
                         // cm pre-multiplica: nuevo = cm × ctm
                         ctm = cm.mul(&ctm);
                     }
@@ -196,7 +210,14 @@ mod tests {
 
     #[test]
     fn identity_mul_is_noop() {
-        let m = Matrix { a: 2.0, b: 3.0, c: 4.0, d: 5.0, e: 6.0, f: 7.0 };
+        let m = Matrix {
+            a: 2.0,
+            b: 3.0,
+            c: 4.0,
+            d: 5.0,
+            e: 6.0,
+            f: 7.0,
+        };
         assert_eq!(Matrix::IDENTITY.mul(&m), m);
         assert_eq!(m.mul(&Matrix::IDENTITY), m);
     }
@@ -204,7 +225,14 @@ mod tests {
     #[test]
     fn pure_scale_gives_expected_pt() {
         // cm = 2 0 0 2 0 0 sobre identidad → escala x2
-        let cm = Matrix { a: 2.0, b: 0.0, c: 0.0, d: 2.0, e: 0.0, f: 0.0 };
+        let cm = Matrix {
+            a: 2.0,
+            b: 0.0,
+            c: 0.0,
+            d: 2.0,
+            e: 0.0,
+            f: 0.0,
+        };
         let ctm = cm.mul(&Matrix::IDENTITY);
         assert_eq!(ctm, cm);
         // una imagen de 200px pintada con escala 2 → 2pt de lado.
@@ -218,7 +246,14 @@ mod tests {
     fn scale_200pt_box_144dpi() {
         // Enunciado: escala 2 0 0 2 ... aplicada de forma que un 200px caiga en
         // 100pt ⇒ 144 DPI. 100pt de caja: escala = 100.
-        let cm = Matrix { a: 100.0, b: 0.0, c: 0.0, d: 100.0, e: 0.0, f: 0.0 };
+        let cm = Matrix {
+            a: 100.0,
+            b: 0.0,
+            c: 0.0,
+            d: 100.0,
+            e: 0.0,
+            f: 0.0,
+        };
         let ctm = cm.mul(&Matrix::IDENTITY);
         let dpi = effective_dpi(&ctm, 200, 200).unwrap();
         assert!((dpi - 144.0).abs() < 0.001, "dpi={dpi}");
@@ -228,9 +263,23 @@ mod tests {
     fn cm_premultiplies_scale_then_translate() {
         // Primero escala x2 (cm1), luego traslada (cm2). El CTM resultante debe
         // escalar y trasladar. Con pre-multiplicación: ctm = cm2 × cm1.
-        let cm1 = Matrix { a: 2.0, b: 0.0, c: 0.0, d: 2.0, e: 0.0, f: 0.0 };
+        let cm1 = Matrix {
+            a: 2.0,
+            b: 0.0,
+            c: 0.0,
+            d: 2.0,
+            e: 0.0,
+            f: 0.0,
+        };
         let ctm1 = cm1.mul(&Matrix::IDENTITY);
-        let cm2 = Matrix { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: 10.0, f: 20.0 };
+        let cm2 = Matrix {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 10.0,
+            f: 20.0,
+        };
         let ctm2 = cm2.mul(&ctm1);
         // la escala (a,d) sigue siendo 2; la traslación se compone.
         assert_eq!((ctm2.a, ctm2.d), (2.0, 2.0));
@@ -242,7 +291,14 @@ mod tests {
         // rotación 90°: a=0 b=s c=-s d=0, con s la escala. La escala efectiva por
         // eje es hypot(a,b)=s y hypot(c,d)=s.
         let s = 72.0_f32; // 72pt = 1in
-        let ctm = Matrix { a: 0.0, b: s, c: -s, d: 0.0, e: 0.0, f: 0.0 };
+        let ctm = Matrix {
+            a: 0.0,
+            b: s,
+            c: -s,
+            d: 0.0,
+            e: 0.0,
+            f: 0.0,
+        };
         // 72px en 1in = 72 DPI
         let dpi = effective_dpi(&ctm, 72, 72).unwrap();
         assert!((dpi - 72.0).abs() < 0.001, "dpi={dpi}");
@@ -250,7 +306,14 @@ mod tests {
 
     #[test]
     fn degenerate_ctm_returns_none() {
-        let zero = Matrix { a: 0.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0, f: 0.0 };
+        let zero = Matrix {
+            a: 0.0,
+            b: 0.0,
+            c: 0.0,
+            d: 0.0,
+            e: 0.0,
+            f: 0.0,
+        };
         assert_eq!(effective_dpi(&zero, 100, 100), None);
     }
 
@@ -258,7 +321,14 @@ mod tests {
     fn effective_dpi_max_over_axes() {
         // caja no cuadrada: 100pt de ancho, 200pt de alto; imagen 300x300.
         // dpi_w = 300/(100/72)=216 ; dpi_h = 300/(200/72)=108 → max 216.
-        let ctm = Matrix { a: 100.0, b: 0.0, c: 0.0, d: 200.0, e: 0.0, f: 0.0 };
+        let ctm = Matrix {
+            a: 100.0,
+            b: 0.0,
+            c: 0.0,
+            d: 200.0,
+            e: 0.0,
+            f: 0.0,
+        };
         let dpi = effective_dpi(&ctm, 300, 300).unwrap();
         assert!((dpi - 216.0).abs() < 0.001, "dpi={dpi}");
     }
@@ -325,8 +395,7 @@ mod tests {
         // el `cm` dentro de q/Q no debe filtrarse al Do posterior fuera del bloque.
         // Bloque 1: escala 50 (288 DPI para 200px) dentro de q/Q.
         // Tras Q, el CTM vuelve a identidad; el Do exterior usa cm 100 (144 DPI).
-        let content =
-            b"q q 50 0 0 50 0 0 cm Q 100 0 0 100 0 0 cm /Im0 Do Q";
+        let content = b"q q 50 0 0 50 0 0 cm Q 100 0 0 100 0 0 cm /Im0 Do Q";
         let (doc, img_id) = doc_with_image(200, content, 400);
         let map = effective_dpi_map(&doc);
         let dpi = *map.get(&img_id).unwrap();

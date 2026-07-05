@@ -64,18 +64,30 @@ mod tests {
     use super::*;
     #[test]
     fn ratio_is_output_over_original() {
-        let r = Report { original_size: 100, output_size: Some(40), ..Default::default() }.with_ratio();
+        let r = Report {
+            original_size: 100,
+            output_size: Some(40),
+            ..Default::default()
+        }
+        .with_ratio();
         assert_eq!(r.ratio, Some(0.4));
     }
     #[test]
     fn ratio_none_when_no_output() {
-        let r = Report { original_size: 100, ..Default::default() }.with_ratio();
+        let r = Report {
+            original_size: 100,
+            ..Default::default()
+        }
+        .with_ratio();
         assert_eq!(r.ratio, None);
     }
     #[test]
     fn warnings_render_human_readable() {
         assert!(Warning::SignedDocument.to_string().contains("firmado"));
         assert!(Warning::ImageSkipped(7).to_string().contains('7'));
-        assert_eq!(Warning::Other("texto libre".into()).to_string(), "texto libre");
+        assert_eq!(
+            Warning::Other("texto libre".into()).to_string(),
+            "texto libre"
+        );
     }
 }

@@ -36,16 +36,30 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<(), String> {
     match cli.cmd {
-        Cmd::Compress { input, output, profile } => {
+        Cmd::Compress {
+            input,
+            output,
+            profile,
+        } => {
             let bytes = fs::read(&input).map_err(|e| e.to_string())?;
             let profile = match profile.as_str() {
                 "screen" => Profile::Screen,
                 "ebook" => Profile::Ebook,
                 "printer" => Profile::Printer,
-                other => return Err(format!("perfil desconocido: {other} (usa screen|ebook|printer)")),
+                other => {
+                    return Err(format!(
+                        "perfil desconocido: {other} (usa screen|ebook|printer)"
+                    ))
+                }
             };
-            let res = compress(&bytes, &CompressOptions { profile, ..Default::default() })
-                .map_err(|e| e.to_string())?;
+            let res = compress(
+                &bytes,
+                &CompressOptions {
+                    profile,
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| e.to_string())?;
             fs::write(&output, &res.output).map_err(|e| e.to_string())?;
             let r = res.report;
             // ratio = output/input → "% del original" (más bajo = más comprimido).
@@ -61,7 +75,10 @@ fn run(cli: Cli) -> Result<(), String> {
         Cmd::Analyze { input } => {
             let bytes = fs::read(&input).map_err(|e| e.to_string())?;
             let r = analyze(&bytes).map_err(|e| e.to_string())?;
-            println!("páginas: {}\nfirmado: {}\ntamaño: {} bytes", r.pages, r.is_signed, r.original_size);
+            println!(
+                "páginas: {}\nfirmado: {}\ntamaño: {} bytes",
+                r.pages, r.is_signed, r.original_size
+            );
             Ok(())
         }
     }

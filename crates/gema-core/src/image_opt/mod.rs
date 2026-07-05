@@ -1,8 +1,8 @@
-pub mod jpeg;
 pub(crate) mod classify;
 pub(crate) mod colorspace;
 pub(crate) mod decode;
 pub(crate) mod flate;
+pub mod jpeg;
 
 /// Imagen decodificada lista para recomprimir.
 pub struct RawImage {
@@ -56,11 +56,15 @@ pub fn downsample(img: &image::DynamicImage, w: u32, h: u32) -> image::DynamicIm
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::jpeg::JpegRecompressor;
+    use super::*;
 
     fn solid_image() -> RawImage {
-        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(64, 64, image::Rgb([120, 30, 200])));
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            64,
+            64,
+            image::Rgb([120, 30, 200]),
+        ));
         RawImage { image: img }
     }
 

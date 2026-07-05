@@ -67,7 +67,8 @@ fn process_image(
                     action: ImageAction::Skipped,
                 },
                 warnings: vec![Warning::Other(
-                    "imagen con máscara de transparencia (/SMask) preservada sin recomprimir".into(),
+                    "imagen con máscara de transparencia (/SMask) preservada sin recomprimir"
+                        .into(),
                 )],
             });
         }
@@ -86,7 +87,13 @@ fn process_image(
         let h = h_i64 as u32;
         // Clonamos el stream completo para la ruta Flate: el decodificador
         // necesita el dict (Filter/ColorSpace/DecodeParms) además del contenido.
-        (stream.content.len() as u64, w, h, stream.content.clone(), stream.clone())
+        (
+            stream.content.len() as u64,
+            w,
+            h,
+            stream.content.clone(),
+            stream.clone(),
+        )
     };
 
     // Estrategia de codec de salida para esta imagen.
@@ -107,7 +114,12 @@ fn process_image(
     let (decoded, codec) = match image::load_from_memory(&raw_bytes) {
         Ok(d) => (d, Codec::Jpeg),
         Err(_) => {
-            match crate::image_opt::decode::decode_flate_image(doc, &stream_for_flate, width, height) {
+            match crate::image_opt::decode::decode_flate_image(
+                doc,
+                &stream_for_flate,
+                width,
+                height,
+            ) {
                 Some(d) => {
                     // Clasificación content-aware: sólo las fotos se vuelven JPEG;
                     // línea/texto se mantiene sin pérdida para no crear halos.
@@ -150,7 +162,8 @@ fn process_image(
             if dpi_eff > target_dpi as f32 * 1.05 {
                 let disp_w = width as f32 / (dpi_eff / 72.0);
                 let disp_h = height as f32 / (dpi_eff / 72.0);
-                if let Some((nw, nh)) = target_dimensions(width, height, disp_w, disp_h, target_dpi) {
+                if let Some((nw, nh)) = target_dimensions(width, height, disp_w, disp_h, target_dpi)
+                {
                     img = downsample(&img, nw, nh);
                     // Actualizamos las dimensiones que se escribirán en el dict:
                     // tras remuestrear, el /Width /Height del PDF debe coincidir
@@ -167,7 +180,8 @@ fn process_image(
     // Codificar según el codec elegido. Ambas ramas producen los bytes de salida
     // más los metadatos de dict (filtro + colorspace). El path JPEG siempre emite
     // DeviceRGB; el path Flate preserva gris como gris (no lo infla a RGB).
-    let (out_bytes, out_filter, out_colorspace): (Vec<u8>, &'static str, &'static str) = match codec {
+    let (out_bytes, out_filter, out_colorspace): (Vec<u8>, &'static str, &'static str) = match codec
+    {
         Codec::Jpeg => match JpegRecompressor.recompress(&RawImage { image: img }, quality) {
             Some(e) => (e.bytes, e.filter, "DeviceRGB"),
             None => {
@@ -208,11 +222,16 @@ fn process_image(
     let replaced = match doc.get_object_mut(id).and_then(|obj| obj.as_stream_mut()) {
         Ok(stream) => {
             stream.set_content(out_bytes);
-            stream.dict.set("Filter", Object::Name(out_filter.as_bytes().to_vec()));
+            stream
+                .dict
+                .set("Filter", Object::Name(out_filter.as_bytes().to_vec()));
             stream.dict.set("Width", Object::Integer(width as i64));
             stream.dict.set("Height", Object::Integer(height as i64));
             stream.dict.set("BitsPerComponent", Object::Integer(8));
-            stream.dict.set("ColorSpace", Object::Name(out_colorspace.as_bytes().to_vec()));
+            stream.dict.set(
+                "ColorSpace",
+                Object::Name(out_colorspace.as_bytes().to_vec()),
+            );
             stream.dict.remove(b"DecodeParms");
             // NB: no tocamos /SMask aquí; las imágenes con máscara ya se
             // descartaron arriba (F1), así que este stream no la tiene.
@@ -352,13 +371,19 @@ pub fn compress_with_progress(
     // ya devuelve el original más arriba y no pasa por aquí.
     let result = if output.len() > input.len() {
         report.output_size = Some(input.len() as u64);
-        report
-            .warnings
-            .push(Warning::Other("sin mejora: se conservó el documento original".into()));
-        CompressResult { output: input.to_vec(), report: report.with_ratio() }
+        report.warnings.push(Warning::Other(
+            "sin mejora: se conservó el documento original".into(),
+        ));
+        CompressResult {
+            output: input.to_vec(),
+            report: report.with_ratio(),
+        }
     } else {
         report.output_size = Some(output.len() as u64);
-        CompressResult { output, report: report.with_ratio() }
+        CompressResult {
+            output,
+            report: report.with_ratio(),
+        }
     };
 
     on_phase(Phase::Done);
@@ -408,9 +433,12 @@ mod tests {
             "Resources" => resources_id,
             "MediaBox" => vec![0.into(), 0.into(), 800.into(), 800.into()],
         });
-        doc.objects.insert(pages_id, Object::Dictionary(dictionary! {
-            "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
-        }));
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
+            }),
+        );
         let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
         doc.trailer.set("Root", catalog_id);
         let mut buf = Vec::new();
@@ -426,11 +454,22 @@ mod tests {
     #[test]
     fn compress_shrinks_image_pdf_and_stays_valid() {
         let input = pdf_with_jpeg();
-        let opts = CompressOptions { profile: crate::options::Profile::Screen, ..Default::default() };
+        let opts = CompressOptions {
+            profile: crate::options::Profile::Screen,
+            ..Default::default()
+        };
         let res = compress(&input, &opts).unwrap();
 
-        assert!(res.output.len() < input.len(), "output={} input={}", res.output.len(), input.len());
-        assert!(Document::load_mem(&res.output).is_ok(), "el output debe re-parsear");
+        assert!(
+            res.output.len() < input.len(),
+            "output={} input={}",
+            res.output.len(),
+            input.len()
+        );
+        assert!(
+            Document::load_mem(&res.output).is_ok(),
+            "el output debe re-parsear"
+        );
         assert_eq!(res.report.pages, 1);
         assert!(res.report.ratio.unwrap() < 1.0);
         eprintln!(
@@ -484,16 +523,23 @@ mod tests {
             img_content.clone(),
         );
         let img_id = doc.add_object(img_stream);
-        let content_id = doc.add_object(Stream::new(dictionary! {}, b"q 400 0 0 400 0 0 cm /Im0 Do Q".to_vec()));
-        let resources_id = doc.add_object(dictionary! { "XObject" => dictionary! { "Im0" => img_id } });
+        let content_id = doc.add_object(Stream::new(
+            dictionary! {},
+            b"q 400 0 0 400 0 0 cm /Im0 Do Q".to_vec(),
+        ));
+        let resources_id =
+            doc.add_object(dictionary! { "XObject" => dictionary! { "Im0" => img_id } });
         let page_id = doc.add_object(dictionary! {
             "Type" => "Page", "Parent" => pages_id, "Contents" => content_id,
             "Resources" => resources_id,
             "MediaBox" => vec![0.into(), 0.into(), 400.into(), 400.into()],
         });
-        doc.objects.insert(pages_id, Object::Dictionary(dictionary! {
-            "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
-        }));
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
+            }),
+        );
         let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
         doc.trailer.set("Root", catalog_id);
         let mut buf = Vec::new();
@@ -504,25 +550,43 @@ mod tests {
     #[test]
     fn smask_image_is_preserved_untouched() {
         let (input, orig_content, img_id) = pdf_with_smask_image();
-        let opts = CompressOptions { profile: crate::options::Profile::Screen, ..Default::default() };
+        let opts = CompressOptions {
+            profile: crate::options::Profile::Screen,
+            ..Default::default()
+        };
         let res = compress(&input, &opts).unwrap();
 
         // el output debe re-parsear
         let out_doc = Document::load_mem(&res.output).expect("el output debe re-parsear");
 
         // el stream de la imagen debe quedar byte-idéntico (no recomprimido)
-        let out_stream = out_doc.get_object((img_id, 0)).unwrap().as_stream().unwrap();
-        assert_eq!(out_stream.content, orig_content, "la imagen con /SMask no debe recomprimirse");
+        let out_stream = out_doc
+            .get_object((img_id, 0))
+            .unwrap()
+            .as_stream()
+            .unwrap();
+        assert_eq!(
+            out_stream.content, orig_content,
+            "la imagen con /SMask no debe recomprimirse"
+        );
 
         // /SMask debe conservarse
         assert!(out_stream.dict.has(b"SMask"), "/SMask debe preservarse");
 
         // el stat debe marcarla Skipped (original == output) y haber un warning /SMask
-        let stat = res.report.images.iter().find(|s| s.object_id == img_id).expect("stat de la imagen");
+        let stat = res
+            .report
+            .images
+            .iter()
+            .find(|s| s.object_id == img_id)
+            .expect("stat de la imagen");
         assert_eq!(stat.action, ImageAction::Skipped);
         assert_eq!(stat.original_bytes, stat.output_bytes);
         assert!(
-            res.report.warnings.iter().any(|w| matches!(w, Warning::Other(m) if m.contains("/SMask"))),
+            res.report
+                .warnings
+                .iter()
+                .any(|w| matches!(w, Warning::Other(m) if m.contains("/SMask"))),
             "debe haber un warning de /SMask preservado, warnings={:?}",
             res.report.warnings
         );
@@ -558,16 +622,23 @@ mod tests {
             img_content.clone(),
         );
         let img_id = doc.add_object(img_stream);
-        let content_id = doc.add_object(Stream::new(dictionary! {}, b"q 400 0 0 400 0 0 cm /Im0 Do Q".to_vec()));
-        let resources_id = doc.add_object(dictionary! { "XObject" => dictionary! { "Im0" => img_id } });
+        let content_id = doc.add_object(Stream::new(
+            dictionary! {},
+            b"q 400 0 0 400 0 0 cm /Im0 Do Q".to_vec(),
+        ));
+        let resources_id =
+            doc.add_object(dictionary! { "XObject" => dictionary! { "Im0" => img_id } });
         let page_id = doc.add_object(dictionary! {
             "Type" => "Page", "Parent" => pages_id, "Contents" => content_id,
             "Resources" => resources_id,
             "MediaBox" => vec![0.into(), 0.into(), 400.into(), 400.into()],
         });
-        doc.objects.insert(pages_id, Object::Dictionary(dictionary! {
-            "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
-        }));
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
+            }),
+        );
         let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
         doc.trailer.set("Root", catalog_id);
         let mut buf = Vec::new();
@@ -578,14 +649,21 @@ mod tests {
     #[test]
     fn malformed_dimensions_are_skipped() {
         let (input, orig_content, img_id) = pdf_with_malformed_dimensions();
-        let opts = CompressOptions { profile: crate::options::Profile::Screen, ..Default::default() };
+        let opts = CompressOptions {
+            profile: crate::options::Profile::Screen,
+            ..Default::default()
+        };
         let res = compress(&input, &opts).unwrap();
 
         // el output debe re-parsear
         let out_doc = Document::load_mem(&res.output).expect("el output debe re-parsear");
 
         // el stream de la imagen debe quedar byte-idéntico (no recomprimido)
-        let out_stream = out_doc.get_object((img_id, 0)).unwrap().as_stream().unwrap();
+        let out_stream = out_doc
+            .get_object((img_id, 0))
+            .unwrap()
+            .as_stream()
+            .unwrap();
         assert_eq!(
             out_stream.content, orig_content,
             "la imagen con dimensiones malformadas no debe recomprimirse"
@@ -603,7 +681,10 @@ mod tests {
 
         // debe haber un warning ImageSkipped para esta imagen
         assert!(
-            res.report.warnings.iter().any(|w| matches!(w, Warning::ImageSkipped(o) if *o == img_id)),
+            res.report
+                .warnings
+                .iter()
+                .any(|w| matches!(w, Warning::ImageSkipped(o) if *o == img_id)),
             "debe haber un Warning::ImageSkipped, warnings={:?}",
             res.report.warnings
         );
@@ -615,7 +696,10 @@ mod tests {
 
         const N: usize = 3;
         let input = pdf_with_jpegs(N);
-        let opts = CompressOptions { profile: crate::options::Profile::Screen, ..Default::default() };
+        let opts = CompressOptions {
+            profile: crate::options::Profile::Screen,
+            ..Default::default()
+        };
 
         let mut phases: Vec<Phase> = Vec::new();
         let res = compress_with_progress(&input, &opts, &mut |p| phases.push(p)).unwrap();
@@ -642,8 +726,10 @@ mod tests {
         }
 
         // Rewriting va después de todos los eventos de imágenes
-        let rewriting_idx =
-            phases.iter().position(|p| *p == Phase::Rewriting).expect("debe emitirse Rewriting");
+        let rewriting_idx = phases
+            .iter()
+            .position(|p| *p == Phase::Rewriting)
+            .expect("debe emitirse Rewriting");
         let last_img_idx = phases
             .iter()
             .rposition(|p| matches!(p, Phase::OptimizingImages { .. }))
@@ -662,9 +748,12 @@ mod tests {
             "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
             "ByteRange" => vec![0.into(), 100.into(), 200.into(), 50.into()],
         });
-        doc.objects.insert(pages_id, Object::Dictionary(dictionary! {
-            "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
-        }));
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
+            }),
+        );
         let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
         doc.trailer.set("Root", catalog_id);
         let mut buf = Vec::new();
@@ -683,7 +772,11 @@ mod tests {
         let mut phases: Vec<Phase> = Vec::new();
         let res = compress_with_progress(&input, &opts, &mut |p| phases.push(p)).unwrap();
 
-        assert_eq!(phases, vec![Phase::Analyzing, Phase::Done], "retorno temprano firmado-Strict");
+        assert_eq!(
+            phases,
+            vec![Phase::Analyzing, Phase::Done],
+            "retorno temprano firmado-Strict"
+        );
         // el retorno temprano devuelve el original intacto
         assert_eq!(res.output, input);
         assert!(res.report.is_signed);

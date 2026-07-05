@@ -31,7 +31,8 @@ fn main() {
 
     let mut tot_orig: u64 = 0;
     let mut tot_out: u64 = 0;
-    let (mut ok, mut signed_n, mut encrypted_n, mut parse_err, mut grew) = (0u32, 0u32, 0u32, 0u32, 0u32);
+    let (mut ok, mut signed_n, mut encrypted_n, mut parse_err, mut grew) =
+        (0u32, 0u32, 0u32, 0u32, 0u32);
     let (mut a_recomp, mut a_down, mut a_kept, mut a_skip) = (0u32, 0u32, 0u32, 0u32);
 
     for path in &args {
@@ -49,7 +50,13 @@ fn main() {
             }
         };
 
-        match compress(&bytes, &CompressOptions { profile, ..Default::default() }) {
+        match compress(
+            &bytes,
+            &CompressOptions {
+                profile,
+                ..Default::default()
+            },
+        ) {
             Ok(res) => {
                 let r = &res.report;
                 let (mut rc, mut dn, mut kp, mut sk) = (0u32, 0u32, 0u32, 0u32);
@@ -63,7 +70,11 @@ fn main() {
                 }
                 let orig = r.original_size;
                 let out = r.output_size.unwrap_or(orig);
-                let ratio = if orig > 0 { (out as f64 / orig as f64) * 100.0 } else { 100.0 };
+                let ratio = if orig > 0 {
+                    (out as f64 / orig as f64) * 100.0
+                } else {
+                    100.0
+                };
                 if out > orig {
                     grew += 1;
                 }
@@ -79,8 +90,17 @@ fn main() {
                 a_skip += sk;
                 println!(
                     "{safe},ok,{},{},{},{},{:.1},{},{},{},{},{},{}",
-                    r.pages, r.is_signed, orig, out, ratio,
-                    r.images.len(), rc, dn, kp, sk, r.warnings.len()
+                    r.pages,
+                    r.is_signed,
+                    orig,
+                    out,
+                    ratio,
+                    r.images.len(),
+                    rc,
+                    dn,
+                    kp,
+                    sk,
+                    r.warnings.len()
                 );
             }
             Err(e) => {
@@ -97,7 +117,11 @@ fn main() {
         }
     }
 
-    let agg_ratio = if tot_orig > 0 { (tot_out as f64 / tot_orig as f64) * 100.0 } else { 100.0 };
+    let agg_ratio = if tot_orig > 0 {
+        (tot_out as f64 / tot_orig as f64) * 100.0
+    } else {
+        100.0
+    };
     eprintln!("\n===== RESUMEN =====");
     eprintln!("archivos:        {}", args.len());
     eprintln!("comprimidos ok:  {ok}");

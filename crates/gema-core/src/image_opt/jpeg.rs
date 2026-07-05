@@ -23,6 +23,9 @@ impl Recompressor for JpegRecompressor {
                 image::ExtendedColorType::Rgb8,
             )
             .ok()?;
-        Some(Encoded { bytes, filter: "DCTDecode" })
+        Some(Encoded {
+            bytes,
+            filter: "DCTDecode",
+        })
     }
 }

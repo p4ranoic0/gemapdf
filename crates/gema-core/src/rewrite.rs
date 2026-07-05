@@ -22,7 +22,8 @@ pub fn serialize(doc: &mut Document) -> Result<Vec<u8>, GemaError> {
     let mut buf = Vec::new();
     // save_modern = object streams + xref streams. lopdf sube doc.version a
     // "1.5" por sí mismo si hace falta (los object streams lo exigen).
-    doc.save_modern(&mut buf).map_err(|e| GemaError::Io(e.to_string()))?;
+    doc.save_modern(&mut buf)
+        .map_err(|e| GemaError::Io(e.to_string()))?;
     Ok(buf)
 }
 
@@ -41,9 +42,12 @@ mod tests {
             "Type" => "Page", "Parent" => pages_id, "Contents" => content_id,
             "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
         });
-        doc.objects.insert(pages_id, Object::Dictionary(dictionary! {
-            "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
-        }));
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
+            }),
+        );
         let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
         doc.trailer.set("Root", catalog_id);
         doc
@@ -59,7 +63,12 @@ mod tests {
         cleanup_and_compress(&mut doc2, true);
         let after = serialize(&mut doc2).unwrap();
 
-        assert!(after.len() < before.len(), "after={} before={}", after.len(), before.len());
+        assert!(
+            after.len() < before.len(),
+            "after={} before={}",
+            after.len(),
+            before.len()
+        );
         // sigue siendo un PDF parseable
         assert!(Document::load_mem(&after).is_ok());
     }

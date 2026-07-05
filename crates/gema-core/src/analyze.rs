@@ -34,10 +34,18 @@ fn detect_signed(doc: &Document) -> bool {
 /// entero distinto de cero. `/AcroForm` puede ser una referencia indirecta, así
 /// que la resolvemos vía `dereference`.
 fn acroform_has_sigflags(doc: &Document) -> bool {
-    let Ok(catalog) = doc.catalog() else { return false };
-    let Some(acroform_obj) = catalog.get(b"AcroForm").ok() else { return false };
-    let Ok((_, resolved)) = doc.dereference(acroform_obj) else { return false };
-    let Ok(acroform) = resolved.as_dict() else { return false };
+    let Ok(catalog) = doc.catalog() else {
+        return false;
+    };
+    let Some(acroform_obj) = catalog.get(b"AcroForm").ok() else {
+        return false;
+    };
+    let Ok((_, resolved)) = doc.dereference(acroform_obj) else {
+        return false;
+    };
+    let Ok(acroform) = resolved.as_dict() else {
+        return false;
+    };
     acroform
         .get(b"SigFlags")
         .and_then(|o| o.as_i64())
@@ -87,11 +95,14 @@ mod tests {
             "Contents" => content_id,
             "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
         });
-        doc.objects.insert(pages_id, Object::Dictionary(dictionary! {
-            "Type" => "Pages",
-            "Kids" => vec![page_id.into()],
-            "Count" => 1,
-        }));
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => 1,
+            }),
+        );
         let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
         doc.trailer.set("Root", catalog_id);
         let mut buf = Vec::new();
@@ -130,11 +141,14 @@ mod tests {
             page.set(k.clone(), v.clone());
         }
         let page_id = doc.add_object(page);
-        doc.objects.insert(pages_id, Object::Dictionary(dictionary! {
-            "Type" => "Pages",
-            "Kids" => vec![page_id.into()],
-            "Count" => 1,
-        }));
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => 1,
+            }),
+        );
         let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
         doc.trailer.set("Root", catalog_id);
         let mut buf = Vec::new();
@@ -148,7 +162,10 @@ mod tests {
         // page dict con una clave /Sig suelta, sin /ByteRange y sin /Type=Sig
         let bytes = pdf_with_page_extras(dictionary! { "Sig" => 1 });
         let report = analyze(&bytes).unwrap();
-        assert!(!report.is_signed, "una clave /Sig suelta no debe marcar firma");
+        assert!(
+            !report.is_signed,
+            "una clave /Sig suelta no debe marcar firma"
+        );
     }
 
     #[test]
@@ -158,7 +175,10 @@ mod tests {
             dictionary! { "ByteRange" => vec![0.into(), 100.into(), 200.into(), 50.into()] },
         );
         let report = analyze(&bytes).unwrap();
-        assert!(report.is_signed, "/ByteRange debe marcar el documento como firmado");
+        assert!(
+            report.is_signed,
+            "/ByteRange debe marcar el documento como firmado"
+        );
     }
 
     /// PDF mínimo con un objeto suelto extra y/o claves añadidas al catálogo.
@@ -176,11 +196,14 @@ mod tests {
             "Contents" => content_id,
             "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
         });
-        doc.objects.insert(pages_id, Object::Dictionary(dictionary! {
-            "Type" => "Pages",
-            "Kids" => vec![page_id.into()],
-            "Count" => 1,
-        }));
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => 1,
+            }),
+        );
         let mut catalog = dictionary! { "Type" => "Catalog", "Pages" => pages_id };
         if let Some(d) = loose {
             let loose_id = doc.add_object(d);
@@ -218,6 +241,9 @@ mod tests {
             dictionary! { "AcroForm" => dictionary! { "SigFlags" => 3 } },
         );
         let report = analyze(&bytes).unwrap();
-        assert!(report.is_signed, "AcroForm /SigFlags != 0 debe marcar firma");
+        assert!(
+            report.is_signed,
+            "AcroForm /SigFlags != 0 debe marcar firma"
+        );
     }
 }

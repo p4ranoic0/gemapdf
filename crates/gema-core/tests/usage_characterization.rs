@@ -20,15 +20,21 @@ fn pdf_with_image(img_stream: Stream, w: i64, h: i64) -> Vec<u8> {
     let mut doc = Document::with_version("1.5");
     let pages_id = doc.new_object_id();
     let img_id = doc.add_object(img_stream);
-    let content_id = doc.add_object(Stream::new(dictionary! {}, b"q 1 0 0 1 0 0 cm /Im0 Do Q".to_vec()));
+    let content_id = doc.add_object(Stream::new(
+        dictionary! {},
+        b"q 1 0 0 1 0 0 cm /Im0 Do Q".to_vec(),
+    ));
     let resources_id = doc.add_object(dictionary! { "XObject" => dictionary! { "Im0" => img_id } });
     let page_id = doc.add_object(dictionary! {
         "Type" => "Page", "Parent" => pages_id, "Contents" => content_id, "Resources" => resources_id,
         "MediaBox" => vec![0.into(), 0.into(), w.into(), h.into()],
     });
-    doc.objects.insert(pages_id, Object::Dictionary(dictionary! {
-        "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
-    }));
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
+        }),
+    );
     let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
     doc.trailer.set("Root", catalog_id);
     let mut buf = Vec::new();
@@ -181,7 +187,10 @@ fn supported_flate_image_is_decoded_and_handled_losslessly() {
         .expect("debe existir la imagen en el output");
     let out_stream = out_doc.get_object(img_id).unwrap().as_stream().unwrap();
     let filter = out_stream.dict.get(b"Filter").unwrap().as_name().unwrap();
-    assert_eq!(filter, b"FlateDecode", "línea/texto debe quedar en Flate, no en JPEG");
+    assert_eq!(
+        filter, b"FlateDecode",
+        "línea/texto debe quedar en Flate, no en JPEG"
+    );
 }
 
 /// P1b: una imagen Flate con `/Predictor 15` (PNG) en DecodeParms ahora se
@@ -208,8 +217,18 @@ fn predicted_flate_image_is_decoded() {
     // Paeth predictor.
     let paeth = |a: u8, b: u8, c: u8| -> u8 {
         let p = a as i32 + b as i32 - c as i32;
-        let (pa, pb, pc) = ((p - a as i32).abs(), (p - b as i32).abs(), (p - c as i32).abs());
-        if pa <= pb && pa <= pc { a } else if pb <= pc { b } else { c }
+        let (pa, pb, pc) = (
+            (p - a as i32).abs(),
+            (p - b as i32).abs(),
+            (p - c as i32).abs(),
+        );
+        if pa <= pb && pa <= pc {
+            a
+        } else if pb <= pc {
+            b
+        } else {
+            c
+        }
     };
     let bpp = 3usize;
     let rl = w * 3;
@@ -217,7 +236,11 @@ fn predicted_flate_image_is_decoded() {
     let zero = vec![0u8; rl];
     for y in 0..h {
         let cur = &pixels[y * rl..(y + 1) * rl];
-        let prev: &[u8] = if y == 0 { &zero } else { &pixels[(y - 1) * rl..y * rl] };
+        let prev: &[u8] = if y == 0 {
+            &zero
+        } else {
+            &pixels[(y - 1) * rl..y * rl]
+        };
         filtered.push(4u8); // Paeth
         for i in 0..rl {
             let a = if i >= bpp { cur[i - bpp] } else { 0 };
@@ -292,8 +315,15 @@ fn unsupported_filter_chain_is_skipped_not_corrupted() {
     // Exactamente una imagen, marcada como Skipped (filtro no soportado).
     assert_eq!(res.report.images.len(), 1);
     assert_eq!(res.report.images[0].action, ImageAction::Skipped);
-    assert!(res.report.warnings.iter().any(|w| matches!(w, Warning::ImageSkipped(_))));
-    assert_eq!(res.report.images[0].original_bytes, res.report.images[0].output_bytes);
+    assert!(res
+        .report
+        .warnings
+        .iter()
+        .any(|w| matches!(w, Warning::ImageSkipped(_))));
+    assert_eq!(
+        res.report.images[0].original_bytes,
+        res.report.images[0].output_bytes
+    );
 }
 
 /// P2 (v2.0) invierte la limitación de v1: ahora `process_image` lee el CTM real
@@ -304,10 +334,20 @@ fn unsupported_filter_chain_is_skipped_not_corrupted() {
 #[test]
 fn high_dpi_image_is_downsampled() {
     let input = pdf_with_image(jpeg_image_stream(1500, 90), 300, 300);
-    let res = compress(&input, &CompressOptions { profile: Profile::Screen, ..Default::default() }).unwrap();
+    let res = compress(
+        &input,
+        &CompressOptions {
+            profile: Profile::Screen,
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     // El output sigue siendo un PDF válido y no crece.
-    assert!(Document::load_mem(&res.output).is_ok(), "el output debe re-parsear");
+    assert!(
+        Document::load_mem(&res.output).is_ok(),
+        "el output debe re-parsear"
+    );
     assert!(res.output.len() <= input.len(), "el output no debe crecer");
 
     // Exactamente una imagen, ahora marcada Downsampled (P2 activo).
@@ -329,7 +369,14 @@ fn flate_photo_is_recompressed_and_shrinks() {
     // NO se downsamplea: aislamos el efecto del re-encode por codec (JPEG).
     let side = 256u32;
     let input = pdf_with_image(flate_photo_stream(side), side as i64, side as i64);
-    let res = compress(&input, &CompressOptions { profile: Profile::Screen, ..Default::default() }).unwrap();
+    let res = compress(
+        &input,
+        &CompressOptions {
+            profile: Profile::Screen,
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     let out_doc = Document::load_mem(&res.output).expect("el output debe re-parsear");
     assert_eq!(res.report.images.len(), 1);
@@ -339,9 +386,18 @@ fn flate_photo_is_recompressed_and_shrinks() {
         "una foto Flate debe recomprimirse/downsamplearse, no saltarse: {action:?}"
     );
     // La foto va a JPEG (DCTDecode).
-    assert_eq!(output_image_filter(&out_doc), b"DCTDecode", "la foto debe ir a JPEG");
+    assert_eq!(
+        output_image_filter(&out_doc),
+        b"DCTDecode",
+        "la foto debe ir a JPEG"
+    );
     // Y el documento global encoge respecto al original.
-    assert!(res.output.len() < input.len(), "output={} input={}", res.output.len(), input.len());
+    assert!(
+        res.output.len() < input.len(),
+        "output={} input={}",
+        res.output.len(),
+        input.len()
+    );
     // El stat de la imagen también encoge.
     assert!(res.report.images[0].output_bytes < res.report.images[0].original_bytes);
 }
@@ -353,7 +409,14 @@ fn flate_photo_is_recompressed_and_shrinks() {
 fn flate_lineart_stays_lossless() {
     let side = 256u32;
     let input = pdf_with_image(flate_lineart_stream(side), side as i64, side as i64);
-    let res = compress(&input, &CompressOptions { profile: Profile::Screen, ..Default::default() }).unwrap();
+    let res = compress(
+        &input,
+        &CompressOptions {
+            profile: Profile::Screen,
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     let out_doc = Document::load_mem(&res.output).expect("el output debe re-parsear");
     assert_eq!(res.report.images.len(), 1);

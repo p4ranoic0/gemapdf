@@ -119,10 +119,7 @@ pub(super) fn filter_chain(dict: &lopdf::Dictionary) -> Option<Vec<Filter>> {
 ///
 /// Devuelve `None` si no hay parámetros para esa etapa.
 pub(super) fn decode_parms_for(dict: &lopdf::Dictionary, idx: usize) -> Option<&lopdf::Dictionary> {
-    let parms = dict
-        .get(b"DecodeParms")
-        .or_else(|_| dict.get(b"DP"))
-        .ok()?;
+    let parms = dict.get(b"DecodeParms").or_else(|_| dict.get(b"DP")).ok()?;
     match parms {
         Object::Dictionary(d) => Some(d),
         Object::Array(arr) => match arr.get(idx) {
@@ -492,7 +489,10 @@ pub(crate) fn decode_flate_image(
         return None;
     }
 
-    let bpc = dict.get(b"BitsPerComponent").and_then(|o| o.as_i64()).ok()?;
+    let bpc = dict
+        .get(b"BitsPerComponent")
+        .and_then(|o| o.as_i64())
+        .ok()?;
     let kind = interpret_color_space(doc, dict, bpc)?;
 
     // longitud esperada de los datos crudos de imagen (antes de expandir paleta)
@@ -652,7 +652,11 @@ mod tests {
         let zero = vec![0u8; rl];
         for y in 0..h {
             let cur = &pixels[y * rl..(y + 1) * rl];
-            let prev: &[u8] = if y == 0 { &zero } else { &pixels[(y - 1) * rl..y * rl] };
+            let prev: &[u8] = if y == 0 {
+                &zero
+            } else {
+                &pixels[(y - 1) * rl..y * rl]
+            };
             filtered.push(ftype);
             let mut row = vec![0u8; rl];
             for i in 0..rl {
@@ -695,7 +699,11 @@ mod tests {
         let img = decode_flate_image(&empty_doc(), &s, w as u32, h as u32)
             .unwrap_or_else(|| panic!("predictor PNG tipo {ftype} debe decodificar"));
         let back = img.to_rgb8();
-        assert_eq!(back.as_raw(), &pixels, "PNG filtro {ftype}: píxeles no coinciden");
+        assert_eq!(
+            back.as_raw(),
+            &pixels,
+            "PNG filtro {ftype}: píxeles no coinciden"
+        );
     }
 
     #[test]
@@ -732,7 +740,11 @@ mod tests {
         for y in 0..h {
             let ftype = (y % 5) as u8; // 0,1,2,3,4,...
             let cur = &pixels[y * rl..(y + 1) * rl];
-            let prev: &[u8] = if y == 0 { &zero } else { &pixels[(y - 1) * rl..y * rl] };
+            let prev: &[u8] = if y == 0 {
+                &zero
+            } else {
+                &pixels[(y - 1) * rl..y * rl]
+            };
             filtered.push(ftype);
             for i in 0..rl {
                 let a = if i >= bpp { cur[i - bpp] } else { 0 };
@@ -759,7 +771,8 @@ mod tests {
             },
             zlib(&filtered),
         );
-        let img = decode_flate_image(&empty_doc(), &s, w as u32, h as u32).expect("mixto debe decodificar");
+        let img = decode_flate_image(&empty_doc(), &s, w as u32, h as u32)
+            .expect("mixto debe decodificar");
         assert_eq!(img.to_rgb8().as_raw(), &pixels);
     }
 
@@ -788,8 +801,13 @@ mod tests {
             },
             zlib(&enc),
         );
-        let img = decode_flate_image(&empty_doc(), &s, w as u32, h as u32).expect("TIFF 2 debe decodificar");
-        assert_eq!(img.to_rgb8().as_raw(), &pixels, "TIFF predictor 2: píxeles no coinciden");
+        let img = decode_flate_image(&empty_doc(), &s, w as u32, h as u32)
+            .expect("TIFF 2 debe decodificar");
+        assert_eq!(
+            img.to_rgb8().as_raw(),
+            &pixels,
+            "TIFF predictor 2: píxeles no coinciden"
+        );
     }
 
     /// TIFF predictor 2 con bpc != 8 → fuera de alcance → SKIP (sin garabatear).
@@ -807,7 +825,10 @@ mod tests {
             },
             zlib(&raw),
         );
-        assert!(decode_flate_image(&empty_doc(), &s, 4, 4).is_none(), "TIFF 16-bpc debe saltarse");
+        assert!(
+            decode_flate_image(&empty_doc(), &s, 4, 4).is_none(),
+            "TIFF 16-bpc debe saltarse"
+        );
     }
 
     // ---- de-chain ----
@@ -832,7 +853,8 @@ mod tests {
             },
             encoded,
         );
-        let img = decode_flate_image(&empty_doc(), &s, w, h).expect("cadena A85+Flate debe decodificar");
+        let img =
+            decode_flate_image(&empty_doc(), &s, w, h).expect("cadena A85+Flate debe decodificar");
         assert_eq!(img.to_rgb8().as_raw(), &pixels);
     }
 
@@ -843,8 +865,8 @@ mod tests {
         let (w, h) = (6u32, 5u32);
         let pixels = sample_rgb(w as usize, h as usize);
         let png_zlib = png_encode_rgb(&pixels, w as usize, h as usize, 4); // Paeth
-        // el contenido zlib ya está; ahora lo pasamos por ascii85.
-        // png_encode_rgb ya devuelve zlib; decodificar necesita: A85 -> Flate(+pred).
+                                                                           // el contenido zlib ya está; ahora lo pasamos por ascii85.
+                                                                           // png_encode_rgb ya devuelve zlib; decodificar necesita: A85 -> Flate(+pred).
         let encoded = ascii85_encode(&png_zlib);
         let s = Stream::new(
             dictionary! {
@@ -862,7 +884,8 @@ mod tests {
             },
             encoded,
         );
-        let img = decode_flate_image(&empty_doc(), &s, w, h).expect("A85+Flate+pred debe decodificar");
+        let img =
+            decode_flate_image(&empty_doc(), &s, w, h).expect("A85+Flate+pred debe decodificar");
         assert_eq!(img.to_rgb8().as_raw(), &pixels);
     }
 
@@ -880,7 +903,8 @@ mod tests {
             },
             zlib(&raw),
         );
-        let img = decode_flate_image(&empty_doc(), &s, 4, 4).expect("[FlateDecode] debe decodificar");
+        let img =
+            decode_flate_image(&empty_doc(), &s, 4, 4).expect("[FlateDecode] debe decodificar");
         assert_eq!(img.to_rgb8().as_raw(), &raw);
     }
 
@@ -956,7 +980,10 @@ mod tests {
             },
             zlib(&raw),
         );
-        assert!(decode_flate_image(&empty_doc(), &s, 4, 4).is_none(), "LZW en la cadena → SKIP");
+        assert!(
+            decode_flate_image(&empty_doc(), &s, 4, 4).is_none(),
+            "LZW en la cadena → SKIP"
+        );
     }
 
     /// DCTDecode como filtro único no es asunto de este decoder (lo maneja el
@@ -987,7 +1014,10 @@ mod tests {
             },
             zlib(&raw),
         );
-        assert!(decode_flate_image(&empty_doc(), &s, 12, 12).is_none(), "longitud no coincide → skip");
+        assert!(
+            decode_flate_image(&empty_doc(), &s, 12, 12).is_none(),
+            "longitud no coincide → skip"
+        );
     }
 
     #[test]
@@ -1103,7 +1133,10 @@ mod tests {
     #[test]
     fn runlength_unit_literal_and_run() {
         // literal: len=2 → copia 3 bytes
-        assert_eq!(decode_run_length(&[2, 1, 2, 3, 128]).unwrap(), vec![1, 2, 3]);
+        assert_eq!(
+            decode_run_length(&[2, 1, 2, 3, 128]).unwrap(),
+            vec![1, 2, 3]
+        );
         // run: len=254 → repite 257-254=3 veces
         assert_eq!(decode_run_length(&[254, 9, 128]).unwrap(), vec![9, 9, 9]);
         // truncado → None

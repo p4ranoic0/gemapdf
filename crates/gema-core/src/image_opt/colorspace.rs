@@ -461,7 +461,10 @@ mod tests {
             },
             zlib(&vec![0u8; (w * h * 3) as usize]),
         );
-        assert!(decode_flate_image(&doc, &s, w, h).is_none(), "ICCBased sin /N → SKIP");
+        assert!(
+            decode_flate_image(&doc, &s, w, h).is_none(),
+            "ICCBased sin /N → SKIP"
+        );
     }
 
     /// ICCBased cuyo objeto es un diccionario suelto (no stream) → SKIP (M1).
@@ -503,7 +506,10 @@ mod tests {
         // 8 índices (uno por píxel), todos ≤ 3.
         let indices: Vec<u8> = vec![0, 1, 2, 3, 3, 2, 1, 0];
         let mut doc = lopdf::Document::new();
-        let pal_ref = doc.add_object(Object::String(palette.clone(), lopdf::StringFormat::Literal));
+        let pal_ref = doc.add_object(Object::String(
+            palette.clone(),
+            lopdf::StringFormat::Literal,
+        ));
         let s = Stream::new(
             dictionary! {
                 "Type" => "XObject", "Subtype" => "Image",
@@ -551,7 +557,8 @@ mod tests {
             },
             zlib(&indices),
         );
-        let img = decode_flate_image(&empty_doc(), &s, w, h).expect("Indexed Gray debe decodificar");
+        let img =
+            decode_flate_image(&empty_doc(), &s, w, h).expect("Indexed Gray debe decodificar");
         let g = img.to_luma8();
         assert_eq!(g.get_pixel(0, 0).0[0], palette[2]);
         assert_eq!(g.get_pixel(1, 0).0[0], palette[0]);
@@ -657,7 +664,10 @@ mod tests {
             },
             zlib(&vec![0u8; (w * h) as usize]),
         );
-        assert!(decode_flate_image(&empty_doc(), &s, w, h).is_none(), "Separation → SKIP");
+        assert!(
+            decode_flate_image(&empty_doc(), &s, w, h).is_none(),
+            "Separation → SKIP"
+        );
     }
 
     /// Lab colorspace → SKIP.
@@ -677,7 +687,10 @@ mod tests {
             },
             zlib(&vec![0u8; (w * h * 3) as usize]),
         );
-        assert!(decode_flate_image(&empty_doc(), &s, w, h).is_none(), "Lab → SKIP");
+        assert!(
+            decode_flate_image(&empty_doc(), &s, w, h).is_none(),
+            "Lab → SKIP"
+        );
     }
 
     /// Indexed con base CMYK → SKIP (fuera de alcance, aceptable).
