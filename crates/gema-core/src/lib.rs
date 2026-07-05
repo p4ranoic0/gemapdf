@@ -18,8 +18,11 @@ pub(crate) mod geometry;
 
 pub mod rewrite;
 
+pub mod progress;
+pub use progress::Phase;
+
 pub mod pipeline;
-pub use pipeline::{compress, CompressResult};
+pub use pipeline::{compress, compress_with_progress, CompressResult};
 
 #[cfg(test)]
 mod smoke {

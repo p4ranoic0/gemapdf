@@ -2,6 +2,7 @@ use crate::error::GemaError;
 use crate::image_opt::jpeg::JpegRecompressor;
 use crate::image_opt::{downsample, target_dimensions, RawImage, Recompressor};
 use crate::options::{CompressOptions, SignaturePolicy};
+use crate::progress::Phase;
 use crate::report::{ImageAction, ImageStat, Report, Warning};
 use lopdf::{Document, Object};
 
@@ -245,7 +246,24 @@ fn process_image(
     })
 }
 
+/// Comprime un PDF sin reportar progreso. Envoltorio fino sobre
+/// [`compress_with_progress`] con un callback no-op; misma API pública que v1.
 pub fn compress(input: &[u8], opts: &CompressOptions) -> Result<CompressResult, GemaError> {
+    compress_with_progress(input, opts, &mut |_| {})
+}
+
+/// Igual que [`compress`], pero invoca `on_phase` en cada transición de fase
+/// del pipeline. Orden garantizado (ver [`Phase`]): `Analyzing` →
+/// `OptimizingImages { done: 0..=N, total: N }` → `Rewriting` → `Done`; en el
+/// retorno temprano firmado-Strict sólo `Analyzing` → `Done`. El callback es
+/// síncrono y corre en el mismo hilo: WASM-compatible (sin threads ni canales).
+pub fn compress_with_progress(
+    input: &[u8],
+    opts: &CompressOptions,
+    on_phase: &mut dyn FnMut(Phase),
+) -> Result<CompressResult, GemaError> {
+    on_phase(Phase::Analyzing);
+
     // F4: parseamos el PDF una sola vez y derivamos el reporte base del mismo
     // doc (antes se hacía load_mem dentro de analyze() y otra vez aquí).
     let mut doc = Document::load_mem(input).map_err(|e| GemaError::Parse(e.to_string()))?;
@@ -256,7 +274,7 @@ pub fn compress(input: &[u8], opts: &CompressOptions) -> Result<CompressResult, 
 
     // política de firma
     if report0.is_signed && opts.signatures == SignaturePolicy::Strict {
-        return Ok(CompressResult {
+        let result = CompressResult {
             output: input.to_vec(),
             report: Report {
                 output_size: Some(input.len() as u64),
@@ -264,7 +282,9 @@ pub fn compress(input: &[u8], opts: &CompressOptions) -> Result<CompressResult, 
                 ..report0
             }
             .with_ratio(),
-        });
+        };
+        on_phase(Phase::Done);
+        return Ok(result);
     }
 
     let params = opts.resolved();
@@ -288,9 +308,12 @@ pub fn compress(input: &[u8], opts: &CompressOptions) -> Result<CompressResult, 
         })
         .collect();
 
+    let total = image_ids.len();
+    on_phase(Phase::OptimizingImages { done: 0, total });
+
     let mut stats = Vec::new();
     let mut img_warnings = Vec::new();
-    for id in image_ids {
+    for (i, id) in image_ids.into_iter().enumerate() {
         let eff_dpi = dpi_map.get(&id).copied();
         // las imágenes no soportadas (no-Image) simplemente no generan stat
         if let Some(outcome) = process_image(
@@ -304,7 +327,10 @@ pub fn compress(input: &[u8], opts: &CompressOptions) -> Result<CompressResult, 
             stats.push(outcome.stat);
             img_warnings.extend(outcome.warnings);
         }
+        on_phase(Phase::OptimizingImages { done: i + 1, total });
     }
+
+    on_phase(Phase::Rewriting);
 
     if opts.remove_metadata {
         crate::rewrite::strip_metadata(&mut doc);
@@ -324,19 +350,19 @@ pub fn compress(input: &[u8], opts: &CompressOptions) -> Result<CompressResult, 
     // devolvemos los bytes originales. El reporte refleja que no hubo mejora
     // (output_size = input.len(), ratio = 1.0). La ruta de SignaturePolicy::Strict
     // ya devuelve el original más arriba y no pasa por aquí.
-    if output.len() > input.len() {
+    let result = if output.len() > input.len() {
         report.output_size = Some(input.len() as u64);
         report
             .warnings
             .push(Warning::Other("sin mejora: se conservó el documento original".into()));
-        let report = report.with_ratio();
-        return Ok(CompressResult { output: input.to_vec(), report });
-    }
+        CompressResult { output: input.to_vec(), report: report.with_ratio() }
+    } else {
+        report.output_size = Some(output.len() as u64);
+        CompressResult { output, report: report.with_ratio() }
+    };
 
-    report.output_size = Some(output.len() as u64);
-    let report = report.with_ratio();
-
-    Ok(CompressResult { output, report })
+    on_phase(Phase::Done);
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -344,8 +370,8 @@ mod tests {
     use super::*;
     use crate::options::CompressOptions;
 
-    // PDF con una imagen JPEG embebida grande.
-    fn pdf_with_jpeg() -> Vec<u8> {
+    // PDF con `n` imágenes JPEG embebidas grandes, todas pintadas en la página.
+    fn pdf_with_jpegs(n: usize) -> Vec<u8> {
         use image::codecs::jpeg::JpegEncoder;
         use image::{ImageEncoder, RgbImage};
         use lopdf::{dictionary, Document, Object, Stream};
@@ -362,16 +388,21 @@ mod tests {
 
         let mut doc = Document::with_version("1.5");
         let pages_id = doc.new_object_id();
-        let img_dict = dictionary! {
-            "Type" => "XObject", "Subtype" => "Image",
-            "Width" => 800, "Height" => 800,
-            "BitsPerComponent" => 8, "ColorSpace" => "DeviceRGB",
-            "Filter" => "DCTDecode",
-        };
-        let img_stream = Stream::new(img_dict, jpeg);
-        let img_id = doc.add_object(img_stream);
-        let content_id = doc.add_object(Stream::new(dictionary! {}, b"q 800 0 0 800 0 0 cm /Im0 Do Q".to_vec()));
-        let resources_id = doc.add_object(dictionary! { "XObject" => dictionary! { "Im0" => img_id } });
+        let mut xobjects = lopdf::Dictionary::new();
+        let mut content = String::new();
+        for i in 0..n {
+            let img_dict = dictionary! {
+                "Type" => "XObject", "Subtype" => "Image",
+                "Width" => 800, "Height" => 800,
+                "BitsPerComponent" => 8, "ColorSpace" => "DeviceRGB",
+                "Filter" => "DCTDecode",
+            };
+            let img_id = doc.add_object(Stream::new(img_dict, jpeg.clone()));
+            xobjects.set(format!("Im{i}"), img_id);
+            content.push_str(&format!("q 800 0 0 800 0 0 cm /Im{i} Do Q\n"));
+        }
+        let content_id = doc.add_object(Stream::new(dictionary! {}, content.into_bytes()));
+        let resources_id = doc.add_object(dictionary! { "XObject" => xobjects });
         let page_id = doc.add_object(dictionary! {
             "Type" => "Page", "Parent" => pages_id, "Contents" => content_id,
             "Resources" => resources_id,
@@ -385,6 +416,11 @@ mod tests {
         let mut buf = Vec::new();
         doc.save_to(&mut buf).unwrap();
         buf
+    }
+
+    // PDF con una imagen JPEG embebida grande.
+    fn pdf_with_jpeg() -> Vec<u8> {
+        pdf_with_jpegs(1)
     }
 
     #[test]
@@ -571,6 +607,86 @@ mod tests {
             "debe haber un Warning::ImageSkipped, warnings={:?}",
             res.report.warnings
         );
+    }
+
+    #[test]
+    fn progress_phases_for_multi_image_pdf() {
+        use crate::progress::Phase;
+
+        const N: usize = 3;
+        let input = pdf_with_jpegs(N);
+        let opts = CompressOptions { profile: crate::options::Profile::Screen, ..Default::default() };
+
+        let mut phases: Vec<Phase> = Vec::new();
+        let res = compress_with_progress(&input, &opts, &mut |p| phases.push(p)).unwrap();
+        assert!(!res.output.is_empty());
+
+        // empieza con Analyzing y termina con Done
+        assert_eq!(phases.first(), Some(&Phase::Analyzing), "phases={phases:?}");
+        assert_eq!(phases.last(), Some(&Phase::Done), "phases={phases:?}");
+
+        // eventos de imágenes: arranca en done=0 y acaba en done==total==N,
+        // con `done` monótono y `total` constante
+        let img_events: Vec<(usize, usize)> = phases
+            .iter()
+            .filter_map(|p| match p {
+                Phase::OptimizingImages { done, total } => Some((*done, *total)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(img_events.first(), Some(&(0, N)), "phases={phases:?}");
+        assert_eq!(img_events.last(), Some(&(N, N)), "phases={phases:?}");
+        for w in img_events.windows(2) {
+            assert!(w[1].0 >= w[0].0, "done debe ser monótono: {img_events:?}");
+            assert_eq!(w[1].1, N, "total debe ser constante: {img_events:?}");
+        }
+
+        // Rewriting va después de todos los eventos de imágenes
+        let rewriting_idx =
+            phases.iter().position(|p| *p == Phase::Rewriting).expect("debe emitirse Rewriting");
+        let last_img_idx = phases
+            .iter()
+            .rposition(|p| matches!(p, Phase::OptimizingImages { .. }))
+            .expect("debe haber eventos de imágenes");
+        assert!(last_img_idx < rewriting_idx, "phases={phases:?}");
+    }
+
+    /// PDF mínimo firmado (page dict con /ByteRange), sin imágenes.
+    fn signed_pdf() -> Vec<u8> {
+        use lopdf::{dictionary, Document, Object, Stream};
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let content_id = doc.add_object(Stream::new(dictionary! {}, b"BT ET".to_vec()));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages_id, "Contents" => content_id,
+            "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            "ByteRange" => vec![0.into(), 100.into(), 200.into(), 50.into()],
+        });
+        doc.objects.insert(pages_id, Object::Dictionary(dictionary! {
+            "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
+        }));
+        let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", catalog_id);
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf).unwrap();
+        buf
+    }
+
+    #[test]
+    fn progress_signed_strict_emits_analyzing_then_done_only() {
+        use crate::progress::Phase;
+
+        let input = signed_pdf();
+        // SignaturePolicy::Strict es el default
+        let opts = CompressOptions::default();
+
+        let mut phases: Vec<Phase> = Vec::new();
+        let res = compress_with_progress(&input, &opts, &mut |p| phases.push(p)).unwrap();
+
+        assert_eq!(phases, vec![Phase::Analyzing, Phase::Done], "retorno temprano firmado-Strict");
+        // el retorno temprano devuelve el original intacto
+        assert_eq!(res.output, input);
+        assert!(res.report.is_signed);
     }
 
     #[test]
