@@ -1,8 +1,12 @@
 [package]
 name = "gema-cli"
+description = "CLI for GemaPDF: pure-Rust portable PDF compression, no AGPL"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+repository.workspace = true
+keywords = ["pdf", "compression", "cli"]
+categories = ["command-line-utilities", "compression"]
 
 [[bin]]
 name = "gema"

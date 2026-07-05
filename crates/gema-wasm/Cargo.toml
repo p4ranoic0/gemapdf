@@ -1,8 +1,12 @@
 [package]
 name = "gema-wasm"
+description = "WASM bindings for GemaPDF: pure-Rust portable PDF compression, no AGPL"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+repository.workspace = true
+keywords = ["pdf", "compression", "wasm"]
+categories = ["compression", "wasm"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]

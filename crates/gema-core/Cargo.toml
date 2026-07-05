@@ -1,8 +1,12 @@
 [package]
 name = "gema-core"
+description = "Pure-Rust portable PDF compression engine (WASM + native), no AGPL"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+repository.workspace = true
+keywords = ["pdf", "compression", "wasm"]
+categories = ["compression", "parser-implementations"]
 
 [features]
 default = []
