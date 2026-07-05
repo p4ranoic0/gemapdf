@@ -20,7 +20,9 @@ pub fn cleanup_and_compress(doc: &mut Document, recompress_streams: bool) {
 /// Serializa el documento a bytes con object streams + xref streams.
 pub fn serialize(doc: &mut Document) -> Result<Vec<u8>, GemaError> {
     let mut buf = Vec::new();
-    doc.save_to(&mut buf).map_err(|e| GemaError::Io(e.to_string()))?;
+    // save_modern = object streams + xref streams. lopdf sube doc.version a
+    // "1.5" por sí mismo si hace falta (los object streams lo exigen).
+    doc.save_modern(&mut buf).map_err(|e| GemaError::Io(e.to_string()))?;
     Ok(buf)
 }
 

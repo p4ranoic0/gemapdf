@@ -13,7 +13,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/p4ranoic0/gemapdf"
 
 [workspace.dependencies]
-lopdf = "0.36"
+lopdf = "0.43"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 flate2 = "1"
 thiserror = "2"
