@@ -178,12 +178,13 @@ fn process_image(
     }
 
     // Codificar según el codec elegido. Ambas ramas producen los bytes de salida
-    // más los metadatos de dict (filtro + colorspace). El path JPEG siempre emite
-    // DeviceRGB; el path Flate preserva gris como gris (no lo infla a RGB).
+    // más los metadatos de dict (filtro + colorspace). El path JPEG preserva gris
+    // como gris (L8/DeviceGray) en vez de inflarlo a RGB; el path Flate hace lo
+    // mismo. Ambos toman el `color_space` real del encoder, no un valor fijo.
     let (out_bytes, out_filter, out_colorspace): (Vec<u8>, &'static str, &'static str) = match codec
     {
         Codec::Jpeg => match JpegRecompressor.recompress(&RawImage { image: img }, quality) {
-            Some(e) => (e.bytes, e.filter, "DeviceRGB"),
+            Some(e) => (e.bytes, e.filter, e.color_space),
             None => {
                 // no se pudo recomprimir → omitida
                 let mut out = skipped(id, orig_len);

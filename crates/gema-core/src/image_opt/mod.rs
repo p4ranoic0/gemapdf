@@ -9,11 +9,15 @@ pub struct RawImage {
     pub image: image::DynamicImage,
 }
 
-/// Resultado de recompresión: bytes + el filtro PDF correspondiente.
+/// Resultado de recompresión: bytes + los metadatos de dict que le corresponden.
 pub struct Encoded {
     pub bytes: Vec<u8>,
     /// Nombre del filtro PDF: "DCTDecode" para JPEG, "FlateDecode" para PNG/raw.
     pub filter: &'static str,
+    /// Nombre del `/ColorSpace` PDF que corresponde a `bytes`: "DeviceGray"
+    /// para JPEG L8 (escaneos en gris), "DeviceRGB" en cualquier otro caso.
+    /// El pipeline escribe este valor en el dict en vez de asumir DeviceRGB.
+    pub color_space: &'static str,
 }
 
 /// Backend de recompresión de imágenes. Permite enchufar codecs nativos en v2.

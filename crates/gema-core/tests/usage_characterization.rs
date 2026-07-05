@@ -132,6 +132,80 @@ fn output_image_filter(doc: &Document) -> Vec<u8> {
         .to_vec()
 }
 
+/// Devuelve el `/ColorSpace` (Name) de la primera imagen XObject del documento.
+fn output_image_colorspace(doc: &Document) -> Vec<u8> {
+    let img_id = doc
+        .objects
+        .iter()
+        .find_map(|(id, obj)| {
+            let s = obj.as_stream().ok()?;
+            (s.dict.get(b"Subtype").ok()?.as_name().ok()? == b"Image").then_some(*id)
+        })
+        .expect("debe existir una imagen");
+    doc.get_object(img_id)
+        .unwrap()
+        .as_stream()
+        .unwrap()
+        .dict
+        .get(b"ColorSpace")
+        .unwrap()
+        .as_name()
+        .unwrap()
+        .to_vec()
+}
+
+/// Imagen XObject JPEG (DCTDecode) en escala de grises con contenido de tono
+/// continuo (no plano): un escaneo en gris ya codificado como JPEG L8/DeviceGray
+/// upstream. `image::load_from_memory` la decodifica a `ImageLuma8`.
+fn gray_jpeg_image_stream(side: u32, q: u8) -> Stream {
+    use image::{GrayImage, Luma};
+    let mut gray = GrayImage::new(side, side);
+    for (x, y, px) in gray.enumerate_pixels_mut() {
+        let fx = x as f32;
+        let fy = y as f32;
+        let v = ((fx * 0.09).sin() * 0.5 + 0.5) * ((fy * 0.07).cos() * 0.3 + 0.7) * 255.0;
+        *px = Luma([v as u8]);
+    }
+    let mut jpeg = Vec::new();
+    JpegEncoder::new_with_quality(&mut jpeg, q)
+        .write_image(gray.as_raw(), side, side, image::ExtendedColorType::L8)
+        .unwrap();
+    Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image",
+            "Width" => side as i64, "Height" => side as i64,
+            "BitsPerComponent" => 8, "ColorSpace" => "DeviceGray", "Filter" => "DCTDecode",
+        },
+        jpeg,
+    )
+}
+
+/// Igual que `gray_jpeg_image_stream` pero "inflada" a DeviceRGB (R=G=B), como
+/// haría el camino viejo (siempre to_rgb8() antes de re-codificar). Sirve de
+/// comparación de tamaño contra el camino L8/DeviceGray real.
+fn gray_jpeg_image_as_rgb_stream(side: u32, q: u8) -> Stream {
+    let mut rgb = RgbImage::new(side, side);
+    for (x, y, px) in rgb.enumerate_pixels_mut() {
+        let fx = x as f32;
+        let fy = y as f32;
+        let v = ((fx * 0.09).sin() * 0.5 + 0.5) * ((fy * 0.07).cos() * 0.3 + 0.7) * 255.0;
+        let v = v as u8;
+        *px = image::Rgb([v, v, v]);
+    }
+    let mut jpeg = Vec::new();
+    JpegEncoder::new_with_quality(&mut jpeg, q)
+        .write_image(rgb.as_raw(), side, side, image::ExtendedColorType::Rgb8)
+        .unwrap();
+    Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image",
+            "Width" => side as i64, "Height" => side as i64,
+            "BitsPerComponent" => 8, "ColorSpace" => "DeviceRGB", "Filter" => "DCTDecode",
+        },
+        jpeg,
+    )
+}
+
 /// Imagen XObject JPEG (DCTDecode) con gradiente suave.
 fn jpeg_image_stream(side: u32, q: u8) -> Stream {
     let mut rgb = RgbImage::new(side, side);
@@ -400,6 +474,79 @@ fn flate_photo_is_recompressed_and_shrinks() {
     );
     // El stat de la imagen también encoge.
     assert!(res.report.images[0].output_bytes < res.report.images[0].original_bytes);
+}
+
+/// ColorSpace fidelity (v2.0): una imagen en escala de grises que llega como
+/// JPEG DeviceGray (un escaneo ya en L8, el caso real de `image::load_from_memory`)
+/// se recomprime preservando DeviceGray en el dict de salida, sin inflarla a
+/// DeviceRGB. Comparamos contra el equivalente RGB-inflado (misma imagen con
+/// R=G=B, tal como haría el código viejo que siempre convertía con to_rgb8())
+/// para verificar que el camino gris de verdad pesa menos — ese es todo el
+/// punto de la optimización, no sólo una etiqueta de colorspace distinta.
+///
+/// Nota: no usamos el path FlateDecode aquí porque `classify()` nunca puede
+/// devolver `Photo` para una imagen en gris puro (máx. 256 tonos, muy por
+/// debajo del umbral de 4096 colores distintos) — ver
+/// `classify::tests::grayscale_gradient_stays_line_art`. El caso real de
+/// gray→L8 en el pipeline es una imagen ya en DCTDecode/PNG que `image`
+/// decodifica directo a `ImageLuma8`.
+#[test]
+fn gray_jpeg_recompresses_to_devicegray_and_is_smaller_than_rgb_equivalent() {
+    let side = 256u32;
+
+    // Camino gris: JPEG DeviceGray (L8) → debe seguir en JPEG DeviceGray.
+    let gray_input = pdf_with_image(gray_jpeg_image_stream(side, 95), side as i64, side as i64);
+    let gray_res = compress(
+        &gray_input,
+        &CompressOptions {
+            profile: Profile::Screen,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let gray_out_doc = Document::load_mem(&gray_res.output).expect("el output debe re-parsear");
+    assert_eq!(gray_res.report.images.len(), 1);
+    assert!(
+        matches!(
+            gray_res.report.images[0].action,
+            ImageAction::Recompressed | ImageAction::Downsampled
+        ),
+        "una foto gris debe recomprimirse, no saltarse: {:?}",
+        gray_res.report.images[0].action
+    );
+    assert_eq!(
+        output_image_filter(&gray_out_doc),
+        b"DCTDecode",
+        "la foto gris debe seguir en JPEG"
+    );
+    assert_eq!(
+        output_image_colorspace(&gray_out_doc),
+        b"DeviceGray",
+        "el dict de salida debe declarar DeviceGray, no inflarse a RGB"
+    );
+
+    // Comparación: la MISMA imagen pero con R=G=B (el camino RGB-inflado que
+    // haría el código viejo). Debe pesar más que el L8 real.
+    let rgb_input = pdf_with_image(
+        gray_jpeg_image_as_rgb_stream(side, 95),
+        side as i64,
+        side as i64,
+    );
+    let rgb_res = compress(
+        &rgb_input,
+        &CompressOptions {
+            profile: Profile::Screen,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert!(
+        gray_res.report.images[0].output_bytes < rgb_res.report.images[0].output_bytes,
+        "L8 ({} bytes) debe pesar menos que el RGB-inflado equivalente ({} bytes)",
+        gray_res.report.images[0].output_bytes,
+        rgb_res.report.images[0].output_bytes
+    );
 }
 
 /// P1-Flate content-aware: una imagen de LÍNEA/TEXTO en FlateDecode se mantiene
