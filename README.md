@@ -27,10 +27,11 @@ GemaPDF takes a different approach: implement the actual PDF image-compression
 pipeline (parse, decode, downsample, re-encode, rewrite) in pure Rust, with no
 GPL/AGPL code anywhere in the tree. The payoff:
 
-- **WASM bundle size:** ~1.3–1.6 MB, versus ~14 MB for `ghostscript-wasm`
-  (measured `wasm-pack build --release` output of `crates/gema-wasm`, no
-  Ghostscript in the dependency graph to compare against — the 14 MB figure is
-  the published size of AGPL ghostscript-wasm builds).
+- **WASM bundle size:** ~1.1 MB (pre-gzip), versus ~14 MB for `ghostscript-wasm`
+  (measured `wasm-pack build --target web` output of `crates/gema-wasm`
+  — `pkg/gema_wasm_bg.wasm`, no Ghostscript in the dependency graph to compare
+  against — the 14 MB figure is the published size of AGPL ghostscript-wasm
+  builds).
 - **License-clean:** MIT/Apache-2.0 only, safe to embed anywhere, including
   closed-source and commercial products, without triggering AGPL network-use
   clauses.
@@ -46,8 +47,9 @@ does **not** currently touch page-level content (fonts, glyph outlines,
 non-image content streams beyond `save_modern`'s object/xref-stream packing).
 
 Measured on a real corpus (see `docs/USAGE-ANALYSIS.md` for the full v1
-report and `crates/gema-core/examples/usage_report.rs`, the harness used to
-produce these numbers):
+report, `docs/USAGE-ANALYSIS-v2.md` for the v2.0 measurement, and
+`crates/gema-core/examples/usage_report.rs`, the harness used to produce
+these numbers):
 
 - **v1** (recompress-only, no real DPI downsampling, DCT/PNG images only):
   ~3.7–8.1% size reduction on a 31-PDF / ~283 MB real-document corpus. The
@@ -60,10 +62,13 @@ produce these numbers):
   PNG/TIFF predictor de-filtering, plus `ASCIIHex`/`ASCII85`/`RunLength`
   de-chaining), `Indexed`/`ICCBased`/`DeviceCMYK` colorspace support, and
   gray→luma JPEG output (grayscale scans no longer get inflated to 3-channel
-  RGB before re-encoding). On the same style of real-document corpus this
-  brings the *global* output/input ratio to **~64–65%** (i.e. ~35–36%
-  reduction) — a large jump from v1's single-digit percentages, driven mostly
-  by downsampling actually firing on high-DPI scanned content.
+  RGB before re-encoding). Measured on a 37-PDF real-document corpus (see
+  [`docs/USAGE-ANALYSIS-v2.md`](docs/USAGE-ANALYSIS-v2.md) — a different,
+  newer corpus than the v1 analysis, so the two numbers aren't a strict
+  apples-to-apples before/after) this brings the *global* output/input ratio
+  to **64.7%** (~35% reduction) — a large jump from v1's single-digit
+  percentages, driven mostly by downsampling actually firing on high-DPI
+  scanned content (1,842 images downsampled in that corpus).
 - **Signature preservation:** if a PDF is cryptographically signed,
   `SignaturePolicy::Strict` (the default) refuses to touch image streams that
   would invalidate the signature — the document round-trips byte-for-byte
