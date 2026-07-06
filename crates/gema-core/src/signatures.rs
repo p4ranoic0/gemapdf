@@ -22,6 +22,13 @@ use lopdf::{Document, Object, ObjectId};
 const MAX_STAMP_DIM: i64 = 300;
 /// Sellos/logos aplanados: tamaño máximo (bytes del stream) de un sello.
 const MAX_STAMP_BYTES: usize = 50 * 1024;
+/// Presupuesto TOTAL de bytes que case B puede preservar en un documento. Case B
+/// es una heurística para un PUÑADO de sellos/logos institucionales; si las
+/// candidatas suman más que esto, el documento es image-heavy (p.ej. un escaneo
+/// troceado en cientos de fragmentos) y la heurística se disparó de más — se deja
+/// que compriman. El case A (apariencias de firma FT=Sig) es preciso y NO se ve
+/// afectado por este tope.
+const MAX_STAMP_TOTAL_BYTES: usize = 1024 * 1024;
 
 /// Tope de saltos al subir la cadena `/Parent` de una anotación buscando `FT`.
 /// Guarda anti-ciclo: una cadena maliciosa/malformada no debe colgar.
@@ -213,7 +220,15 @@ fn collect_form_images(
 /// Caso B: recolecta las imágenes XObject "pequeñas" (candidatas a sello/logo
 /// aplanado): `Width <= MAX_STAMP_DIM && Height <= MAX_STAMP_DIM` y bytes del
 /// stream `<= MAX_STAMP_BYTES`.
+///
+/// Guard anti-over-preservation (lever #2): si el total de bytes de las
+/// candidatas supera `MAX_STAMP_TOTAL_BYTES`, el documento es image-heavy y la
+/// heurística se disparó de más → no se preserva ninguna por case B (se dejan
+/// comprimir). Los sellos legítimos de un doc normal suman poco y pasan; un
+/// escaneo con cientos de fragmentos chicos no.
 fn collect_small_flattened_images(doc: &Document, out: &mut HashSet<ObjectId>) {
+    let mut candidates: Vec<ObjectId> = Vec::new();
+    let mut total_bytes: usize = 0;
     for (id, obj) in doc.objects.iter() {
         let Ok(stream) = obj.as_stream() else {
             continue;
@@ -237,9 +252,15 @@ fn collect_small_flattened_images(doc: &Document, out: &mut HashSet<ObjectId>) {
             continue;
         }
         if stream.content.len() <= MAX_STAMP_BYTES {
-            out.insert(*id);
+            candidates.push(*id);
+            total_bytes = total_bytes.saturating_add(stream.content.len());
         }
     }
+    // Doc image-heavy → la heurística de sellos se disparó de más: no preservar.
+    if total_bytes > MAX_STAMP_TOTAL_BYTES {
+        return;
+    }
+    out.extend(candidates);
 }
 
 #[cfg(test)]
@@ -407,6 +428,37 @@ mod tests {
         assert!(
             !set.contains(&id),
             "imagen pequeña en px pero grande en bytes no debe preservarse"
+        );
+    }
+
+    #[test]
+    fn over_preservation_guard_skips_case_b_when_over_budget() {
+        // Muchas imágenes chicas que SUMAN más que el presupuesto total: el guard
+        // del lever #2 apaga case B por completo (doc image-heavy, no de sellos).
+        let mut doc = Document::with_version("1.5");
+        let per = MAX_STAMP_BYTES; // 50 KB c/u (bajo el tope por-imagen)
+        let n = MAX_STAMP_TOTAL_BYTES / per + 2; // supera el presupuesto total
+        for _ in 0..n {
+            doc.add_object(image_stream(100, vec![0u8; per]));
+        }
+        let set = collect_preserved_images(&doc);
+        assert!(
+            set.is_empty(),
+            "doc image-heavy: el guard debe apagar case B; preservadas={}",
+            set.len()
+        );
+    }
+
+    #[test]
+    fn under_budget_stamps_still_preserved() {
+        // Pocos sellos que suman poco (bajo presupuesto): se preservan normal.
+        let mut doc = Document::with_version("1.5");
+        let a = doc.add_object(image_stream(150, small_jpeg(150)));
+        let b = doc.add_object(image_stream(120, small_jpeg(120)));
+        let set = collect_preserved_images(&doc);
+        assert!(
+            set.contains(&a) && set.contains(&b),
+            "sellos bajo presupuesto deben preservarse"
         );
     }
 }
