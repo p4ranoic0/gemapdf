@@ -18,6 +18,12 @@ enum Cmd {
         output: String,
         #[arg(long, default_value = "ebook")]
         profile: String,
+        /// Override del DPI objetivo de imagen (gana al perfil). Para calibración.
+        #[arg(long)]
+        image_dpi: Option<u32>,
+        /// Override de la calidad JPEG 1-100 (gana al perfil). Para calibración.
+        #[arg(long)]
+        jpeg_quality: Option<u8>,
     },
     /// Analiza un PDF y muestra el reporte.
     Analyze { input: String },
@@ -40,6 +46,8 @@ fn run(cli: Cli) -> Result<(), String> {
             input,
             output,
             profile,
+            image_dpi,
+            jpeg_quality,
         } => {
             let bytes = fs::read(&input).map_err(|e| e.to_string())?;
             let profile = match profile.as_str() {
@@ -56,6 +64,8 @@ fn run(cli: Cli) -> Result<(), String> {
                 &bytes,
                 &CompressOptions {
                     profile,
+                    image_dpi,
+                    jpeg_quality,
                     ..Default::default()
                 },
             )
