@@ -123,6 +123,8 @@ struct JsReport {
     images_downsampled: usize,
     images_kept: usize,
     images_skipped: usize,
+    /// Firmas/sellos preservados byte-idénticos (no recomprimidos).
+    images_preserved: usize,
     warnings: Vec<String>,
 }
 
@@ -131,12 +133,14 @@ fn to_js_report(r: &Report) -> JsReport {
     let mut downsampled = 0;
     let mut kept = 0;
     let mut skipped = 0;
+    let mut preserved = 0;
     for s in &r.images {
         match s.action {
             ImageAction::Recompressed => recompressed += 1,
             ImageAction::Downsampled => downsampled += 1,
             ImageAction::Kept => kept += 1,
             ImageAction::Skipped => skipped += 1,
+            ImageAction::Preserved => preserved += 1,
         }
     }
     JsReport {
@@ -150,6 +154,7 @@ fn to_js_report(r: &Report) -> JsReport {
         images_downsampled: downsampled,
         images_kept: kept,
         images_skipped: skipped,
+        images_preserved: preserved,
         warnings: r.warnings.iter().map(|w| w.to_string()).collect(),
     }
 }

@@ -4,6 +4,8 @@ pub enum ImageAction {
     Recompressed,
     Downsampled,
     Skipped,
+    /// Imagen preservada byte-idéntica por ser firma/sello (no se recomprime).
+    Preserved,
 }
 
 #[derive(Debug, Clone)]
@@ -40,6 +42,8 @@ pub struct Report {
     pub output_size: Option<u64>,
     pub ratio: Option<f32>,
     pub images: Vec<ImageStat>,
+    /// Número de imágenes preservadas byte-idénticas por ser firma/sello.
+    pub preserved_images: usize,
     pub is_signed: bool,
     /// No se computa en v1: reservado para el módulo de OCR de v2. Actualmente
     /// siempre es `false`.

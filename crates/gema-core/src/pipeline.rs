@@ -32,6 +32,21 @@ fn skipped(id: lopdf::ObjectId, orig_len: u64) -> ImageOutcome {
     }
 }
 
+/// Construye un outcome que marca la imagen como preservada byte-idéntica
+/// (firma/sello). No genera warning por-imagen: el pipeline emite un único
+/// resumen tras el bucle para no hacer ruido.
+fn preserved(id: lopdf::ObjectId, orig_len: u64) -> ImageOutcome {
+    ImageOutcome {
+        stat: ImageStat {
+            object_id: id.0,
+            original_bytes: orig_len,
+            output_bytes: orig_len,
+            action: ImageAction::Preserved,
+        },
+        warnings: vec![],
+    }
+}
+
 /// Recomprime una imagen XObject in-place si conviene. Devuelve un `ImageOutcome`
 /// con el `ImageStat` y los warnings asociados. Las imágenes que no son XObject
 /// de tipo Image devuelven `None` (no generan stat); las que sí lo son pero no
@@ -46,6 +61,10 @@ fn process_image(
     // del content stream. `None` si nunca se encontró pintada o el CTM es
     // degenerado: en ese caso NO se hace downsampling (fallback conservador).
     effective_dpi: Option<f32>,
+    // La pasada pre-flight de firmas/sellos (`signatures::collect_preserved_images`)
+    // marcó esta imagen como preservable: se devuelven sus bytes ORIGINALES sin
+    // decodificar ni recomprimir (misma mecánica que /SMask).
+    preserve_this: bool,
 ) -> Option<ImageOutcome> {
     let (orig_len, mut width, mut height, raw_bytes, stream_for_flate) = {
         let stream = doc.get_object(id).ok()?.as_stream().ok()?;
@@ -53,6 +72,12 @@ fn process_image(
         // solo XObject de tipo Image
         if dict.get(b"Subtype").and_then(|o| o.as_name()).ok()? != b"Image" {
             return None;
+        }
+        // Firma/sello detectado por la pre-flight: preservar bytes originales.
+        // Va antes de /SMask, validación de dims y decodificación: no tocamos la
+        // imagen en absoluto.
+        if preserve_this {
+            return Some(preserved(id, stream.content.len() as u64));
         }
         // F1: una imagen con máscara de transparencia externa (/SMask) se
         // preserva sin tocar. Recomprimirla a JPEG perdería el canal alfa y
@@ -329,6 +354,12 @@ pub fn compress_with_progress(
 
     let params = opts.resolved();
 
+    // Pasada pre-flight de firmas/sellos: produce el set de imágenes XObject a
+    // preservar byte-idénticas (apariencias de firma + sellos/logos pequeños).
+    // Corre una vez, tras el early-return de `Strict` (un doc con firma cripto ya
+    // se devolvió intacto arriba) y antes del bucle de imágenes. No muta el doc.
+    let preserve = crate::signatures::collect_preserved_images(&doc);
+
     // P2: DPI efectivo real de cada imagen a partir del CTM del content stream.
     // Se calcula una vez, antes del bucle de imágenes. Las imágenes ausentes del
     // mapa (nunca pintadas / CTM degenerado) no se downsamplean (fallback v1).
@@ -355,6 +386,7 @@ pub fn compress_with_progress(
     let mut img_warnings = Vec::new();
     for (i, id) in image_ids.into_iter().enumerate() {
         let eff_dpi = dpi_map.get(&id).copied();
+        let preserve_this = preserve.contains(&id);
         // las imágenes no soportadas (no-Image) simplemente no generan stat
         if let Some(outcome) = process_image(
             &mut doc,
@@ -363,6 +395,7 @@ pub fn compress_with_progress(
             params.image_dpi,
             opts.downsample,
             eff_dpi,
+            preserve_this,
         ) {
             stats.push(outcome.stat);
             img_warnings.extend(outcome.warnings);
@@ -383,6 +416,21 @@ pub fn compress_with_progress(
     let mut report = report0;
     report.warnings.extend(img_warnings);
     report.images = stats;
+
+    // Firmas/sellos preservados: contamos los stats con acción Preserved y, si
+    // hubo alguno, emitimos UN solo warning de resumen (no uno por imagen, para
+    // no hacer ruido en el reporte).
+    let preserved_count = report
+        .images
+        .iter()
+        .filter(|s| s.action == ImageAction::Preserved)
+        .count();
+    report.preserved_images = preserved_count;
+    if preserved_count > 0 {
+        report.warnings.push(Warning::Other(format!(
+            "{preserved_count} firma(s)/sello(s) preservados sin recomprimir"
+        )));
+    }
 
     // F10: piso a nivel-documento. Si tras serializar el output recomprimido
     // resulta MÁS grande que el input (p. ej. la sobrecarga de reescritura
@@ -811,5 +859,185 @@ mod tests {
         let input = pdf_with_jpeg();
         let res = compress(&input, &CompressOptions::default()).unwrap();
         assert!(res.output.len() <= input.len());
+    }
+
+    /// JPEG RGB pequeño de `side`×`side` px con ruido suave (fixtures firma/sello).
+    fn stamp_jpeg(side: u32) -> Vec<u8> {
+        use image::codecs::jpeg::JpegEncoder;
+        use image::{ImageEncoder, RgbImage};
+        let mut rgb = RgbImage::new(side, side);
+        for (x, y, px) in rgb.enumerate_pixels_mut() {
+            *px = image::Rgb([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8]);
+        }
+        let mut jpeg = Vec::new();
+        JpegEncoder::new_with_quality(&mut jpeg, 90)
+            .write_image(rgb.as_raw(), side, side, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        jpeg
+    }
+
+    /// PDF con un sello pequeño (150×150, ≤50KB) pintado en la página.
+    /// Devuelve (bytes, contenido original del stream de la imagen, img_id).
+    fn pdf_with_small_stamp() -> (Vec<u8>, Vec<u8>, u32) {
+        use lopdf::{dictionary, Document, Object, Stream};
+        let jpeg = stamp_jpeg(150);
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let img_stream = Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Image",
+                "Width" => 150, "Height" => 150,
+                "BitsPerComponent" => 8, "ColorSpace" => "DeviceRGB",
+                "Filter" => "DCTDecode",
+            },
+            jpeg.clone(),
+        );
+        let img_id = doc.add_object(img_stream);
+        let content_id = doc.add_object(Stream::new(
+            dictionary! {},
+            b"q 150 0 0 150 0 0 cm /Im0 Do Q".to_vec(),
+        ));
+        let resources_id =
+            doc.add_object(dictionary! { "XObject" => dictionary! { "Im0" => img_id } });
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages_id, "Contents" => content_id,
+            "Resources" => resources_id,
+            "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
+            }),
+        );
+        let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", catalog_id);
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf).unwrap();
+        (buf, jpeg, img_id.0)
+    }
+
+    #[test]
+    fn small_stamp_is_preserved_end_to_end() {
+        let (input, orig_content, img_id) = pdf_with_small_stamp();
+        let res = compress(&input, &CompressOptions::default()).unwrap();
+
+        // el output re-parsea y el sello sale byte-idéntico (no recomprimido)
+        let out_doc = Document::load_mem(&res.output).expect("el output debe re-parsear");
+        let out_stream = out_doc
+            .get_object((img_id, 0))
+            .expect("el sello debe sobrevivir")
+            .as_stream()
+            .unwrap();
+        assert_eq!(
+            out_stream.content, orig_content,
+            "el sello pequeño debe salir byte-idéntico"
+        );
+
+        let stat = res
+            .report
+            .images
+            .iter()
+            .find(|s| s.object_id == img_id)
+            .expect("stat del sello");
+        assert_eq!(stat.action, ImageAction::Preserved);
+        assert_eq!(stat.original_bytes, stat.output_bytes);
+        assert!(res.report.preserved_images >= 1, "debe contar ≥1 preservada");
+        assert!(
+            res.report
+                .warnings
+                .iter()
+                .any(|w| matches!(w, Warning::Other(m) if m.contains("preservados"))),
+            "debe haber un warning resumen de preservados, warnings={:?}",
+            res.report.warnings
+        );
+    }
+
+    /// PDF con un widget de firma (`FT=Sig`) cuya apariencia `/AP/N` es un Form
+    /// XObject que embebe una imagen GRANDE (400×400, fuera del umbral de sello):
+    /// se preserva por ser firma, NO por tamaño. Ejercita el caso A completo +
+    /// la supervivencia a `prune`. Devuelve (bytes, contenido original, img_id).
+    fn pdf_with_signature_appearance() -> (Vec<u8>, Vec<u8>, u32) {
+        use lopdf::{dictionary, Document, Object, Stream};
+        let jpeg = stamp_jpeg(400);
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+
+        let img_stream = Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Image",
+                "Width" => 400, "Height" => 400,
+                "BitsPerComponent" => 8, "ColorSpace" => "DeviceRGB",
+                "Filter" => "DCTDecode",
+            },
+            jpeg.clone(),
+        );
+        let img_id = doc.add_object(img_stream);
+
+        let form_stream = Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Form",
+                "BBox" => vec![0.into(), 0.into(), 100.into(), 100.into()],
+                "Resources" => dictionary! {
+                    "XObject" => dictionary! { "SImg" => img_id },
+                },
+            },
+            b"q 100 0 0 100 0 0 cm /SImg Do Q".to_vec(),
+        );
+        let form_id = doc.add_object(form_stream);
+
+        let annot_id = doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Widget", "FT" => "Sig",
+            "Rect" => vec![0.into(), 0.into(), 100.into(), 100.into()],
+            "AP" => dictionary! { "N" => form_id },
+        });
+
+        let content_id = doc.add_object(Stream::new(dictionary! {}, b"BT ET".to_vec()));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages_id, "Contents" => content_id,
+            "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            "Annots" => vec![annot_id.into()],
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
+            }),
+        );
+        let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", catalog_id);
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf).unwrap();
+        (buf, jpeg, img_id.0)
+    }
+
+    #[test]
+    fn signature_appearance_image_is_preserved_end_to_end() {
+        let (input, orig_content, img_id) = pdf_with_signature_appearance();
+        let res = compress(&input, &CompressOptions::default()).unwrap();
+
+        let out_doc = Document::load_mem(&res.output).expect("el output debe re-parsear");
+        let out_stream = out_doc
+            .get_object((img_id, 0))
+            .expect("la imagen de la apariencia debe sobrevivir a prune")
+            .as_stream()
+            .unwrap();
+        assert_eq!(
+            out_stream.content, orig_content,
+            "la imagen de la apariencia de firma debe salir byte-idéntica"
+        );
+
+        let stat = res
+            .report
+            .images
+            .iter()
+            .find(|s| s.object_id == img_id)
+            .expect("stat de la imagen de firma");
+        assert_eq!(
+            stat.action,
+            ImageAction::Preserved,
+            "la imagen de firma (400px, fuera del umbral de sello) se preserva por ser firma"
+        );
+        assert_eq!(stat.original_bytes, stat.output_bytes);
     }
 }

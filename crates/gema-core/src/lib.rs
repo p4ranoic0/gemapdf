@@ -16,6 +16,8 @@ pub mod image_opt;
 
 pub(crate) mod geometry;
 
+pub(crate) mod signatures;
+
 pub mod rewrite;
 
 pub mod progress;

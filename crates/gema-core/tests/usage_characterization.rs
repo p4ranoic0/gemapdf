@@ -362,7 +362,12 @@ fn unsupported_filter_chain_is_skipped_not_corrupted() {
     use lopdf::dictionary;
     use std::io::Write;
 
-    let side = 40u32;
+    // >300px a propósito: por debajo del umbral de sello (MAX_STAMP_DIM=300) la
+    // pasada de preservación de firmas/sellos marcaría esta imagen como
+    // Preserved en vez de Skipped. Aquí probamos el path de SKIP por filtro no
+    // soportado en aislamiento, así que usamos una imagen que NO es candidata a
+    // sello.
+    let side = 400u32;
     let raw = vec![137u8; (side * side * 3) as usize];
     let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
     enc.write_all(&raw).unwrap();
@@ -492,7 +497,11 @@ fn flate_photo_is_recompressed_and_shrinks() {
 /// decodifica directo a `ImageLuma8`.
 #[test]
 fn gray_jpeg_recompresses_to_devicegray_and_is_smaller_than_rgb_equivalent() {
-    let side = 256u32;
+    // >300px a propósito: por debajo del umbral de sello (MAX_STAMP_DIM=300) la
+    // preservación de firmas/sellos marcaría esta imagen como Preserved en vez de
+    // recomprimirla. Aquí aislamos el path de recompresión gris→DeviceGray, así
+    // que la imagen NO debe ser candidata a sello.
+    let side = 400u32;
 
     // Camino gris: JPEG DeviceGray (L8) → debe seguir en JPEG DeviceGray.
     let gray_input = pdf_with_image(gray_jpeg_image_stream(side, 95), side as i64, side as i64);

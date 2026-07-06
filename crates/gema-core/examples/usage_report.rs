@@ -27,13 +27,14 @@ fn main() {
     };
 
     // CSV header
-    println!("file,status,pages,signed,orig,out,ratio_pct,imgs,recompressed,downsampled,kept,skipped,warnings");
+    println!("file,status,pages,signed,orig,out,ratio_pct,imgs,recompressed,downsampled,kept,skipped,preserved,warnings");
 
     let mut tot_orig: u64 = 0;
     let mut tot_out: u64 = 0;
     let (mut ok, mut signed_n, mut encrypted_n, mut parse_err, mut grew) =
         (0u32, 0u32, 0u32, 0u32, 0u32);
-    let (mut a_recomp, mut a_down, mut a_kept, mut a_skip) = (0u32, 0u32, 0u32, 0u32);
+    let (mut a_recomp, mut a_down, mut a_kept, mut a_skip, mut a_preserved) =
+        (0u32, 0u32, 0u32, 0u32, 0u32);
 
     for path in &args {
         let name = Path::new(path)
@@ -59,13 +60,14 @@ fn main() {
         ) {
             Ok(res) => {
                 let r = &res.report;
-                let (mut rc, mut dn, mut kp, mut sk) = (0u32, 0u32, 0u32, 0u32);
+                let (mut rc, mut dn, mut kp, mut sk, mut pv) = (0u32, 0u32, 0u32, 0u32, 0u32);
                 for st in &r.images {
                     match st.action {
                         ImageAction::Recompressed => rc += 1,
                         ImageAction::Downsampled => dn += 1,
                         ImageAction::Kept => kp += 1,
                         ImageAction::Skipped => sk += 1,
+                        ImageAction::Preserved => pv += 1,
                     }
                 }
                 let orig = r.original_size;
@@ -88,8 +90,9 @@ fn main() {
                 a_down += dn;
                 a_kept += kp;
                 a_skip += sk;
+                a_preserved += pv;
                 println!(
-                    "{safe},ok,{},{},{},{},{:.1},{},{},{},{},{},{}",
+                    "{safe},ok,{},{},{},{},{:.1},{},{},{},{},{},{},{}",
                     r.pages,
                     r.is_signed,
                     orig,
@@ -100,6 +103,7 @@ fn main() {
                     dn,
                     kp,
                     sk,
+                    pv,
                     r.warnings.len()
                 );
             }
@@ -137,4 +141,5 @@ fn main() {
     eprintln!("downsampled:     {a_down}   <-- clave para validar el caveat de DPI");
     eprintln!("kept (sin gano): {a_kept}");
     eprintln!("skipped:         {a_skip}");
+    eprintln!("preservadas:     {a_preserved}   <-- firmas/sellos preservados byte-idénticos");
 }
