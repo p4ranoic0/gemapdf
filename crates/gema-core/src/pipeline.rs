@@ -105,33 +105,53 @@ fn process_image(
         FlateLossless,
     }
 
-    // decodificar. Dos rutas:
+    // Bug del sello negro: un JPEG CMYK/YCCK (4 componentes) —típico de sellos y
+    // escudos generados por Adobe, p. ej. el logo "PERÚ PAE" en documentos
+    // firmados— lo mal-decodifica el crate `image` (zune-jpeg) y produce píxeles
+    // NEGROS. Lo detectamos y decodificamos correctamente con `jpeg-decoder` +
+    // la fórmula Adobe (ver `decode_cmyk_jpeg`), obteniendo el RGB fiel. Así el
+    // sello queda correcto Y la imagen sigue la ruta normal de recompresión.
+    // Si la decodificación CMYK falla, preservamos el original (no corromper).
+    let cmyk_decoded = if crate::image_opt::jpeg::is_cmyk_jpeg(&raw_bytes) {
+        match crate::image_opt::jpeg::decode_cmyk_jpeg(&raw_bytes) {
+            Some(img) => Some(img),
+            None => return Some(skipped(id, orig_len)),
+        }
+    } else {
+        None
+    };
+
+    // decodificar. Rutas:
+    // 0. JPEG CMYK/YCCK: ya decodificado arriba a RGB → ruta foto → JPEG.
     // 1. Formato que `image` abre directo (DCTDecode/PNG) → ruta foto → JPEG.
     // 2. FlateDecode crudo soportado (P1): inflar a píxeles según ColorSpace/BPC,
     //    luego clasificar contenido para elegir JPEG (foto) vs Flate (línea).
     // Si ninguna aplica (predicho, colorspace/bpc no soportado, longitud que no
     // cuadra, CCITT/JPX…) → Skipped, preservando el stream original (v1, F8).
-    let (decoded, codec) = match image::load_from_memory(&raw_bytes) {
-        Ok(d) => (d, Codec::Jpeg),
-        Err(_) => {
-            match crate::image_opt::decode::decode_flate_image(
-                doc,
-                &stream_for_flate,
-                width,
-                height,
-            ) {
-                Some(d) => {
-                    // Clasificación content-aware: sólo las fotos se vuelven JPEG;
-                    // línea/texto se mantiene sin pérdida para no crear halos.
-                    let codec = match crate::image_opt::classify::classify(&d) {
-                        crate::image_opt::classify::Content::Photo => Codec::Jpeg,
-                        crate::image_opt::classify::Content::LineArt => Codec::FlateLossless,
-                    };
-                    (d, codec)
+    let (decoded, codec) = match cmyk_decoded {
+        Some(img) => (img, Codec::Jpeg),
+        None => match image::load_from_memory(&raw_bytes) {
+            Ok(d) => (d, Codec::Jpeg),
+            Err(_) => {
+                match crate::image_opt::decode::decode_flate_image(
+                    doc,
+                    &stream_for_flate,
+                    width,
+                    height,
+                ) {
+                    Some(d) => {
+                        // Clasificación content-aware: sólo las fotos se vuelven JPEG;
+                        // línea/texto se mantiene sin pérdida para no crear halos.
+                        let codec = match crate::image_opt::classify::classify(&d) {
+                            crate::image_opt::classify::Content::Photo => Codec::Jpeg,
+                            crate::image_opt::classify::Content::LineArt => Codec::FlateLossless,
+                        };
+                        (d, codec)
+                    }
+                    None => return Some(skipped(id, orig_len)),
                 }
-                None => return Some(skipped(id, orig_len)),
             }
-        }
+        },
     };
 
     let mut warnings: Vec<Warning> = Vec::new();

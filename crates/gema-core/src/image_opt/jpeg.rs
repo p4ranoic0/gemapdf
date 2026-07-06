@@ -52,9 +52,208 @@ impl Recompressor for JpegRecompressor {
     }
 }
 
+/// Número de componentes de color de un JPEG, leído de su marcador SOF
+/// (Start Of Frame). Devuelve `None` si `bytes` no es un JPEG reconocible.
+///
+/// Los JPEG de 4 componentes son CMYK/YCCK (típicos de sellos y escudos
+/// generados por Adobe). El crate `image` los mal-decodifica —la transformada
+/// APP14/YCCK invertida— y produce píxeles NEGROS. Detectarlos permite
+/// preservarlos sin recomprimir en vez de corromperlos.
+///
+/// Panic-safe ante bytes arbitrarios/truncados (todo acceso es acotado).
+pub(crate) fn jpeg_components(bytes: &[u8]) -> Option<u8> {
+    // SOI: FF D8
+    if bytes.len() < 4 || bytes[0] != 0xFF || bytes[1] != 0xD8 {
+        return None;
+    }
+    let mut i = 2usize;
+    while i + 1 < bytes.len() {
+        if bytes[i] != 0xFF {
+            i += 1;
+            continue;
+        }
+        // Los marcadores pueden ir precedidos de bytes de relleno 0xFF.
+        let mut j = i + 1;
+        while j < bytes.len() && bytes[j] == 0xFF {
+            j += 1;
+        }
+        if j >= bytes.len() {
+            return None;
+        }
+        let marker = bytes[j];
+        // Marcadores sin segmento de longitud: SOI, EOI, TEM y RSTn.
+        if matches!(marker, 0xD8 | 0xD9 | 0x01) || (0xD0..=0xD7).contains(&marker) {
+            i = j + 1;
+            continue;
+        }
+        // Segmento con longitud de 2 bytes.
+        let len_pos = j + 1;
+        if len_pos + 1 >= bytes.len() {
+            return None;
+        }
+        let seg_len = ((bytes[len_pos] as usize) << 8) | bytes[len_pos + 1] as usize;
+        // Marcadores SOF (frame): C0..CF EXCEPTO C4 (DHT), C8 (JPG) y CC (DAC).
+        let is_sof = matches!(
+            marker,
+            0xC0 | 0xC1
+                | 0xC2
+                | 0xC3
+                | 0xC5
+                | 0xC6
+                | 0xC7
+                | 0xC9
+                | 0xCA
+                | 0xCB
+                | 0xCD
+                | 0xCE
+                | 0xCF
+        );
+        if is_sof {
+            // Layout del SOF: [len:2][precision:1][height:2][width:2][Nf:1]...
+            // Nf está en len_pos + 7.
+            return bytes.get(len_pos + 7).copied();
+        }
+        if seg_len < 2 {
+            return None; // longitud inválida → evitamos bucle infinito
+        }
+        i = len_pos + seg_len;
+    }
+    None
+}
+
+/// `true` si los bytes son un JPEG CMYK/YCCK (4 componentes). El crate `image`
+/// (zune-jpeg) los mal-decodifica → salen negros; hay que usar `decode_cmyk_jpeg`.
+pub(crate) fn is_cmyk_jpeg(bytes: &[u8]) -> bool {
+    jpeg_components(bytes) == Some(4)
+}
+
+/// Decodifica un JPEG CMYK/YCCK (4 componentes) a RGB **correctamente**, usando
+/// `jpeg-decoder` (que devuelve CMYK crudo) y la fórmula Adobe. Es la vía buena
+/// para los sellos/escudos CMYK que `image`/zune-jpeg ennegrece.
+///
+/// Adobe almacena el CMYK invertido; `jpeg-decoder` lo entrega tal cual (tras
+/// YCCK→CMYK), así que `R = c·k/255`, `G = m·k/255`, `B = y·k/255` da el color
+/// correcto (verificado contra el sello real "PERÚ PAE"). Devuelve `None` si no
+/// es CMYK32, si la longitud no cuadra, o si la decodificación falla — el
+/// llamador entonces preserva el stream original. Panic-safe.
+pub(crate) fn decode_cmyk_jpeg(bytes: &[u8]) -> Option<image::DynamicImage> {
+    let mut d = jpeg_decoder::Decoder::new(std::io::Cursor::new(bytes));
+    let px = d.decode().ok()?;
+    let info = d.info()?;
+    if info.pixel_format != jpeg_decoder::PixelFormat::CMYK32 {
+        return None;
+    }
+    let (w, h) = (info.width as u32, info.height as u32);
+    let expected = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
+    if px.len() != expected {
+        return None;
+    }
+    let mut rgb = Vec::with_capacity(expected / 4 * 3);
+    for chunk in px.chunks_exact(4) {
+        let (c, m, y, k) = (
+            chunk[0] as u32,
+            chunk[1] as u32,
+            chunk[2] as u32,
+            chunk[3] as u32,
+        );
+        rgb.push((c * k / 255) as u8);
+        rgb.push((m * k / 255) as u8);
+        rgb.push((y * k / 255) as u8);
+    }
+    Some(image::DynamicImage::ImageRgb8(image::RgbImage::from_raw(
+        w, h, rgb,
+    )?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Construye una cabecera JPEG mínima con un SOF0 de `nf` componentes.
+    fn jpeg_with_components(nf: u8) -> Vec<u8> {
+        let seg_len: u16 = 8 + (nf as u16) * 3; // 2 len + 1 prec + 4 dims + 1 Nf + 3·Nf
+        let mut v = vec![0xFF, 0xD8, 0xFF, 0xC0];
+        v.push((seg_len >> 8) as u8);
+        v.push((seg_len & 0xFF) as u8);
+        v.push(8); // precision
+        v.extend_from_slice(&[0x00, 0x10, 0x00, 0x10]); // height, width
+        v.push(nf);
+        for c in 0..nf {
+            v.extend_from_slice(&[c + 1, 0x11, 0x00]); // id, sampling, quant table
+        }
+        v.extend_from_slice(&[0xFF, 0xD9]); // EOI
+        v
+    }
+
+    #[test]
+    fn detects_4_component_cmyk_jpeg() {
+        assert_eq!(jpeg_components(&jpeg_with_components(4)), Some(4));
+        assert!(is_cmyk_jpeg(&jpeg_with_components(4)));
+    }
+
+    #[test]
+    fn three_component_jpeg_is_not_cmyk() {
+        assert_eq!(jpeg_components(&jpeg_with_components(3)), Some(3));
+        assert!(!is_cmyk_jpeg(&jpeg_with_components(3)));
+    }
+
+    #[test]
+    fn real_rgb_jpeg_is_3_components_not_cmyk() {
+        // Un JPEG RGB real (3 componentes) codificado por el crate `image`.
+        let img = image::RgbImage::from_fn(24, 24, |x, y| {
+            image::Rgb([(x * 9) as u8, (y * 9) as u8, 128])
+        });
+        let mut jpeg = Vec::new();
+        JpegEncoder::new_with_quality(&mut jpeg, 80)
+            .write_image(img.as_raw(), 24, 24, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        assert_eq!(jpeg_components(&jpeg), Some(3));
+        assert!(!is_cmyk_jpeg(&jpeg));
+    }
+
+    #[test]
+    fn non_jpeg_and_truncated_do_not_panic() {
+        assert_eq!(jpeg_components(b""), None);
+        assert_eq!(jpeg_components(b"not a jpeg at all"), None);
+        assert_eq!(jpeg_components(&[0x89, 0x50, 0x4E, 0x47]), None); // PNG magic
+        assert_eq!(jpeg_components(&[0xFF, 0xD8]), None); // SOI sin frame
+        assert_eq!(jpeg_components(&[0xFF, 0xD8, 0xFF, 0xC0, 0x00]), None); // SOF truncado
+        assert!(!is_cmyk_jpeg(&[0xFF, 0xD8, 0xFF]));
+    }
+
+    /// Regresión del "bug del sello negro": el sello real "PERÚ PAE" es un JPEG
+    /// CMYK (YCCK). `image`/zune-jpeg lo devolvía casi todo negro; `decode_cmyk_jpeg`
+    /// debe devolver la imagen con color real. Verificamos que NO es casi-negra
+    /// (brillo medio alto — el sello es mayormente blanco/rojo) y sus dimensiones.
+    #[test]
+    fn real_cmyk_seal_decodes_to_color_not_black() {
+        let bytes = include_bytes!("../../tests/fixtures/cmyk_seal.jpg");
+        assert!(is_cmyk_jpeg(bytes), "el fixture debe ser CMYK (4 comp)");
+        let img = decode_cmyk_jpeg(bytes).expect("debe decodificar el CMYK");
+        let rgb = img.to_rgb8();
+        assert_eq!(rgb.dimensions(), (148, 148));
+        let (sum, n) = rgb.pixels().fold((0u64, 0u64), |(s, n), p| {
+            (s + p.0[0] as u64 + p.0[1] as u64 + p.0[2] as u64, n + 3)
+        });
+        let mean = sum as f64 / n as f64;
+        assert!(
+            mean > 100.0,
+            "el sello decodificado no debe ser casi negro (brillo medio {mean:.0}/255)"
+        );
+    }
+
+    #[test]
+    fn decode_cmyk_jpeg_rejects_non_cmyk_and_garbage() {
+        // Un JPEG RGB (3 comp) no es CMYK32 → None.
+        let img = image::RgbImage::from_pixel(8, 8, image::Rgb([20, 40, 60]));
+        let mut jpeg = Vec::new();
+        JpegEncoder::new_with_quality(&mut jpeg, 70)
+            .write_image(img.as_raw(), 8, 8, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        assert!(decode_cmyk_jpeg(&jpeg).is_none());
+        assert!(decode_cmyk_jpeg(b"garbage").is_none());
+        assert!(decode_cmyk_jpeg(&[0xFF, 0xD8, 0xFF]).is_none());
+    }
 
     /// Un patrón de gris no plano (no un solo tono) para que la compresión JPEG
     /// tenga contenido real que codificar, en vez de un bloque uniforme que

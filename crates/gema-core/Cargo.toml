@@ -18,3 +18,4 @@ lopdf.workspace = true
 image.workspace = true
 flate2.workspace = true
 thiserror.workspace = true
+jpeg-decoder = "0.3.2"
