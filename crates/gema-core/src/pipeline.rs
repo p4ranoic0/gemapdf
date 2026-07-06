@@ -942,7 +942,10 @@ mod tests {
             .expect("stat del sello");
         assert_eq!(stat.action, ImageAction::Preserved);
         assert_eq!(stat.original_bytes, stat.output_bytes);
-        assert!(res.report.preserved_images >= 1, "debe contar ≥1 preservada");
+        assert!(
+            res.report.preserved_images >= 1,
+            "debe contar ≥1 preservada"
+        );
         assert!(
             res.report
                 .warnings
