@@ -1033,7 +1033,15 @@ mod tests {
                 "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
             }),
         );
-        let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        // AcroForm con NeedAppearances (el flag que en Acrobat oculta la firma):
+        // así el aplanado tiene un form real que quitar y la aserción del test
+        // "sin /AcroForm" no es vacua.
+        let acro_id = doc.add_object(dictionary! {
+            "Fields" => vec![annot_id.into()], "NeedAppearances" => true, "SigFlags" => 3,
+        });
+        let catalog_id = doc.add_object(
+            dictionary! { "Type" => "Catalog", "Pages" => pages_id, "AcroForm" => acro_id },
+        );
         doc.trailer.set("Root", catalog_id);
         let mut buf = Vec::new();
         doc.save_to(&mut buf).unwrap();
