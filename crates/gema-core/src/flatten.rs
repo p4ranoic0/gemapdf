@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 
 use lopdf::content::{Content, Operation};
-use lopdf::{Document, Object, ObjectId};
+use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
 
 use crate::geometry::Matrix;
 use crate::signatures::{is_signature_widget, page_annotations};
@@ -33,7 +33,12 @@ pub(crate) fn flatten_signatures(doc: &mut Document) -> usize {
     if ops.is_empty() {
         return 0;
     }
+    // Añade cada apariencia como XObject de su página y acumula sus operaciones de
+    // dibujo AGRUPADAS por página, para envolver el contenido existente en q/Q una
+    // sola vez por página (ver `wrap_page_content`).
+    let mut draw_by_page: HashMap<ObjectId, Vec<Operation>> = HashMap::new();
     let mut per_page_remove: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
+    let mut page_order: Vec<ObjectId> = Vec::new();
     let mut counter: usize = 0;
     for op in &ops {
         let name = format!("GemaFlat{counter}");
@@ -45,35 +50,38 @@ pub(crate) fn flatten_signatures(doc: &mut Document) -> usize {
             continue;
         }
         let m = &op.a;
-        let ops_content = vec![
-            Operation::new("q", vec![]),
-            Operation::new(
-                "cm",
-                vec![
-                    Object::Real(m.a),
-                    Object::Real(m.b),
-                    Object::Real(m.c),
-                    Object::Real(m.d),
-                    Object::Real(m.e),
-                    Object::Real(m.f),
-                ],
-            ),
-            Operation::new("Do", vec![Object::Name(name.into_bytes())]),
-            Operation::new("Q", vec![]),
-        ];
-        if doc
-            .add_to_page_content(op.page_id, Content { operations: ops_content })
-            .is_ok()
-        {
-            per_page_remove
-                .entry(op.page_id)
-                .or_default()
-                .push(op.annot_id);
+        let entry = draw_by_page.entry(op.page_id).or_default();
+        if entry.is_empty() {
+            page_order.push(op.page_id);
         }
+        entry.push(Operation::new("q", vec![]));
+        entry.push(Operation::new(
+            "cm",
+            vec![
+                Object::Real(m.a),
+                Object::Real(m.b),
+                Object::Real(m.c),
+                Object::Real(m.d),
+                Object::Real(m.e),
+                Object::Real(m.f),
+            ],
+        ));
+        entry.push(Operation::new("Do", vec![Object::Name(name.into_bytes())]));
+        entry.push(Operation::new("Q", vec![]));
+        per_page_remove
+            .entry(op.page_id)
+            .or_default()
+            .push(op.annot_id);
     }
     let flattened: usize = per_page_remove.values().map(|v| v.len()).sum();
-    for (page_id, remove_ids) in per_page_remove {
-        remove_annots(doc, page_id, &remove_ids);
+    // Inyecta el dibujo por página envolviendo el contenido existente en q/Q.
+    for page_id in &page_order {
+        if let Some(operations) = draw_by_page.remove(page_id) {
+            wrap_page_content(doc, *page_id, operations);
+        }
+    }
+    for (page_id, remove_ids) in &per_page_remove {
+        remove_annots(doc, *page_id, remove_ids);
     }
     if flattened > 0 {
         // Elimina el AcroForm ENTERO (no sólo los campos aplanados): con él se van
@@ -87,6 +95,32 @@ pub(crate) fn flatten_signatures(doc: &mut Document) -> usize {
         }
     }
     flattened
+}
+
+/// Envuelve el contenido existente de la página en `q`/`Q` y anexa las
+/// operaciones `draw` (que dibujan las firmas horneadas). El `q` inicial guarda
+/// el estado gráfico por defecto; el `Q` lo restaura ANTES de dibujar, anulando
+/// cualquier `cm` de nivel superior que la página dejara activo sin restaurar
+/// (p.ej. un volteo vertical `d<0` típico de escaneados). Sin este reset, la
+/// firma horneada heredaría ese CTM y saldría de cabeza / desplazada. Para
+/// páginas ya balanceadas a identidad el envoltorio no tiene efecto visible.
+fn wrap_page_content(doc: &mut Document, page_id: ObjectId, draw: Vec<Operation>) {
+    let Ok(draw_bytes) = (Content { operations: draw }).encode() else {
+        return;
+    };
+    let existing = doc.get_page_contents(page_id);
+    let head_id = doc.add_object(Stream::new(Dictionary::new(), b"q\n".to_vec()));
+    let mut tail = b"\nQ\n".to_vec();
+    tail.extend_from_slice(&draw_bytes);
+    tail.push(b'\n');
+    let tail_id = doc.add_object(Stream::new(Dictionary::new(), tail));
+    let mut contents: Vec<Object> = Vec::with_capacity(existing.len() + 2);
+    contents.push(Object::Reference(head_id));
+    contents.extend(existing.into_iter().map(Object::Reference));
+    contents.push(Object::Reference(tail_id));
+    if let Ok(page) = doc.get_dictionary_mut(page_id) {
+        page.set("Contents", Object::Array(contents));
+    }
 }
 
 /// Fase 1: recorre páginas/anotaciones (solo lectura) y arma la lista de
@@ -347,6 +381,37 @@ mod tests {
             doc.get_object(img_id).is_ok(),
             "la imagen de firma debe seguir existiendo (preservable)"
         );
+    }
+
+    #[test]
+    fn flatten_wraps_page_content_in_q_q() {
+        // El fix del volteo: el contenido existente queda envuelto en q/Q y el
+        // dibujo de la firma arranca con un Q que restaura el CTM por defecto,
+        // así no hereda un `cm` de nivel superior que la página dejara activo.
+        let (mut doc, page_id, _img) = doc_with_signature();
+        assert_eq!(flatten_signatures(&mut doc), 1);
+
+        let contents = doc.get_page_contents(page_id);
+        assert!(
+            contents.len() >= 3,
+            "el /Contents debe ser [q, ...existente, Q+draw]: {}",
+            contents.len()
+        );
+        // primer stream = wrapper que guarda el estado por defecto
+        let first = doc.get_object(contents[0]).unwrap().as_stream().unwrap();
+        assert_eq!(first.content, b"q\n", "el primer stream debe ser `q`");
+        // último stream = reset Q antes del Do de la firma
+        let last = doc
+            .get_object(*contents.last().unwrap())
+            .unwrap()
+            .as_stream()
+            .unwrap();
+        let s = String::from_utf8_lossy(&last.content);
+        assert!(
+            s.trim_start().starts_with('Q'),
+            "el draw debe empezar con Q (reset del CTM): {s}"
+        );
+        assert!(s.contains("Do"), "y contener el Do de la firma: {s}");
     }
 
     #[test]
