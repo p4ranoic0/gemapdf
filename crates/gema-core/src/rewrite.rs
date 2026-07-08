@@ -1,5 +1,5 @@
 use crate::error::GemaError;
-use lopdf::{Document, Object, ObjectId};
+use lopdf::{dictionary, Document, Object, ObjectId, Stream, StringFormat};
 use std::collections::HashMap;
 
 /// Quita /Metadata del catálogo y /Info del trailer si `remove_metadata`.
@@ -8,6 +8,50 @@ pub fn strip_metadata(doc: &mut Document) {
         catalog.remove(b"Metadata");
     }
     doc.trailer.remove(b"Info");
+}
+
+/// Estampa la marca gemaPDF: `/Info` (Producer + Creator) y un `/Metadata` XMP
+/// mínimo en el catálogo. Debe llamarse DESPUÉS de `cleanup_and_compress` para
+/// que el stream XMP no se recomprima (los lectores XMP esperan texto plano).
+pub fn brand_metadata(doc: &mut Document) {
+    let producer = format!("gemaPDF {}", env!("CARGO_PKG_VERSION"));
+
+    let info = dictionary! {
+        "Producer" => Object::String(producer.clone().into_bytes(), StringFormat::Literal),
+        "Creator" => Object::String(producer.clone().into_bytes(), StringFormat::Literal),
+    };
+    let info_id = doc.add_object(Object::Dictionary(info));
+    doc.trailer.set("Info", Object::Reference(info_id));
+
+    let xmp = build_xmp(&producer);
+    let meta_id = doc.add_object(Object::Stream(Stream::new(
+        dictionary! { "Type" => "Metadata", "Subtype" => "XML" },
+        xmp,
+    )));
+    if let Ok(catalog) = doc.catalog_mut() {
+        catalog.set("Metadata", Object::Reference(meta_id));
+    }
+}
+
+/// Paquete XMP mínimo y bien formado con la marca gemaPDF.
+fn build_xmp(producer: &str) -> Vec<u8> {
+    format!(
+        r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:pdf="http://ns.adobe.com/pdf/1.3/"
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+    xmlns:dc="http://purl.org/dc/elements/1.1/">
+   <pdf:Producer>{producer}</pdf:Producer>
+   <xmp:CreatorTool>{producer}</xmp:CreatorTool>
+   <dc:format>application/pdf</dc:format>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>"#
+    )
+    .into_bytes()
 }
 
 /// Reemplaza recursivamente cada `Reference(id)` según `map` (dup → canónico).
@@ -223,5 +267,51 @@ mod tests {
             doc.objects.contains_key(&a) && doc.objects.contains_key(&b),
             "dicts distintos no deben deduplicarse"
         );
+    }
+
+    #[test]
+    fn brand_metadata_stamps_gemapdf() {
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(
+                dictionary! { "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1 },
+            ),
+        );
+        let cat = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", cat);
+
+        brand_metadata(&mut doc);
+
+        // /Info con Producer que contiene gemaPDF
+        let info_ref = doc.trailer.get(b"Info").unwrap();
+        let (_, info) = doc.dereference(info_ref).unwrap();
+        let producer = info.as_dict().unwrap().get(b"Producer").unwrap();
+        if let Object::String(b, _) = producer {
+            assert!(
+                String::from_utf8_lossy(b).contains("gemaPDF"),
+                "Producer debe llevar gemaPDF"
+            );
+        } else {
+            panic!("Producer debe ser string literal");
+        }
+
+        // /Metadata XMP en el catálogo, con gemaPDF en el texto
+        let meta_ref = doc.catalog().unwrap().get(b"Metadata").unwrap();
+        let (_, meta) = doc.dereference(meta_ref).unwrap();
+        let xmp = &meta.as_stream().unwrap().content;
+        assert!(
+            String::from_utf8_lossy(xmp).contains("gemaPDF"),
+            "el XMP debe llevar gemaPDF"
+        );
+
+        // el doc re-parsea
+        let out = serialize(&mut doc).unwrap();
+        assert!(Document::load_mem(&out).is_ok());
     }
 }
