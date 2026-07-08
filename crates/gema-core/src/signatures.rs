@@ -72,7 +72,7 @@ fn collect_signature_appearance_images(doc: &Document, out: &mut HashSet<ObjectI
 
 /// Devuelve el array `/Annots` de una página (resuelto a un `Vec<Object>` de sus
 /// elementos, sin desreferenciar cada uno todavía). `None` si no hay `/Annots`.
-fn page_annotations(doc: &Document, page_id: ObjectId) -> Option<Vec<Object>> {
+pub(crate) fn page_annotations(doc: &Document, page_id: ObjectId) -> Option<Vec<Object>> {
     let page = doc.get_dictionary(page_id).ok()?;
     let annots_obj = page.get(b"Annots").ok()?;
     let (_, resolved) = doc.dereference(annots_obj).ok()?;
@@ -82,7 +82,7 @@ fn page_annotations(doc: &Document, page_id: ObjectId) -> Option<Vec<Object>> {
 
 /// Una anotación es firma si `Subtype=Widget` y su `FT` (directo o heredado por
 /// la cadena `/Parent`) es `Sig`. Sube `/Parent` con tope duro de saltos.
-fn is_signature_widget(doc: &Document, annot: &lopdf::Dictionary) -> bool {
+pub(crate) fn is_signature_widget(doc: &Document, annot: &lopdf::Dictionary) -> bool {
     let is_widget = annot
         .get(b"Subtype")
         .and_then(|o| o.as_name())
