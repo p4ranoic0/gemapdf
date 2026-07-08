@@ -41,7 +41,7 @@ pub fn analyze(input: &[u8]) -> Result<JsValue, JsError> {
 /// Comprime un PDF devolviendo `{ output: Uint8Array, report: {...} }`.
 ///
 /// - `profile`: "screen" | "ebook" | "printer".
-/// - `options`: objeto `{ image_dpi?, jpeg_quality?, signatures?: "strict"|"ignore" }`
+/// - `options`: objeto `{ image_dpi?, jpeg_quality?, signatures?: "strict"|"ignore"|"flatten" }`
 ///   o undefined/null para usar los defaults del perfil. Claves desconocidas se
 ///   ignoran; valores inválidos son un error.
 /// - `on_phase`: función opcional que recibe `{ phase, done?, total? }` con
@@ -125,6 +125,8 @@ struct JsReport {
     images_skipped: usize,
     /// Firmas/sellos preservados byte-idénticos (no recomprimidos).
     images_preserved: usize,
+    /// Firmas/sellos aplanados al contenido de página (política flatten).
+    flattened_signatures: usize,
     warnings: Vec<String>,
 }
 
@@ -155,6 +157,7 @@ fn to_js_report(r: &Report) -> JsReport {
         images_kept: kept,
         images_skipped: skipped,
         images_preserved: preserved,
+        flattened_signatures: r.flattened_signatures,
         warnings: r.warnings.iter().map(|w| w.to_string()).collect(),
     }
 }
@@ -165,7 +168,7 @@ fn to_js_report(r: &Report) -> JsReport {
 struct JsOptions {
     image_dpi: Option<u32>,
     jpeg_quality: Option<u8>,
-    /// "strict" | "ignore"
+    /// "strict" | "ignore" | "flatten" (default: flatten)
     signatures: Option<String>,
 }
 
@@ -185,14 +188,10 @@ fn parse_profile(profile: &str) -> Result<Profile, String> {
 fn to_compress_options(profile: &str, o: &JsOptions) -> Result<CompressOptions, String> {
     let profile = parse_profile(profile)?;
     let signatures = match o.signatures.as_deref() {
-        // default de core: Strict (nunca romper una firma sin pedirlo)
-        None | Some("strict") => SignaturePolicy::Strict,
+        Some("strict") => SignaturePolicy::Strict,
         Some("ignore") => SignaturePolicy::Ignore,
-        Some(other) => {
-            return Err(format!(
-                "política de firmas desconocida: {other} (usa strict|ignore)"
-            ))
-        }
+        Some("flatten") | None => SignaturePolicy::Flatten,
+        Some(other) => return Err(format!("signatures desconocido: {other}")),
     };
     Ok(CompressOptions {
         profile,
@@ -265,7 +264,7 @@ mod tests {
         assert_eq!(opts.profile, Profile::Ebook);
         assert_eq!(opts.image_dpi, None);
         assert_eq!(opts.jpeg_quality, None);
-        assert_eq!(opts.signatures, SignaturePolicy::Strict);
+        assert_eq!(opts.signatures, SignaturePolicy::Flatten);
         // el resto de flags conserva los defaults de core
         assert!(opts.downsample && opts.recompress_streams && opts.remove_metadata);
     }
@@ -303,7 +302,7 @@ mod tests {
             ..Default::default()
         };
         let err = to_compress_options("ebook", &bad).unwrap_err();
-        assert!(err.contains("strict|ignore"), "err={err}");
+        assert!(err.contains("signatures desconocido"), "err={err}");
     }
 
     #[test]
@@ -345,6 +344,7 @@ mod tests {
         assert_eq!(js.images_downsampled, 1);
         assert_eq!(js.images_kept, 1);
         assert_eq!(js.images_skipped, 1);
+        assert_eq!(js.flattened_signatures, 0);
         assert_eq!(js.warnings.len(), 3);
         assert!(js.warnings[0].contains("firmado"));
         assert!(js.warnings[1].contains('9'));
