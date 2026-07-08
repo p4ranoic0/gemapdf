@@ -360,6 +360,17 @@ pub fn compress_with_progress(
     // se devolvió intacto arriba) y antes del bucle de imágenes. No muta el doc.
     let preserve = crate::signatures::collect_preserved_images(&doc);
 
+    // Política Flatten: hornea las firmas visibles al contenido de página. Va
+    // DESPUÉS de calcular `preserve` (que necesita los widgets en /Annots) y
+    // ANTES del bucle de imágenes (las imágenes de firma siguen preservándose por
+    // ObjectId). Sacrifica la validez cripto (ya rota por la compresión) a cambio
+    // de que Acrobat renderice las firmas.
+    let flattened = if opts.signatures == SignaturePolicy::Flatten {
+        crate::flatten::flatten_signatures(&mut doc)
+    } else {
+        0
+    };
+
     // P2: DPI efectivo real de cada imagen a partir del CTM del content stream.
     // Se calcula una vez, antes del bucle de imágenes. Las imágenes ausentes del
     // mapa (nunca pintadas / CTM degenerado) no se downsamplean (fallback v1).
@@ -409,6 +420,8 @@ pub fn compress_with_progress(
         crate::rewrite::strip_metadata(&mut doc);
     }
     crate::rewrite::cleanup_and_compress(&mut doc, opts.recompress_streams);
+    // Tras comprimir (para que el XMP no se recomprima): estampa la marca gemaPDF.
+    crate::rewrite::brand_metadata(&mut doc);
     let output = crate::rewrite::serialize(&mut doc)?;
 
     // F5: movemos las warnings del reporte base en vez de clonarlas; luego le
@@ -426,6 +439,7 @@ pub fn compress_with_progress(
         .filter(|s| s.action == ImageAction::Preserved)
         .count();
     report.preserved_images = preserved_count;
+    report.flattened_signatures = flattened;
     if preserved_count > 0 {
         report.warnings.push(Warning::Other(format!(
             "{preserved_count} firma(s)/sello(s) preservados sin recomprimir"
@@ -438,7 +452,15 @@ pub fn compress_with_progress(
     // devolvemos los bytes originales. El reporte refleja que no hubo mejora
     // (output_size = input.len(), ratio = 1.0). La ruta de SignaturePolicy::Strict
     // ya devuelve el original más arriba y no pasa por aquí.
-    let result = if output.len() > input.len() {
+    //
+    // Excepción: cuando se aplanaron firmas (flattened > 0) se hicieron cambios
+    // semánticos intencionales (widget eliminado, /AcroForm quitado, marca
+    // gemaPDF estampada). Incluso si el output resulta ligeramente mayor que el
+    // input por overhead de firma+branding, se devuelve el output procesado —no
+    // el original sin aplanar— para que el documento sea universalmente visible
+    // en Acrobat. Sin firmas (flattened == 0) la política es irrelevante y el
+    // piso sigue aplicando.
+    let result = if output.len() > input.len() && flattened == 0 {
         report.output_size = Some(input.len() as u64);
         report.warnings.push(Warning::Other(
             "sin mejora: se conservó el documento original".into(),
@@ -1046,5 +1068,35 @@ mod tests {
             "la imagen de firma (400px, fuera del umbral de sello) se preserva por ser firma"
         );
         assert_eq!(stat.original_bytes, stat.output_bytes);
+    }
+
+    #[test]
+    fn flatten_policy_bakes_signature_and_drops_form() {
+        let (input, _orig, img_id) = pdf_with_signature_appearance();
+        // Flatten es el default
+        let res = compress(&input, &CompressOptions::default()).unwrap();
+
+        assert!(res.report.flattened_signatures >= 1, "debe aplanar ≥1 firma");
+
+        let out_doc = Document::load_mem(&res.output).expect("el output debe re-parsear");
+        // Sin /AcroForm en el catálogo → Acrobat no regenera campos en blanco.
+        assert!(
+            out_doc.catalog().unwrap().get(b"AcroForm").is_err(),
+            "/AcroForm debe desaparecer tras aplanar"
+        );
+        // La imagen de la firma sigue presente (preservada, ahora vía recursos).
+        assert!(
+            out_doc.get_object((img_id, 0)).is_ok(),
+            "la imagen de firma debe sobrevivir"
+        );
+        // Producer gemaPDF estampado.
+        let info_ref = out_doc.trailer.get(b"Info").unwrap();
+        let (_, info) = out_doc.dereference(info_ref).unwrap();
+        let producer = info.as_dict().unwrap().get(b"Producer").unwrap();
+        if let Object::String(b, _) = producer {
+            assert!(String::from_utf8_lossy(b).contains("gemaPDF"));
+        } else {
+            panic!("Producer debe ser string");
+        }
     }
 }
