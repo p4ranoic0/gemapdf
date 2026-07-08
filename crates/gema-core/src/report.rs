@@ -44,6 +44,8 @@ pub struct Report {
     pub images: Vec<ImageStat>,
     /// Número de imágenes preservadas byte-idénticas por ser firma/sello.
     pub preserved_images: usize,
+    /// Número de firmas/sellos aplanados al contenido de página (política Flatten).
+    pub flattened_signatures: usize,
     pub is_signed: bool,
     /// No se computa en v1: reservado para el módulo de OCR de v2. Actualmente
     /// siempre es `false`.

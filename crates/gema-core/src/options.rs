@@ -14,6 +14,10 @@ pub enum SignaturePolicy {
     Strict,
     /// Comprime de todos modos (rompe la firma criptográfica).
     Ignore,
+    /// Aplana las firmas/sellos visibles al contenido de página y comprime.
+    /// Universalmente visible (Acrobat OK); sacrifica la validez criptográfica
+    /// (que la compresión ya rompe).
+    Flatten,
 }
 
 /// Parámetros resueltos de un perfil.
@@ -50,7 +54,7 @@ impl Default for CompressOptions {
             recompress_streams: true,
             remove_metadata: true,
             dedupe_images: false,
-            signatures: SignaturePolicy::Strict,
+            signatures: SignaturePolicy::Flatten,
         }
     }
 }

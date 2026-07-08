@@ -835,8 +835,12 @@ mod tests {
         use crate::progress::Phase;
 
         let input = signed_pdf();
-        // SignaturePolicy::Strict es el default
-        let opts = CompressOptions::default();
+        // Strict ya no es el default (ahora es Flatten); lo pedimos explícito
+        // para ejercitar el retorno temprano byte-idéntico.
+        let opts = CompressOptions {
+            signatures: crate::options::SignaturePolicy::Strict,
+            ..Default::default()
+        };
 
         let mut phases: Vec<Phase> = Vec::new();
         let res = compress_with_progress(&input, &opts, &mut |p| phases.push(p)).unwrap();
