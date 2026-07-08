@@ -76,6 +76,12 @@ pub(crate) fn flatten_signatures(doc: &mut Document) -> usize {
         remove_annots(doc, page_id, &remove_ids);
     }
     if flattened > 0 {
+        // Elimina el AcroForm ENTERO (no sólo los campos aplanados): con él se van
+        // /Fields, /SigFlags y sobre todo /NeedAppearances (el flag que hacía que
+        // Acrobat regenerara los campos en blanco). Es intencional para este uso
+        // —expedientes firmados finales que se recomprimen para archivo/visualización,
+        // sin campos interactivos que conservar—; coincide con lo que produce el
+        // motor clásico (salida pdf-lib con Form: none).
         if let Ok(catalog) = doc.catalog_mut() {
             catalog.remove(b"AcroForm");
         }
@@ -375,5 +381,27 @@ mod tests {
         assert!((a.d - 1.0).abs() < 1e-4, "sy: {}", a.d);
         assert!((a.e - 100.0).abs() < 1e-4, "e: {}", a.e);
         assert!((a.f - 700.0).abs() < 1e-4, "f: {}", a.f);
+    }
+
+    #[test]
+    fn flatten_matrix_accounts_for_form_matrix() {
+        // /Matrix con traslación (e=10, f=20). El BBox [0 0 100 50] transformado
+        // → esquinas (10,20)..(110,70), bbox transformado [10 20 110 70] (tw=100,
+        // th=50). Rect [100 700 300 750] → sx=200/100=2, sy=50/50=1,
+        // e=100-2*10=80, f=700-1*20=680. Si el código usara el BBox CRUDO en vez
+        // del transformado, e daría 100 (no 80): este test lo detecta.
+        let m = Matrix {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 10.0,
+            f: 20.0,
+        };
+        let a = compute_flatten_matrix(&[0.0, 0.0, 100.0, 50.0], &m, &[100.0, 700.0, 300.0, 750.0]);
+        assert!((a.a - 2.0).abs() < 1e-4, "sx: {}", a.a);
+        assert!((a.d - 1.0).abs() < 1e-4, "sy: {}", a.d);
+        assert!((a.e - 80.0).abs() < 1e-4, "e: {}", a.e);
+        assert!((a.f - 680.0).abs() < 1e-4, "f: {}", a.f);
     }
 }
