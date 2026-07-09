@@ -39,10 +39,8 @@ pub(crate) fn flatten_signatures(doc: &mut Document) -> usize {
     let mut draw_by_page: HashMap<ObjectId, Vec<Operation>> = HashMap::new();
     let mut per_page_remove: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
     let mut page_order: Vec<ObjectId> = Vec::new();
-    let mut counter: usize = 0;
-    for op in &ops {
+    for (counter, op) in ops.iter().enumerate() {
         let name = format!("GemaFlat{counter}");
-        counter += 1;
         if doc
             .add_xobject(op.page_id, name.clone().into_bytes(), op.form_id)
             .is_err()
