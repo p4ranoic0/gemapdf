@@ -9,7 +9,6 @@ use std::collections::HashSet;
 /// Devuelve el set de ObjectIds referenciados como `/SMask` por algún XObject
 /// de imagen del documento. No muta el doc; corre una vez antes del bucle de
 /// imágenes (misma mecánica que `signatures::collect_preserved_images`).
-#[allow(dead_code)] // TODO(task 7): se cablea en pipeline.rs
 pub(crate) fn collect_smask_ids(doc: &Document) -> HashSet<ObjectId> {
     let mut out = HashSet::new();
     for (_, obj) in doc.objects.iter() {

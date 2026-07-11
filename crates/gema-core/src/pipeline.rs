@@ -1,5 +1,5 @@
 use crate::error::GemaError;
-use crate::image_opt::process::process_image;
+use crate::image_opt::process::{process_image, ImageParams};
 use crate::options::{CompressOptions, SignaturePolicy};
 use crate::progress::Phase;
 use crate::report::{ImageAction, Report, Warning};
@@ -92,21 +92,22 @@ pub fn compress_with_progress(
     let total = image_ids.len();
     on_phase(Phase::OptimizingImages { done: 0, total });
 
+    // Pre-pasada de máscaras (lever C): imágenes usadas como /SMask.
+    let smask_ids = crate::image_opt::masks::collect_smask_ids(&doc);
+
     let mut stats = Vec::new();
     let mut img_warnings = Vec::new();
     for (i, id) in image_ids.into_iter().enumerate() {
-        let eff_dpi = dpi_map.get(&id).copied();
-        let preserve_this = preserve.contains(&id);
+        let img_params = ImageParams {
+            quality: params.jpeg_quality,
+            target_dpi: params.image_dpi,
+            downsample: opts.downsample,
+            effective_dpi: dpi_map.get(&id).copied(),
+            preserve: preserve.contains(&id),
+            is_smask: smask_ids.contains(&id),
+        };
         // las imágenes no soportadas (no-Image) simplemente no generan stat
-        if let Some(outcome) = process_image(
-            &mut doc,
-            id,
-            params.jpeg_quality,
-            params.image_dpi,
-            opts.downsample,
-            eff_dpi,
-            preserve_this,
-        ) {
+        if let Some(outcome) = process_image(&mut doc, id, &img_params) {
             stats.push(outcome.stat);
             img_warnings.extend(outcome.warnings);
         }

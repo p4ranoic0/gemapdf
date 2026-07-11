@@ -379,26 +379,34 @@ fn finalize(
     }
 }
 
+/// Parámetros por-imagen que el bucle del pipeline pasa a [`process_image`].
+pub(crate) struct ImageParams {
+    pub(crate) quality: u8,
+    pub(crate) target_dpi: u32,
+    /// Downsampling habilitado (opts.downsample).
+    pub(crate) downsample: bool,
+    /// DPI efectivo real de la imagen (máximo entre sus usos), derivado del
+    /// CTM. `None` → no se hace downsampling (fallback conservador).
+    pub(crate) effective_dpi: Option<f32>,
+    /// La pre-flight de firmas/sellos la marcó preservable: bytes ORIGINALES.
+    pub(crate) preserve: bool,
+    /// El XObject se usa como `/SMask` de otra imagen: forzar re-encode sin
+    /// pérdida y sin downsample (se cablea en el siguiente commit).
+    #[allow(dead_code)] // TODO(task 7): lo consume el orquestador
+    pub(crate) is_smask: bool,
+}
+
 /// Recomprime una imagen XObject in-place si conviene, encadenando las cinco
 /// etapas. Devuelve un `ImageOutcome` con el `ImageStat` y los warnings
 /// asociados. Las imágenes que no son XObject de tipo Image devuelven `None` (no
 /// generan stat); las que sí lo son pero no se pueden decodificar/recomprimir se
 /// marcan como `Skipped`.
-///
-/// - `effective_dpi`: DPI efectivo real de la imagen (máximo entre sus usos),
-///   derivado del CTM. `None` → no se hace downsampling (fallback conservador).
-/// - `preserve_this`: la pre-flight de firmas/sellos la marcó preservable → se
-///   devuelven sus bytes ORIGINALES sin decodificar ni recomprimir.
 pub(crate) fn process_image(
     doc: &mut Document,
     id: lopdf::ObjectId,
-    quality: u8,
-    target_dpi: u32,
-    downsample_on: bool,
-    effective_dpi: Option<f32>,
-    preserve_this: bool,
+    p: &ImageParams,
 ) -> Option<ImageOutcome> {
-    let src = match load(doc, id, preserve_this) {
+    let src = match load(doc, id, p.preserve) {
         Load::NotImage => return None,
         Load::Done(outcome) => return Some(outcome),
         Load::Ready(src) => src,
@@ -416,9 +424,9 @@ pub(crate) fn process_image(
         height,
         action,
         warnings,
-    } = transform(decoded, &src, downsample_on, target_dpi, effective_dpi);
+    } = transform(decoded, &src, p.downsample, p.target_dpi, p.effective_dpi);
 
-    let encoded = match encode(image, codec, quality) {
+    let encoded = match encode(image, codec, p.quality) {
         Some(e) => e,
         None => {
             // no se pudo recomprimir → omitida (conservando los warnings previos)
