@@ -59,6 +59,11 @@ fn preserved(id: lopdf::ObjectId, orig_len: u64) -> ImageOutcome {
 
 /// Outcome de preservación conservadora para casos de /SMask que no se pueden
 /// recomprimir sin riesgo (Matte/premultiplicado, alfa propio, máscara rara).
+///
+/// NB: el pipeline no toca el stream, pero el paso doc-level
+/// `rewrite::cleanup_and_compress` envuelve en Flate los streams SIN /Filter;
+/// el invariante "Skipped ⇒ byte-idéntico en el output" rige para streams con
+/// filtro (todas las imágenes reales).
 fn smask_skip(id: lopdf::ObjectId, orig_len: u64, why: &str) -> ImageOutcome {
     ImageOutcome {
         stat: ImageStat {
@@ -197,6 +202,9 @@ struct Decoded {
 }
 
 /// Etapa 2 — decodificar y clasificar. Rutas:
+/// -1. Cadena `[…, DCTDecode]` (lever A): `unwrap_to_dct` des-encadena el prefijo
+///     (Flate/A85/AHx/RL) y obtiene los bytes JPEG internos; éstos siguen las
+///     rutas 0/1 de abajo. `None` = no es ese caso.
 /// 0. JPEG CMYK/YCCK (bug del sello negro): `image`/zune-jpeg lo mal-decodifica a
 ///    píxeles NEGROS. Lo detectamos y decodificamos con `jpeg-decoder` + fórmula
 ///    Adobe → RGB fiel → ruta foto → JPEG.
