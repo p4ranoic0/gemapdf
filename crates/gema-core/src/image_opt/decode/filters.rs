@@ -254,3 +254,39 @@ pub(in crate::image_opt) fn apply_filter(
         Some(raw)
     }
 }
+
+/// Lever A: si la cadena `/Filter` es un array de ≥2 filtros cuyo ÚLTIMO
+/// elemento es `DCTDecode` y todos los previos son filtros soportados por el
+/// des-encadenador, aplica el prefijo y devuelve los bytes JPEG internos (el
+/// pipeline los enruta por el path DCT normal, incluida la detección CMYK).
+///
+/// Los `/DecodeParms` de la etapa DCT se ignoran a propósito: un decoder JPEG
+/// se gobierna por sus propios marcadores. Devuelve `None` si no es el caso
+/// (filtro único, DCT no-final, prefijo no soportado, decodificación fallida)
+/// para que el llamador siga con la ruta normal.
+#[allow(dead_code)] // Usado por tests y Task 2
+pub(in crate::image_opt) fn unwrap_to_dct(stream: &lopdf::Stream) -> Option<Vec<u8>> {
+    let dict = &stream.dict;
+    let Ok(Object::Array(arr)) = dict.get(b"Filter") else {
+        return None;
+    };
+    if arr.len() < 2 {
+        return None;
+    }
+    let names: Vec<&[u8]> = arr
+        .iter()
+        .map(|o| o.as_name())
+        .collect::<Result<_, _>>()
+        .ok()?;
+    let (&last, prefix) = names.split_last()?;
+    if !matches!(last, b"DCTDecode" | b"DCT") {
+        return None;
+    }
+    let mut data = stream.content.clone();
+    for (idx, name) in prefix.iter().enumerate() {
+        let filter = Filter::from_name(name)?;
+        let parms = decode_parms_for(dict, idx);
+        data = apply_filter(filter, &data, parms)?;
+    }
+    Some(data)
+}

@@ -64,6 +64,8 @@ mod predictor;
 // Re-exportado para `colorspace.rs`, que des-encadena filtros al resolver
 // paletas/perfiles vía referencia indirecta (`super::decode::{...}`).
 pub(in crate::image_opt) use filters::{apply_filter, decode_parms_for, filter_chain, Filter};
+#[allow(unused_imports)] // Re-exportado para Task 2
+pub(in crate::image_opt) use filters::unwrap_to_dct;
 
 /// Techo de bytes descomprimidos permitidos (~805 MB para RGB 16 384×16 384).
 /// Evita que un PDF malicioso con dimensiones enormes (p. ej. 100 000×100 000)
@@ -846,5 +848,100 @@ mod tests {
             decode_ascii_hex(b"4G").is_none(),
             "carácter no-hex sin EOD debe devolver None"
         );
+    }
+
+    // ---- unwrap_to_dct (lever A: cadena que termina en DCT) ----
+
+    #[test]
+    fn unwrap_to_dct_unwraps_flate_prefix() {
+        // Un "JPEG" de mentira: unwrap sólo des-encadena, no decodifica.
+        let jpeg = b"\xFF\xD8fake-jpeg-payload\xFF\xD9".to_vec();
+        let s = Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Image",
+                "Width" => 4, "Height" => 4,
+                "BitsPerComponent" => 8, "ColorSpace" => "DeviceRGB",
+                "Filter" => vec![
+                    Object::Name(b"FlateDecode".to_vec()),
+                    Object::Name(b"DCTDecode".to_vec()),
+                ],
+            },
+            zlib(&jpeg),
+        );
+        assert_eq!(unwrap_to_dct(&s).unwrap(), jpeg);
+    }
+
+    #[test]
+    fn unwrap_to_dct_unwraps_ascii85_prefix() {
+        let jpeg = b"\xFF\xD8otro-payload\xFF\xD9".to_vec();
+        let s = Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Image",
+                "Width" => 4, "Height" => 4,
+                "BitsPerComponent" => 8, "ColorSpace" => "DeviceRGB",
+                "Filter" => vec![
+                    Object::Name(b"ASCII85Decode".to_vec()),
+                    Object::Name(b"DCTDecode".to_vec()),
+                ],
+            },
+            ascii85_encode(&jpeg),
+        );
+        assert_eq!(unwrap_to_dct(&s).unwrap(), jpeg);
+    }
+
+    #[test]
+    fn unwrap_to_dct_rejects_out_of_scope_cases() {
+        let mk = |filters: Vec<Object>, content: Vec<u8>| {
+            Stream::new(
+                dictionary! {
+                    "Type" => "XObject", "Subtype" => "Image",
+                    "Width" => 4, "Height" => 4,
+                    "BitsPerComponent" => 8, "ColorSpace" => "DeviceRGB",
+                    "Filter" => filters,
+                },
+                content,
+            )
+        };
+        // DCT en posición no-final → None
+        let s = mk(
+            vec![
+                Object::Name(b"DCTDecode".to_vec()),
+                Object::Name(b"FlateDecode".to_vec()),
+            ],
+            vec![1, 2, 3],
+        );
+        assert!(unwrap_to_dct(&s).is_none());
+        // prefijo no soportado (LZW) → None
+        let s = mk(
+            vec![
+                Object::Name(b"LZWDecode".to_vec()),
+                Object::Name(b"DCTDecode".to_vec()),
+            ],
+            vec![1, 2, 3],
+        );
+        assert!(unwrap_to_dct(&s).is_none());
+        // array de un solo elemento → None (lo maneja el path DCT normal)
+        let s = mk(vec![Object::Name(b"DCTDecode".to_vec())], vec![1, 2, 3]);
+        assert!(unwrap_to_dct(&s).is_none());
+        // /Filter como Name suelto → None (ídem)
+        let s = Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Image",
+                "Width" => 4, "Height" => 4,
+                "BitsPerComponent" => 8, "ColorSpace" => "DeviceRGB",
+                "Filter" => "DCTDecode",
+            },
+            vec![1, 2, 3],
+        );
+        assert!(unwrap_to_dct(&s).is_none());
+        // zlib corrupto en el prefijo → None
+        let s = mk(
+            vec![
+                Object::Name(b"FlateDecode".to_vec()),
+                Object::Name(b"DCTDecode".to_vec()),
+            ],
+            vec![0xFF, 0x00, 0x13],
+        );
+        assert!(unwrap_to_dct(&s).is_none());
     }
 }
