@@ -264,7 +264,6 @@ pub(in crate::image_opt) fn apply_filter(
 /// se gobierna por sus propios marcadores. Devuelve `None` si no es el caso
 /// (filtro único, DCT no-final, prefijo no soportado, decodificación fallida)
 /// para que el llamador siga con la ruta normal.
-#[allow(dead_code)] // Usado por tests y Task 2
 pub(in crate::image_opt) fn unwrap_to_dct(stream: &lopdf::Stream) -> Option<Vec<u8>> {
     let dict = &stream.dict;
     let Ok(Object::Array(arr)) = dict.get(b"Filter") else {

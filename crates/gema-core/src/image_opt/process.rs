@@ -173,9 +173,15 @@ struct Decoded {
 /// decodifica, o colorspace/bpc/CCITT/JPX no soportado): el orquestador lo
 /// traduce a `Skipped`.
 fn decode(doc: &Document, src: &ImageSource) -> Result<Decoded, ()> {
+    // Lever A: cadena `[…, DCTDecode]` — des-encadena el prefijo (Flate/A85/
+    // AHx/RL) para obtener el JPEG interno; esos bytes siguen la ruta DCT
+    // normal (incluida la detección CMYK). `None` = no es ese caso.
+    let unwrapped = crate::image_opt::decode::unwrap_to_dct(&src.stream_for_flate);
+    let dct_bytes: &[u8] = unwrapped.as_deref().unwrap_or(&src.raw_bytes);
+
     // Si la decodificación CMYK falla, preservamos el original (no corromper).
-    let cmyk_decoded = if crate::image_opt::jpeg::is_cmyk_jpeg(&src.raw_bytes) {
-        match crate::image_opt::jpeg::decode_cmyk_jpeg(&src.raw_bytes) {
+    let cmyk_decoded = if crate::image_opt::jpeg::is_cmyk_jpeg(dct_bytes) {
+        match crate::image_opt::jpeg::decode_cmyk_jpeg(dct_bytes) {
             Some(img) => Some(img),
             None => return Err(()),
         }
@@ -185,7 +191,7 @@ fn decode(doc: &Document, src: &ImageSource) -> Result<Decoded, ()> {
 
     let (image, codec) = match cmyk_decoded {
         Some(img) => (img, Codec::Jpeg),
-        None => match image::load_from_memory(&src.raw_bytes) {
+        None => match image::load_from_memory(dct_bytes) {
             Ok(d) => (d, Codec::Jpeg),
             Err(_) => match crate::image_opt::decode::decode_flate_image(
                 doc,

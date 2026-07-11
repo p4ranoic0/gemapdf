@@ -807,4 +807,102 @@ mod tests {
             panic!("Producer debe ser string");
         }
     }
+
+    /// PDF con una imagen JPEG envuelta en zlib: /Filter [FlateDecode DCTDecode]
+    /// (lever A). Devuelve (bytes, img_id).
+    fn pdf_with_flate_wrapped_jpeg() -> (Vec<u8>, u32) {
+        use flate2::{write::ZlibEncoder, Compression};
+        use image::codecs::jpeg::JpegEncoder;
+        use image::{ImageEncoder, RgbImage};
+        use lopdf::{dictionary, Document, Object, Stream};
+        use std::io::Write;
+
+        let mut rgb = RgbImage::new(800, 800);
+        for (x, y, px) in rgb.enumerate_pixels_mut() {
+            let fx = x as f32;
+            let fy = y as f32;
+            let r = ((fx * 0.09).sin() * 0.5 + 0.5) * 255.0;
+            let g = ((fy * 0.07 + fx * 0.013).cos() * 0.5 + 0.5) * 255.0;
+            let b = (((fx + fy) * 0.05).sin() * 0.5 + 0.5) * 255.0;
+            *px = image::Rgb([r as u8, g as u8, b as u8]);
+        }
+        let mut jpeg = Vec::new();
+        JpegEncoder::new_with_quality(&mut jpeg, 95)
+            .write_image(rgb.as_raw(), 800, 800, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        let mut z = ZlibEncoder::new(Vec::new(), Compression::default());
+        z.write_all(&jpeg).unwrap();
+        let wrapped = z.finish().unwrap();
+
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let img_id = doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Image",
+                "Width" => 800, "Height" => 800,
+                "BitsPerComponent" => 8, "ColorSpace" => "DeviceRGB",
+                "Filter" => vec![
+                    Object::Name(b"FlateDecode".to_vec()),
+                    Object::Name(b"DCTDecode".to_vec()),
+                ],
+            },
+            wrapped,
+        ));
+        let content_id = doc.add_object(Stream::new(
+            dictionary! {},
+            b"q 800 0 0 800 0 0 cm /Im0 Do Q".to_vec(),
+        ));
+        let resources_id =
+            doc.add_object(dictionary! { "XObject" => dictionary! { "Im0" => img_id } });
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages_id, "Contents" => content_id,
+            "Resources" => resources_id,
+            "MediaBox" => vec![0.into(), 0.into(), 800.into(), 800.into()],
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
+            }),
+        );
+        let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", catalog_id);
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf).unwrap();
+        (buf, img_id.0)
+    }
+
+    #[test]
+    fn flate_wrapped_jpeg_is_recompressed() {
+        let (input, img_id) = pdf_with_flate_wrapped_jpeg();
+        let opts = CompressOptions {
+            profile: crate::options::Profile::Screen,
+            ..Default::default()
+        };
+        let res = compress(&input, &opts).unwrap();
+
+        let stat = res
+            .report
+            .images
+            .iter()
+            .find(|s| s.object_id == img_id)
+            .expect("stat de la imagen");
+        assert!(
+            matches!(
+                stat.action,
+                ImageAction::Recompressed | ImageAction::Downsampled
+            ),
+            "la cadena Flate+DCT debe recomprimirse, no {:?}",
+            stat.action
+        );
+        assert!(stat.output_bytes < stat.original_bytes);
+
+        // el output re-parsea y la cadena colapsa a un único filtro
+        let out_doc = Document::load_mem(&res.output).expect("el output debe re-parsear");
+        let s = out_doc.get_object((img_id, 0)).unwrap().as_stream().unwrap();
+        assert!(
+            matches!(s.dict.get(b"Filter"), Ok(Object::Name(_))),
+            "el filtro de salida debe ser un Name único"
+        );
+    }
 }
