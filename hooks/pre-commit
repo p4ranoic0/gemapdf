@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Gate local automático (el repo no tiene remote: el commit es el punto de control).
+# Corre la suite rápida + clippy. Para saltarlo en emergencias: git commit --no-verify
+set -euo pipefail
+source "$HOME/.cargo/env" 2>/dev/null || true
+echo "→ pre-commit: fmt + tests + clippy…"
+cargo fmt --all --check
+cargo test -p gema-core --quiet 2>&1 | tail -1
+cargo clippy -p gema-core --all-targets -- -D warnings 2>&1 | tail -1
+echo "✓ gates OK"

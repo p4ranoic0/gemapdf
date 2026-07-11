@@ -17,12 +17,16 @@ jobs:
         with:
           components: clippy
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # variante con el modo perceptual (feature opcional, spec 2026-07-11)
+      - run: cargo clippy -p gema-core --all-targets --features perceptual -- -D warnings
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --workspace
+      # variante con el modo perceptual (feature opcional, spec 2026-07-11)
+      - run: cargo test -p gema-core --features perceptual
   wasm:
     runs-on: ubuntu-latest
     steps:
@@ -30,5 +34,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+      # blindaje del Beta: el feature perceptual no debe colarse al árbol wasm
+      - name: ssimulacra2 fuera del árbol de gema-wasm
+        run: |
+          if cargo tree -p gema-wasm -e normal | grep -q ssimulacra2; then
+            echo "::error::gema-wasm arrastra ssimulacra2 — el feature perceptual se coló"
+            exit 1
+          fi
       - run: cargo install wasm-pack
       - run: cd crates/gema-wasm && wasm-pack build --target web
