@@ -3,6 +3,7 @@ pub(crate) mod colorspace;
 pub(crate) mod decode;
 pub(crate) mod flate;
 pub mod jpeg;
+pub(crate) mod masks;
 pub(crate) mod process;
 
 /// Imagen decodificada lista para recomprimir.
