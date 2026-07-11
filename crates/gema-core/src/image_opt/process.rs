@@ -57,6 +57,22 @@ fn preserved(id: lopdf::ObjectId, orig_len: u64) -> ImageOutcome {
     }
 }
 
+/// Outcome de preservación conservadora para casos de /SMask que no se pueden
+/// recomprimir sin riesgo (Matte/premultiplicado, alfa propio, máscara rara).
+fn smask_skip(id: lopdf::ObjectId, orig_len: u64, why: &str) -> ImageOutcome {
+    ImageOutcome {
+        stat: ImageStat {
+            object_id: id.0,
+            original_bytes: orig_len,
+            output_bytes: orig_len,
+            action: ImageAction::Skipped,
+        },
+        warnings: vec![Warning::Other(format!(
+            "imagen con /SMask preservada sin recomprimir ({why})"
+        ))],
+    }
+}
+
 /// Estrategia de codec de salida para una imagen.
 #[derive(Clone, Copy, PartialEq)]
 enum Codec {
@@ -75,6 +91,9 @@ struct ImageSource {
     height: u32,
     raw_bytes: Vec<u8>,
     stream_for_flate: Stream,
+    /// La imagen (base) declara /SMask: conservar la entrada al reescribir y
+    /// preservar si el decode revela alfa propio.
+    has_smask: bool,
 }
 
 /// Resultado de la etapa de carga+guardas ([`load`]).
@@ -110,24 +129,39 @@ fn load(doc: &Document, id: lopdf::ObjectId, preserve_this: bool) -> Load {
     if preserve_this {
         return Load::Done(preserved(id, stream.content.len() as u64));
     }
-    // F1: una imagen con máscara de transparencia externa (/SMask) se preserva
-    // sin tocar. Recomprimirla a JPEG perdería el canal alfa y dejaría el XObject
-    // de la máscara huérfano (lo borraría prune). El soporte real de máscaras se
-    // difiere a v2.
-    if dict.has(b"SMask") {
-        let len = stream.content.len() as u64;
-        return Load::Done(ImageOutcome {
-            stat: ImageStat {
-                object_id: id.0,
-                original_bytes: len,
-                output_bytes: len,
-                action: ImageAction::Skipped,
-            },
-            warnings: vec![Warning::Other(
-                "imagen con máscara de transparencia (/SMask) preservada sin recomprimir".into(),
-            )],
-        });
-    }
+    // Lever C: la base con /SMask ya no se preserva entera — se recomprime
+    // conservando la referencia a la máscara. Sólo se preserva en los casos
+    // que perderían información real:
+    //  - /Matte en la máscara (color premultiplicado: los píxeles de la base
+    //    están acoplados a ella) → preservar.
+    //  - /SMask que no es Reference o no se puede inspeccionar → preservar
+    //    (conservador: no adivinar).
+    let has_smask = match dict.get(b"SMask") {
+        Err(_) => false,
+        Ok(Object::Reference(mid)) => {
+            let matte_or_unknown = doc
+                .get_object(*mid)
+                .ok()
+                .and_then(|o| o.as_stream().ok())
+                .map(|s| s.dict.has(b"Matte"))
+                .unwrap_or(true);
+            if matte_or_unknown {
+                return Load::Done(smask_skip(
+                    id,
+                    stream.content.len() as u64,
+                    "/Matte o máscara no inspeccionable",
+                ));
+            }
+            true
+        }
+        Ok(_) => {
+            return Load::Done(smask_skip(
+                id,
+                stream.content.len() as u64,
+                "/SMask no es referencia",
+            ));
+        }
+    };
     // F9: leemos Width/Height como i64 y validamos antes de convertir a u32. Un
     // valor negativo o absurdamente grande se envolvería silenciosamente con
     // `as u32`. Si las dimensiones no son sanas (<= 0 o > 100_000 px por lado)
@@ -152,6 +186,7 @@ fn load(doc: &Document, id: lopdf::ObjectId, preserve_this: bool) -> Load {
         height: h_i64 as u32,
         raw_bytes: stream.content.clone(),
         stream_for_flate: stream.clone(),
+        has_smask,
     })
 }
 
@@ -347,8 +382,8 @@ fn finalize(
                 Object::Name(encoded.color_space.as_bytes().to_vec()),
             );
             stream.dict.remove(b"DecodeParms");
-            // NB: no tocamos /SMask aquí; las imágenes con máscara ya se
-            // descartaron en `load` (F1), así que este stream no la tiene.
+            // NB: la entrada /SMask (si existe) se deja intacta a propósito:
+            // la máscara sigue referenciada y prune no la borra (lever C).
             true
         }
         Err(_) => false,
@@ -390,9 +425,9 @@ pub(crate) struct ImageParams {
     pub(crate) effective_dpi: Option<f32>,
     /// La pre-flight de firmas/sellos la marcó preservable: bytes ORIGINALES.
     pub(crate) preserve: bool,
-    /// El XObject se usa como `/SMask` de otra imagen: forzar re-encode sin
-    /// pérdida y sin downsample (se cablea en el siguiente commit).
-    #[allow(dead_code)] // TODO(task 7): lo consume el orquestador
+    /// El XObject se usa como `/SMask` de otra imagen: fuerza re-encode sin
+    /// pérdida (Flate) y desactiva el downsampling, para no mover valores de
+    /// transparencia.
     pub(crate) is_smask: bool,
 }
 
@@ -412,10 +447,27 @@ pub(crate) fn process_image(
         Load::Ready(src) => src,
     };
 
-    let decoded = match decode(doc, &src) {
+    let mut decoded = match decode(doc, &src) {
         Ok(d) => d,
         Err(()) => return Some(skipped(id, src.orig_len)),
     };
+
+    // Lever C: la base decodificó con alfa PROPIO y además tiene /SMask
+    // externa — re-encodear (JPEG o Flate-RGB) perdería ese alfa → preservar.
+    if src.has_smask && decoded.image.color().has_alpha() {
+        return Some(smask_skip(id, src.orig_len, "alfa propio"));
+    }
+
+    // Lever C: máscara de transparencia — nunca lossy, sin downsample.
+    // Sólo máscaras grises (Luma8, el caso PDF-válido); una máscara que
+    // decodifica a otra cosa se preserva intacta (más seguro que convertir:
+    // el redondeo de luma movería valores de alfa).
+    if p.is_smask {
+        match &decoded.image {
+            image::DynamicImage::ImageLuma8(_) => decoded.codec = Codec::FlateLossless,
+            _ => return Some(smask_skip(id, src.orig_len, "máscara no-gris")),
+        }
+    }
 
     let Transformed {
         image,
@@ -424,7 +476,13 @@ pub(crate) fn process_image(
         height,
         action,
         warnings,
-    } = transform(decoded, &src, p.downsample, p.target_dpi, p.effective_dpi);
+    } = transform(
+        decoded,
+        &src,
+        p.downsample && !p.is_smask,
+        p.target_dpi,
+        p.effective_dpi,
+    );
 
     let encoded = match encode(image, codec, p.quality) {
         Some(e) => e,
