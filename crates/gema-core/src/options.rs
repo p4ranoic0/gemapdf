@@ -32,6 +32,12 @@ pub struct CompressOptions {
     pub profile: Profile,
     pub image_dpi: Option<u32>,
     pub jpeg_quality: Option<u8>,
+    /// Modo perceptual opt-in (spec 2026-07-11): si es `Some(τ)` con τ∈(0,100),
+    /// cada imagen JPEG busca la MENOR q cuyo SSIMULACRA2 ≥ τ, en vez de usar
+    /// la q fija del perfil (`jpeg_quality` se ignora para el path JPEG).
+    /// Requiere el cargo feature `perceptual`; sin él, degrada a q fija con un
+    /// warning en el reporte. `None` (default) = comportamiento clásico.
+    pub quality_target: Option<f32>,
     pub downsample: bool,
     pub recompress_streams: bool,
     pub remove_metadata: bool,
@@ -50,6 +56,7 @@ impl Default for CompressOptions {
             profile: Profile::Ebook,
             image_dpi: None,
             jpeg_quality: None,
+            quality_target: None,
             downsample: true,
             recompress_streams: true,
             remove_metadata: true,
@@ -105,5 +112,19 @@ mod tests {
         };
         assert_eq!(opts.resolved().image_dpi, 120);
         assert_eq!(opts.resolved().jpeg_quality, 40); // del perfil Screen
+    }
+    #[test]
+    fn quality_target_defaults_to_none_and_is_settable() {
+        assert!(
+            CompressOptions::default().quality_target.is_none(),
+            "el modo perceptual debe ser opt-in"
+        );
+        let opts = CompressOptions {
+            quality_target: Some(68.0),
+            ..Default::default()
+        };
+        assert_eq!(opts.quality_target, Some(68.0));
+        // el resolved() de perfil no se ve afectado por el target
+        assert_eq!(opts.resolved().jpeg_quality, 65);
     }
 }

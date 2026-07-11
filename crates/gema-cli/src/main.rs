@@ -24,6 +24,10 @@ enum Cmd {
         /// Override de la calidad JPEG 1-100 (gana al perfil). Para calibración.
         #[arg(long)]
         jpeg_quality: Option<u8>,
+        /// Modo perceptual: SSIM2 objetivo por imagen (0-100). Requiere el
+        /// feature `perceptual` (habilitado por default en el CLI).
+        #[arg(long)]
+        quality_target: Option<f32>,
     },
     /// Analiza un PDF y muestra el reporte.
     Analyze { input: String },
@@ -48,6 +52,7 @@ fn run(cli: Cli) -> Result<(), String> {
             profile,
             image_dpi,
             jpeg_quality,
+            quality_target,
         } => {
             let bytes = fs::read(&input).map_err(|e| e.to_string())?;
             let profile = match profile.as_str() {
@@ -66,6 +71,7 @@ fn run(cli: Cli) -> Result<(), String> {
                     profile,
                     image_dpi,
                     jpeg_quality,
+                    quality_target,
                     ..Default::default()
                 },
             )
