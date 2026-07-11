@@ -100,6 +100,7 @@ pub fn compress_with_progress(
     for (i, id) in image_ids.into_iter().enumerate() {
         let img_params = ImageParams {
             quality: params.jpeg_quality,
+            quality_target: opts.quality_target,
             target_dpi: params.image_dpi,
             downsample: opts.downsample,
             effective_dpi: dpi_map.get(&id).copied(),
@@ -1168,6 +1169,118 @@ mod tests {
         assert!(
             matches!(s.dict.get(b"Filter"), Ok(Object::Name(_))),
             "el filtro de salida debe ser un Name único"
+        );
+    }
+
+    // ---- modo perceptual (quality_target) ----
+
+    /// Test de ORO del opt-in: con `quality_target: None` el output es
+    /// byte-idéntico al de las mismas opciones sin el campo (mismo build).
+    #[test]
+    fn none_target_is_inert_byte_identical() {
+        let input = pdf_with_jpeg();
+        let base = CompressOptions {
+            profile: crate::options::Profile::Screen,
+            ..Default::default()
+        };
+        let with_none = CompressOptions {
+            profile: crate::options::Profile::Screen,
+            quality_target: None,
+            ..Default::default()
+        };
+        let a = compress(&input, &base).unwrap();
+        let b = compress(&input, &with_none).unwrap();
+        assert_eq!(a.output, b.output, "None debe ser totalmente inerte");
+    }
+
+    #[cfg(feature = "perceptual")]
+    #[test]
+    fn modest_target_beats_overpreserving_fixed_q() {
+        // El fixture 800×800 pintado a 72dpi con perfil Screen usa q40 fija.
+        // Con un target modesto (τ=45) la búsqueda debe encontrar una q menor
+        // (menos bytes) manteniendo el score.
+        let input = pdf_with_jpeg();
+        let fixed = compress(
+            &input,
+            &CompressOptions {
+                profile: crate::options::Profile::Screen,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let target = compress(
+            &input,
+            &CompressOptions {
+                profile: crate::options::Profile::Screen,
+                quality_target: Some(45.0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            target.output.len() < fixed.output.len(),
+            "τ=45 debe producir menos bytes que q40 fija sobre-preservadora ({} vs {})",
+            target.output.len(),
+            fixed.output.len()
+        );
+    }
+
+    #[cfg(feature = "perceptual")]
+    #[test]
+    fn unreachable_target_warns_and_still_compresses() {
+        let input = pdf_with_jpeg();
+        let res = compress(
+            &input,
+            &CompressOptions {
+                profile: crate::options::Profile::Screen,
+                quality_target: Some(99.9),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            res.report
+                .warnings
+                .iter()
+                .any(|w| matches!(w, Warning::Other(m) if m.contains("quality_target"))),
+            "debe avisar que no alcanzó el target, warnings={:?}",
+            res.report.warnings
+        );
+        // y aún así el doc procesa (no error, output válido)
+        assert!(Document::load_mem(&res.output).is_ok());
+    }
+
+    #[cfg(not(feature = "perceptual"))]
+    #[test]
+    fn target_without_feature_degrades_to_fixed_q_with_warning() {
+        let input = pdf_with_jpeg();
+        let fixed = compress(
+            &input,
+            &CompressOptions {
+                profile: crate::options::Profile::Screen,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let res = compress(
+            &input,
+            &CompressOptions {
+                profile: crate::options::Profile::Screen,
+                quality_target: Some(68.0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            res.output, fixed.output,
+            "sin feature, el target degrada a q fija (misma salida)"
+        );
+        assert!(
+            res.report
+                .warnings
+                .iter()
+                .any(|w| matches!(w, Warning::Other(m) if m.contains("perceptual"))),
+            "debe avisar que el build no trae el feature"
         );
     }
 }

@@ -76,7 +76,6 @@ fn score(src_proxy: &image::RgbImage, src_metric: &Rgb, bytes: &[u8]) -> Option<
 
 /// Ver doc del módulo. `None` solo si el ENCODER falla (dims > u16, etc.) —
 /// el orquestador lo traduce a Skipped igual que hoy.
-#[allow(dead_code)] // TODO(task 3): lo consume el orquestador
 pub(crate) fn encode_jpeg_at_target(raw: &RawImage, target: f32) -> Option<(Encoded, bool)> {
     let src = raw.image.to_rgb8();
     let src_proxy = proxy(&src);
@@ -163,6 +162,34 @@ mod tests {
             "τ mayor no puede costar menos bytes ({} vs {})",
             hi.bytes.len(),
             lo.bytes.len()
+        );
+    }
+
+    /// Foto sintética >1 MPx (1200×1200) con el mismo patrón: ejerce la rama de
+    /// reduce a proxy (`proxy()` cuando `px > PROXY_MAX_PX`), sin cobertura
+    /// previa.
+    fn large_photo() -> RawImage {
+        let img = image::RgbImage::from_fn(1200, 1200, |x, y| {
+            let fx = x as f32 / 31.0;
+            let fy = y as f32 / 23.0;
+            image::Rgb([
+                (128.0 + 90.0 * (fx.sin() * fy.cos())) as u8,
+                (128.0 + 70.0 * ((fx * 0.7 + 1.0).cos())) as u8,
+                (128.0 + 80.0 * ((fy * 1.3).sin())) as u8,
+            ])
+        });
+        RawImage {
+            image: image::DynamicImage::ImageRgb8(img),
+        }
+    }
+
+    #[test]
+    fn proxy_branch_covers_large_images() {
+        let raw = large_photo();
+        let (_, reached) = encode_jpeg_at_target(&raw, 50.0).expect("debe encodear");
+        assert!(
+            reached,
+            "τ=50 debe ser alcanzable en una foto sintética >1MPx (rama proxy)"
         );
     }
 

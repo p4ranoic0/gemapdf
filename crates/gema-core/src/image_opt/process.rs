@@ -425,6 +425,10 @@ fn finalize(
 /// Parámetros por-imagen que el bucle del pipeline pasa a [`process_image`].
 pub(crate) struct ImageParams {
     pub(crate) quality: u8,
+    /// Modo perceptual: SSIM2 objetivo (spec 2026-07-11). `Some(τ)` solo si la
+    /// imagen es elegible (el pipeline ya filtró tamaño mínimo); la etapa
+    /// encode busca la menor q con score ≥ τ en vez de usar `quality`.
+    pub(crate) quality_target: Option<f32>,
     pub(crate) target_dpi: u32,
     /// Downsampling habilitado (opts.downsample).
     pub(crate) downsample: bool,
@@ -483,7 +487,7 @@ pub(crate) fn process_image(
         width,
         height,
         action,
-        warnings,
+        mut warnings,
     } = transform(
         decoded,
         &src,
@@ -492,7 +496,46 @@ pub(crate) fn process_image(
         p.effective_dpi,
     );
 
-    let encoded = match encode(image, codec, p.quality) {
+    // Modo perceptual (opt-in): solo path JPEG y solo si la imagen es elegible
+    // (dims post-transform razonables — las máscaras y line-art van por Flate
+    // y no entran aquí porque su codec no es Jpeg — y el piso de bytes: las
+    // miniaturas no pagan la búsqueda).
+    let eligible_target = p
+        .quality_target
+        .filter(|_| codec == Codec::Jpeg && width.min(height) >= 64 && src.orig_len >= 10_240);
+
+    let encoded_result: Option<Encoded> = match eligible_target {
+        Some(target) => {
+            #[cfg(feature = "perceptual")]
+            {
+                match crate::image_opt::perceptual::encode_jpeg_at_target(
+                    &RawImage { image },
+                    target,
+                ) {
+                    Some((e, reached)) => {
+                        if !reached {
+                            warnings.push(Warning::Other(format!(
+                                "quality_target {target} no alcanzado; mejor esfuerzo a q=90"
+                            )));
+                        }
+                        Some(e)
+                    }
+                    None => None,
+                }
+            }
+            #[cfg(not(feature = "perceptual"))]
+            {
+                warnings.push(Warning::Other(
+                    "quality_target ignorado: build sin el feature 'perceptual'".into(),
+                ));
+                let _ = target;
+                encode(image, codec, p.quality)
+            }
+        }
+        None => encode(image, codec, p.quality),
+    };
+
+    let encoded = match encoded_result {
         Some(e) => e,
         None => {
             // no se pudo recomprimir → omitida (conservando los warnings previos)
