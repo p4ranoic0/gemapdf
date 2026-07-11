@@ -192,7 +192,9 @@ fn appearance_form(
 }
 
 fn num(o: &Object) -> Option<f32> {
-    o.as_f32().ok().or_else(|| o.as_i64().ok().map(|i| i as f32))
+    o.as_f32()
+        .ok()
+        .or_else(|| o.as_i64().ok().map(|i| i as f32))
 }
 
 fn read_num_array4(o: Option<&Object>, doc: &Document) -> Option<[f32; 4]> {
@@ -234,9 +236,15 @@ fn compute_flatten_matrix(bbox: &[f32; 4], matrix: &Matrix, rect: &[f32; 4]) -> 
         apply(matrix, bbox[0], bbox[3]),
     ];
     let tx0 = corners.iter().map(|p| p.0).fold(f32::INFINITY, f32::min);
-    let tx1 = corners.iter().map(|p| p.0).fold(f32::NEG_INFINITY, f32::max);
+    let tx1 = corners
+        .iter()
+        .map(|p| p.0)
+        .fold(f32::NEG_INFINITY, f32::max);
     let ty0 = corners.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
-    let ty1 = corners.iter().map(|p| p.1).fold(f32::NEG_INFINITY, f32::max);
+    let ty1 = corners
+        .iter()
+        .map(|p| p.1)
+        .fold(f32::NEG_INFINITY, f32::max);
     let rx0 = rect[0].min(rect[2]);
     let rx1 = rect[0].max(rect[2]);
     let ry0 = rect[1].min(rect[3]);
@@ -294,7 +302,11 @@ fn remove_annots(doc: &mut Document, page_id: ObjectId, remove: &[ObjectId]) {
 
 fn filter_annots(arr: Vec<Object>, remove: &[ObjectId]) -> Vec<Object> {
     arr.into_iter()
-        .filter(|o| o.as_reference().map(|id| !remove.contains(&id)).unwrap_or(true))
+        .filter(|o| {
+            o.as_reference()
+                .map(|id| !remove.contains(&id))
+                .unwrap_or(true)
+        })
         .collect()
 }
 

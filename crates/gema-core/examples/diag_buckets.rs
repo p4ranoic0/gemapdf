@@ -116,8 +116,17 @@ fn main() {
             e.1 += st.original_bytes;
             e.2 += st.output_bytes;
         }
-        println!("  {:<14} {:>5} {:>10} {:>10}", "bucket", "n", "in_MB", "out_MB");
-        for k in ["recompressed", "downsampled", "kept", "skipped", "preserved"] {
+        println!(
+            "  {:<14} {:>5} {:>10} {:>10}",
+            "bucket", "n", "in_MB", "out_MB"
+        );
+        for k in [
+            "recompressed",
+            "downsampled",
+            "kept",
+            "skipped",
+            "preserved",
+        ] {
             if let Some((n, i, o)) = buck.get(k) {
                 println!("  {:<14} {:>5} {:>10.2} {:>10.2}", k, n, mb(*i), mb(*o));
             }
@@ -173,7 +182,10 @@ fn main() {
         // reintento: decodifica los 8 kept más pesados y prueba q y q-15
         kept.sort_by_key(|(b, _)| std::cmp::Reverse(*b));
         if !kept.is_empty() {
-            println!("  -- kept: reintento de encode (top {}) --", kept.len().min(8));
+            println!(
+                "  -- kept: reintento de encode (top {}) --",
+                kept.len().min(8)
+            );
             let (mut would_q, mut would_q15, mut stuck) = (0u64, 0u64, 0u64);
             for (orig, id) in kept.iter().take(8) {
                 let Ok(stream) = doc.get_object(*id).and_then(|o| o.as_stream()) else {
@@ -186,7 +198,12 @@ fn main() {
                     let mut out = Vec::new();
                     let rgb = img.to_rgb8();
                     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality)
-                        .encode(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
+                        .encode(
+                            rgb.as_raw(),
+                            rgb.width(),
+                            rgb.height(),
+                            image::ExtendedColorType::Rgb8,
+                        )
                         .ok()?;
                     Some(out.len())
                 };

@@ -114,8 +114,13 @@ fn main() {
         let mut a = Vec::new();
         let mut enc = jpeg_encoder::Encoder::new(&mut a, q);
         enc.set_sampling_factor(jpeg_encoder::SamplingFactor::F_2_2);
-        enc.encode(rgb.as_raw(), w as u16, h as u16, jpeg_encoder::ColorType::Rgb)
-            .expect("jpeg-encoder");
+        enc.encode(
+            rgb.as_raw(),
+            w as u16,
+            h as u16,
+            jpeg_encoder::ColorType::Rgb,
+        )
+        .expect("jpeg-encoder");
         let Some(a_ssim) = redecode_ssim2(&rgb, &a) else {
             println!("{i:>3} zune no re-decodifica al encoder actual (?)");
             continue;

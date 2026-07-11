@@ -102,8 +102,18 @@ fn main() {
     let variants: Vec<(&str, image::RgbImage, usize, &str)> = vec![
         ("master", master.clone(), 0, "original (render 300dpi)"),
         ("v1", up(&down), flate_len(&down), "solo 90dpi (lossless)"),
-        ("v2", up(&dec(&v2_bytes)), v2_bytes.len(), "90dpi + q45 4:4:4"),
-        ("v3", up(&dec(&v3_bytes)), v3_bytes.len(), "90dpi + q45 4:2:0 = HOY"),
+        (
+            "v2",
+            up(&dec(&v2_bytes)),
+            v2_bytes.len(),
+            "90dpi + q45 4:4:4",
+        ),
+        (
+            "v3",
+            up(&dec(&v3_bytes)),
+            v3_bytes.len(),
+            "90dpi + q45 4:2:0 = HOY",
+        ),
         ("v4", dec(&v4_bytes), v4_bytes.len(), "300dpi + q45 4:2:0"),
     ];
 

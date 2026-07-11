@@ -12,10 +12,10 @@ use std::collections::HashSet;
 pub(crate) fn collect_smask_ids(doc: &Document) -> HashSet<ObjectId> {
     let mut out = HashSet::new();
     for (_, obj) in doc.objects.iter() {
-        let Ok(stream) = obj.as_stream() else { continue };
-        if stream.dict.get(b"Subtype").and_then(|o| o.as_name()).ok()
-            != Some(b"Image".as_slice())
-        {
+        let Ok(stream) = obj.as_stream() else {
+            continue;
+        };
+        if stream.dict.get(b"Subtype").and_then(|o| o.as_name()).ok() != Some(b"Image".as_slice()) {
             continue;
         }
         if let Ok(Object::Reference(id)) = stream.dict.get(b"SMask") {

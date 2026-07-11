@@ -482,7 +482,14 @@ mod tests {
 
         let before: Vec<Vec<u8>> = [img_id, parms_id, small_id, best_id]
             .iter()
-            .map(|id| doc.get_object(*id).unwrap().as_stream().unwrap().content.clone())
+            .map(|id| {
+                doc.get_object(*id)
+                    .unwrap()
+                    .as_stream()
+                    .unwrap()
+                    .content
+                    .clone()
+            })
             .collect();
 
         reflate_streams(&mut doc);

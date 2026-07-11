@@ -10,10 +10,7 @@ fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let q: u8 = args.remove(0).parse().expect("quality");
     let path = args.remove(0);
-    let top_n: usize = args
-        .first()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
+    let top_n: usize = args.first().and_then(|s| s.parse().ok()).unwrap_or(10);
 
     let bytes = std::fs::read(&path).expect("leer pdf");
     let doc = Document::load_mem(&bytes).expect("parsear");
@@ -56,8 +53,13 @@ fn main() {
         let mut enc = jpeg_encoder::Encoder::new(&mut b, q);
         enc.set_sampling_factor(jpeg_encoder::SamplingFactor::F_2_2); // 4:2:0
         enc.set_optimized_huffman_tables(true);
-        enc.encode(rgb.as_raw(), w as u16, h as u16, jpeg_encoder::ColorType::Rgb)
-            .expect("encode jpeg-encoder");
+        enc.encode(
+            rgb.as_raw(),
+            w as u16,
+            h as u16,
+            jpeg_encoder::ColorType::Rgb,
+        )
+        .expect("encode jpeg-encoder");
 
         t_o += orig_len;
         t_a += a.len();

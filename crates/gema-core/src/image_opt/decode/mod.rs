@@ -63,8 +63,8 @@ mod predictor;
 
 // Re-exportado para `colorspace.rs`, que des-encadena filtros al resolver
 // paletas/perfiles vía referencia indirecta (`super::decode::{...}`).
-pub(in crate::image_opt) use filters::{apply_filter, decode_parms_for, filter_chain, Filter};
 pub(in crate::image_opt) use filters::unwrap_to_dct;
+pub(in crate::image_opt) use filters::{apply_filter, decode_parms_for, filter_chain, Filter};
 
 /// Techo de bytes descomprimidos permitidos (~805 MB para RGB 16 384×16 384).
 /// Evita que un PDF malicioso con dimensiones enormes (p. ej. 100 000×100 000)

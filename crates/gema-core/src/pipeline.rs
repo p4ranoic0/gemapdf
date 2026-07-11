@@ -350,7 +350,11 @@ mod tests {
         let res = compress(&input, &opts).unwrap();
 
         let out_doc = Document::load_mem(&res.output).expect("el output debe re-parsear");
-        let out_stream = out_doc.get_object((img_id, 0)).unwrap().as_stream().unwrap();
+        let out_stream = out_doc
+            .get_object((img_id, 0))
+            .unwrap()
+            .as_stream()
+            .unwrap();
 
         // Lever C: la base con /SMask ya NO se preserva — se recomprime más chica.
         assert!(
@@ -394,7 +398,10 @@ mod tests {
             }
             _ => false,
         };
-        assert!(mask_filter_ok, "la máscara no debe re-encodearse con pérdida");
+        assert!(
+            mask_filter_ok,
+            "la máscara no debe re-encodearse con pérdida"
+        );
     }
 
     /// Como `pdf_with_smask_image` pero la máscara lleva /Matte (color
@@ -466,7 +473,11 @@ mod tests {
         let (input, orig_content, img_id) = pdf_with_matte_smask();
         let res = compress(&input, &CompressOptions::default()).unwrap();
         let out_doc = Document::load_mem(&res.output).expect("re-parsea");
-        let out_stream = out_doc.get_object((img_id, 0)).unwrap().as_stream().unwrap();
+        let out_stream = out_doc
+            .get_object((img_id, 0))
+            .unwrap()
+            .as_stream()
+            .unwrap();
         assert_eq!(
             out_stream.content, orig_content,
             "base con /SMask+/Matte debe quedar byte-idéntica"
@@ -554,8 +565,15 @@ mod tests {
         let res = compress(&buf, &opts).unwrap();
         let out_doc = Document::load_mem(&res.output).expect("re-parsea");
         // base recomprimida
-        let base = out_doc.get_object((img_id.0, 0)).unwrap().as_stream().unwrap();
-        assert!(base.content.len() < jpeg.len(), "la base debe recomprimirse");
+        let base = out_doc
+            .get_object((img_id.0, 0))
+            .unwrap()
+            .as_stream()
+            .unwrap();
+        assert!(
+            base.content.len() < jpeg.len(),
+            "la base debe recomprimirse"
+        );
         assert!(base.dict.has(b"SMask"), "/SMask debe conservarse");
         // máscara intacta byte-idéntica
         let mask = out_doc
@@ -563,7 +581,10 @@ mod tests {
             .expect("máscara sobrevive")
             .as_stream()
             .unwrap();
-        assert_eq!(mask.content, mask_content, "máscara no-decodificable intacta");
+        assert_eq!(
+            mask.content, mask_content,
+            "máscara no-decodificable intacta"
+        );
     }
 
     /// Base cuyo decode trae alfa PROPIO (PNG RGBA embebido sin /Filter) además
@@ -580,12 +601,7 @@ mod tests {
         });
         let mut png = Vec::new();
         PngEncoder::new(&mut png)
-            .write_image(
-                rgba.as_raw(),
-                400,
-                400,
-                image::ExtendedColorType::Rgba8,
-            )
+            .write_image(rgba.as_raw(), 400, 400, image::ExtendedColorType::Rgba8)
             .expect("encodear PNG del fixture");
         let png_content = png.clone();
 
@@ -642,7 +658,11 @@ mod tests {
 
         let res = compress(&buf, &CompressOptions::default()).unwrap();
         let out_doc = Document::load_mem(&res.output).expect("re-parsea");
-        let base = out_doc.get_object((img_id.0, 0)).unwrap().as_stream().unwrap();
+        let base = out_doc
+            .get_object((img_id.0, 0))
+            .unwrap()
+            .as_stream()
+            .unwrap();
         assert_eq!(
             base.content, png_content,
             "base con alfa propio + /SMask debe quedar intacta"
@@ -1050,7 +1070,10 @@ mod tests {
         // Flatten es el default
         let res = compress(&input, &CompressOptions::default()).unwrap();
 
-        assert!(res.report.flattened_signatures >= 1, "debe aplanar ≥1 firma");
+        assert!(
+            res.report.flattened_signatures >= 1,
+            "debe aplanar ≥1 firma"
+        );
 
         let out_doc = Document::load_mem(&res.output).expect("el output debe re-parsear");
         // Sin /AcroForm en el catálogo → Acrobat no regenera campos en blanco.
@@ -1165,7 +1188,11 @@ mod tests {
 
         // el output re-parsea y la cadena colapsa a un único filtro
         let out_doc = Document::load_mem(&res.output).expect("el output debe re-parsear");
-        let s = out_doc.get_object((img_id, 0)).unwrap().as_stream().unwrap();
+        let s = out_doc
+            .get_object((img_id, 0))
+            .unwrap()
+            .as_stream()
+            .unwrap();
         assert!(
             matches!(s.dict.get(b"Filter"), Ok(Object::Name(_))),
             "el filtro de salida debe ser un Name único"
