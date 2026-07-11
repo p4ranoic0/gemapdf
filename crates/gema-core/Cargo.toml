@@ -19,8 +19,4 @@ image.workspace = true
 flate2.workspace = true
 thiserror.workspace = true
 jpeg-decoder = "0.3.2"
-
-[dev-dependencies]
-# Experimento encoder JPEG con subsampling 4:2:0 + Huffman optimizado (candidato
-# a reemplazar image::JpegEncoder en el pipeline; solo examples/tests por ahora).
 jpeg-encoder = "0.6"

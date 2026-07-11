@@ -1,28 +1,53 @@
 use super::{Encoded, RawImage, Recompressor};
-use image::codecs::jpeg::JpegEncoder;
-use image::{DynamicImage, ImageEncoder};
+use image::DynamicImage;
+use jpeg_encoder::{ColorType, Encoder, SamplingFactor};
 use std::borrow::Cow;
 
 pub struct JpegRecompressor;
+
+/// Codifica con `jpeg-encoder`: subsampling 4:2:0 (lever B — bate al encoder
+/// del crate `image`, que es 4:4:4, a la misma q). Devuelve `None` si las
+/// dimensiones exceden u16 (límite del encoder; el pipeline deja la imagen
+/// como Kept, sin panic) o si el encode falla. La calidad se acota a 1..=100
+/// (jpeg-encoder lo exige).
+///
+/// NO se activan las tablas Huffman optimizadas (`set_optimized_huffman_tables`):
+/// en `jpeg-encoder` 0.6/0.7, activarlas fuerza un modo de codificación con un
+/// scan por componente ("sequential", no entrelazado) en vez del scan MCU
+/// entrelazado habitual. Combinado con submuestreo de croma (4:2:0), el bitstream
+/// resultante es válido — `libjpeg-turbo`/`djpeg` lo decodifica bien — pero el
+/// decoder `zune-jpeg` que usa el crate `image` (nuestro propio `image::
+/// load_from_memory`, incl. en `image_opt::process::decode`) lo mal-decodifica:
+/// deja los planos Cb/Cr en cero, produciendo una imagen con un fuerte tinte
+/// verde y PSNR de ~6 dB (medido con un gradiente RGB de prueba). Como gemapdf
+/// puede volver a decodificar sus propios streams DCTDecode en una recompresión
+/// posterior, esto no es solo un problema de test: corrompería el color de
+/// forma visible en un re-proceso. Se prioriza corrección sobre el ~2-4%
+/// adicional que darían las tablas optimizadas.
+fn encode_jpeg(data: &[u8], w: u32, h: u32, color: ColorType, quality: u8) -> Option<Vec<u8>> {
+    if w == 0 || h == 0 || w > u16::MAX as u32 || h > u16::MAX as u32 {
+        return None;
+    }
+    let mut out = Vec::new();
+    let mut enc = Encoder::new(&mut out, quality.clamp(1, 100));
+    enc.set_sampling_factor(SamplingFactor::F_2_2); // 4:2:0
+    enc.encode(data, w as u16, h as u16, color).ok()?;
+    Some(out)
+}
 
 impl Recompressor for JpegRecompressor {
     fn recompress(&self, raw: &RawImage, quality: u8) -> Option<Encoded> {
         // ColorSpace fidelity: una imagen ya en gris (Luma8, p. ej. un escaneo
         // DeviceGray decodificado por el path Flate) se codifica como JPEG L8
-        // (1 canal) en vez de inflarla a RGB8 (3 canales). Cualquier otro
-        // formato se normaliza a RGB8 como antes (F5: si ya es RGB8 reutilizamos
-        // el buffer interno sin copia).
+        // (1 canal) en vez de inflarla a RGB8 (3 canales).
         if let DynamicImage::ImageLuma8(gray) = &raw.image {
-            let mut bytes = Vec::new();
-            let encoder = JpegEncoder::new_with_quality(&mut bytes, quality);
-            encoder
-                .write_image(
-                    gray.as_raw(),
-                    gray.width(),
-                    gray.height(),
-                    image::ExtendedColorType::L8,
-                )
-                .ok()?;
+            let bytes = encode_jpeg(
+                gray.as_raw(),
+                gray.width(),
+                gray.height(),
+                ColorType::Luma,
+                quality,
+            )?;
             return Some(Encoded {
                 bytes,
                 filter: "DCTDecode",
@@ -34,16 +59,7 @@ impl Recompressor for JpegRecompressor {
             DynamicImage::ImageRgb8(img) => Cow::Borrowed(img),
             other => Cow::Owned(other.to_rgb8()),
         };
-        let mut bytes = Vec::new();
-        let encoder = JpegEncoder::new_with_quality(&mut bytes, quality);
-        encoder
-            .write_image(
-                rgb.as_raw(),
-                rgb.width(),
-                rgb.height(),
-                image::ExtendedColorType::Rgb8,
-            )
-            .ok()?;
+        let bytes = encode_jpeg(rgb.as_raw(), rgb.width(), rgb.height(), ColorType::Rgb, quality)?;
         Some(Encoded {
             bytes,
             filter: "DCTDecode",
@@ -168,6 +184,8 @@ pub(crate) fn decode_cmyk_jpeg(bytes: &[u8]) -> Option<image::DynamicImage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::codecs::jpeg::JpegEncoder;
+    use image::ImageEncoder;
 
     /// Construye una cabecera JPEG mínima con un SOF0 de `nf` componentes.
     fn jpeg_with_components(nf: u8) -> Vec<u8> {
@@ -306,5 +324,51 @@ mod tests {
         let enc = JpegRecompressor.recompress(&raw, 60).unwrap();
         assert_eq!(enc.filter, "DCTDecode");
         assert_eq!(enc.color_space, "DeviceRGB");
+    }
+
+    /// Patrón RGB con croma real (canales distintos) — el caso donde 4:2:0 gana.
+    fn color_pattern(w: u32, h: u32) -> image::RgbImage {
+        image::RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([
+                ((x * 7) % 256) as u8,
+                ((y * 13) % 256) as u8,
+                (((x + y) * 5) % 256) as u8,
+            ])
+        })
+    }
+
+    #[test]
+    fn new_encoder_beats_image_crate_at_same_quality() {
+        let img = color_pattern(128, 128);
+        let ours = JpegRecompressor
+            .recompress(
+                &RawImage {
+                    image: DynamicImage::ImageRgb8(img.clone()),
+                },
+                45,
+            )
+            .unwrap();
+        let mut old = Vec::new();
+        JpegEncoder::new_with_quality(&mut old, 45)
+            .write_image(img.as_raw(), 128, 128, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        assert!(
+            ours.bytes.len() < old.len(),
+            "el encoder nuevo ({}) debe ganar al del crate image ({})",
+            ours.bytes.len(),
+            old.len()
+        );
+        // sigue siendo un JPEG válido que `image` puede reabrir
+        assert!(image::load_from_memory(&ours.bytes).is_ok());
+    }
+
+    #[test]
+    fn oversized_dimensions_return_none_not_panic() {
+        // jpeg-encoder toma dims u16; >65535 debe dar None (→ Kept), no panic.
+        let img = image::RgbImage::new(70_000, 1);
+        let raw = RawImage {
+            image: DynamicImage::ImageRgb8(img),
+        };
+        assert!(JpegRecompressor.recompress(&raw, 50).is_none());
     }
 }
