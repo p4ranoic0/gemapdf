@@ -4,6 +4,8 @@ pub(crate) mod decode;
 pub(crate) mod flate;
 pub mod jpeg;
 pub(crate) mod masks;
+#[cfg(feature = "perceptual")]
+pub(crate) mod perceptual;
 pub(crate) mod process;
 
 /// Imagen decodificada lista para recomprimir.
