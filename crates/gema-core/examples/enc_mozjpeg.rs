@@ -53,7 +53,7 @@ fn sof_marker(bytes: &[u8]) -> Option<u8> {
             continue;
         }
         let m = bytes[i + 1];
-        if matches!(m, 0xC0 | 0xC1 | 0xC2 | 0xC3) {
+        if matches!(m, 0xC0..=0xC3) {
             return Some(m);
         }
         if matches!(m, 0xD8 | 0xD9 | 0x01) || (0xD0..=0xD7).contains(&m) {
