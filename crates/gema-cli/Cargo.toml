@@ -13,5 +13,5 @@ name = "gema"
 path = "src/main.rs"
 
 [dependencies]
-gema-core = { path = "../gema-core" }
+gema-core = { path = "../gema-core", features = ["perceptual"] }
 clap = { version = "4", features = ["derive"] }
