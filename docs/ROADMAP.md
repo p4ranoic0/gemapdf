@@ -13,7 +13,8 @@
   Ghostscript en todos los docs con par de referencia.
 - **v2.1** (rama activa): modo perceptual `--quality-target` COMPLETO pero
   EXPERIMENTAL (opt-in, CLI-only, feature `perceptual`, wasm blindado).
-  Bloqueado para promoción por costo CPU (ver §1).
+  Bloqueado para promoción por costo CPU en el Beta wasm (ver §1). En NATIVO el
+  bucle de imágenes ya va en paralelo (§1.4 hecho: 4.5–6.7× byte-idéntico).
 
 ---
 
@@ -47,9 +48,15 @@ por imagen de búsqueda, dominado por ~7 pasos de encode+SSIM2).
    VIVO. Ataca el costo POR probe (no el número), así que es robusto a la q*
    inestable, y es el ÚNICO lever que también acelera el Beta wasm (no depende de
    threads). Cambia scores → q* → salidas: exige gate de calidad/tamaño.
-4. **Paralelizar el bucle de imágenes** (rayon, solo nativo). VIVO y limpio:
-   pura ganancia de wall-clock, byte-idéntica (cada búsqueda por-imagen no
-   cambia). Pero el Beta (wasm single-thread) no se beneficia.
+4. **Paralelizar el bucle de imágenes** (rayon, solo nativo). ✅ **HECHO**
+   (commit e920d47, 2026-07-17). `process_image` se partió en `prepare_image`
+   (etapas 1-4, read-only) + `commit_prepared` (etapa 5, muta en serie); el
+   cómputo pesado corre en paralelo sobre `&Document`. **Byte-idéntico** al
+   serial (verificado en corpus). Medido en 12 cores: **doc-F 4.5×**
+   (5.21→1.17s), **doc-A 6.7×** (61.82→9.26s) — más imágenes, más ganancia.
+   rayon es dep `cfg(not wasm32)`: el Beta wasm (single-thread) se queda serial
+   y no lo arrastra (wasm 1.30 MB, sin cambios). El Beta NO se beneficia — su
+   CPU por-imagen sigue igual; para el Beta el lever pendiente es §1.3 (proxy).
 
 **Lección de medición (NO repetir):** jamás medir calidad con SSIM2 sobre
 renders de página — el resampleo desplaza la rejilla sub-píxel y páginas
