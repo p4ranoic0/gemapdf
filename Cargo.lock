@@ -533,6 +533,7 @@ dependencies = [
  "jpeg-encoder",
  "lopdf",
  "mozjpeg-rs",
+ "rayon",
  "ssimulacra2",
  "thiserror",
 ]

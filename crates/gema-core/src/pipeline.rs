@@ -1,5 +1,5 @@
 use crate::error::GemaError;
-use crate::image_opt::process::{process_image, ImageParams};
+use crate::image_opt::process::{commit_prepared, prepare_image, ImageParams};
 use crate::options::{CompressOptions, SignaturePolicy};
 use crate::progress::Phase;
 use crate::report::{ImageAction, Report, Warning};
@@ -97,18 +97,44 @@ pub fn compress_with_progress(
 
     let mut stats = Vec::new();
     let mut img_warnings = Vec::new();
-    for (i, id) in image_ids.into_iter().enumerate() {
-        let img_params = ImageParams {
-            quality: params.jpeg_quality,
-            quality_target: opts.quality_target,
-            target_dpi: params.image_dpi,
-            downsample: opts.downsample,
-            effective_dpi: dpi_map.get(&id).copied(),
-            preserve: preserve.contains(&id),
-            is_smask: smask_ids.contains(&id),
-        };
+
+    // Parámetros por-imagen: lookups read-only en los mapas ya construidos.
+    let mk_params = |id: lopdf::ObjectId| ImageParams {
+        quality: params.jpeg_quality,
+        quality_target: opts.quality_target,
+        target_dpi: params.image_dpi,
+        downsample: opts.downsample,
+        effective_dpi: dpi_map.get(&id).copied(),
+        preserve: preserve.contains(&id),
+        is_smask: smask_ids.contains(&id),
+    };
+
+    // §1.4 — El cómputo pesado por-imagen (decode + búsqueda + encode) es
+    // read-only sobre el doc: en NATIVO corre en paralelo con rayon; sólo la
+    // reescritura (`commit_prepared`) muta el doc y va en SERIE, en orden de
+    // `image_ids`. El resultado es byte-idéntico al serial — cada imagen se
+    // procesa de forma independiente sobre el doc original y las escrituras van a
+    // objetos disjuntos. El wasm/Beta es single-thread → se queda serial y no
+    // arrastra rayon (dep sólo bajo `cfg(not(wasm32))`).
+    #[cfg(not(target_arch = "wasm32"))]
+    let prepared: Vec<_> = {
+        use rayon::prelude::*;
+        image_ids
+            .par_iter()
+            .map(|&id| prepare_image(&doc, id, &mk_params(id)))
+            .collect()
+    };
+    #[cfg(target_arch = "wasm32")]
+    let prepared: Vec<_> = image_ids
+        .iter()
+        .map(|&id| prepare_image(&doc, id, &mk_params(id)))
+        .collect();
+
+    // Fase serial: aplicar las escrituras en orden de `image_ids` y emitir
+    // progreso (mismos eventos OptimizingImages{done,total} que el bucle previo).
+    for (i, prep) in prepared.into_iter().enumerate() {
         // las imágenes no soportadas (no-Image) simplemente no generan stat
-        if let Some(outcome) = process_image(&mut doc, id, &img_params) {
+        if let Some(outcome) = commit_prepared(&mut doc, prep) {
             stats.push(outcome.stat);
             img_warnings.extend(outcome.warnings);
         }
@@ -270,6 +296,26 @@ mod tests {
             res.report.ratio.unwrap(),
             input.len(),
             res.output.len()
+        );
+    }
+
+    #[test]
+    fn parallel_image_loop_is_deterministic() {
+        // El bucle de imágenes corre en paralelo (rayon, nativo). Debe dar el
+        // MISMO output byte a byte en cada corrida: el orden de cómputo no puede
+        // influir (cada imagen se procesa independiente sobre el doc original y
+        // las escrituras se aplican en orden de image_ids). Un race o cualquier
+        // dependencia de orden aparecería como outputs distintos entre corridas.
+        let input = pdf_with_jpegs(6);
+        let opts = CompressOptions {
+            profile: crate::options::Profile::Screen,
+            ..Default::default()
+        };
+        let a = compress(&input, &opts).unwrap();
+        let b = compress(&input, &opts).unwrap();
+        assert_eq!(
+            a.output, b.output,
+            "el pipeline debe ser determinista corrida a corrida"
         );
     }
 

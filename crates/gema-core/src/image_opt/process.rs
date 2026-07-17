@@ -9,12 +9,14 @@
 //!    y elige el codec de salida (foto→JPEG, línea→Flate sin pérdida).
 //! 3. [`transform`] — decide y aplica el downsampling por DPI efectivo real.
 //! 4. [`encode`]  — codifica los píxeles al codec elegido.
-//! 5. [`finalize`] — aplica el piso por-imagen y reescribe el stream + su dict.
+//! 5. [`commit_prepared`] — aplica el piso por-imagen y reescribe el stream.
 //!
-//! El orquestador [`process_image`] encadena las etapas y traduce cada salida
-//! temprana en el [`ImageOutcome`] correspondiente. La lógica y los invariantes
-//! (comentarios F1/F2/F5/F8/F9/F10, P1/P2, bug del sello negro) son los mismos
-//! que tenía el monolito previo en `pipeline.rs`; aquí sólo están repartidos.
+//! [`prepare_image`] encadena las etapas 1-4 (todas read-only sobre el doc) y
+//! produce un [`Prepared`]; [`commit_prepared`] (etapa 5, la única que muta el
+//! doc) lo traduce en el [`ImageOutcome`] correspondiente. Ese corte read-only /
+//! mutación es lo que deja al pipeline paralelizar el cómputo (§1.4). La lógica y
+//! los invariantes (comentarios F1/F2/F5/F8/F9/F10, P1/P2, bug del sello negro)
+//! son los mismos que tenía el monolito previo en `pipeline.rs`.
 
 use crate::image_opt::jpeg::JpegRecompressor;
 use crate::image_opt::{downsample, target_dimensions, Encoded, RawImage, Recompressor};
@@ -345,35 +347,59 @@ fn encode(image: image::DynamicImage, codec: Codec, quality: u8) -> Option<Encod
     }
 }
 
-/// Etapa 5 — piso por-imagen + reescritura. Si el output recomprimido no es más
-/// chico que el original se conserva el original (`Kept`). Si mejora, se
-/// reemplaza el stream y su dict (Filter/Width/Height/BPC/ColorSpace, se quita
-/// DecodeParms). F2: sólo reportamos el tamaño menor si el reemplazo mutable
-/// realmente ocurrió; si falla, el original sigue intacto y reportamos `Skipped`
-/// (no mentir con el tamaño menor).
-fn finalize(
-    doc: &mut Document,
+/// Trabajo por-imagen listo para aplicarse al documento. Lo produce
+/// [`prepare_image`] (etapas 1-4, read-only sobre el doc → paralelizable) y lo
+/// consume [`commit_prepared`] (etapa 5, serial: la única que muta el doc).
+pub(crate) enum Prepared {
+    /// No es un XObject de tipo Image: no genera stat.
+    Skip,
+    /// Outcome final que NO requiere mutar el doc: preservada/omitida/`Kept`/
+    /// máscara. Ya trae su `ImageStat` y warnings.
+    Ready(ImageOutcome),
+    /// La recompresión mejora: hay que reescribir el stream (fase serial).
+    Write(WriteReq),
+}
+
+/// Petición de reescritura de un stream de imagen — la parte que muta el doc,
+/// diferida a la fase serial para poder paralelizar el cómputo previo.
+pub(crate) struct WriteReq {
     id: lopdf::ObjectId,
     encoded: Encoded,
-    dims: (u32, u32),
+    width: u32,
+    height: u32,
     orig_len: u64,
     action: ImageAction,
-    mut warnings: Vec<Warning>,
-) -> ImageOutcome {
-    let (width, height) = dims;
-    if encoded.bytes.len() as u64 >= orig_len {
-        // no mejora → dejar original
-        return ImageOutcome {
-            stat: ImageStat {
-                object_id: id.0,
-                original_bytes: orig_len,
-                output_bytes: orig_len,
-                action: ImageAction::Kept,
-            },
-            warnings,
-        };
-    }
+    warnings: Vec<Warning>,
+}
 
+/// Etapa 5 (serial) — traduce un [`Prepared`] en `ImageOutcome`, mutando el doc
+/// sólo en el caso `Write`. Es la ÚNICA función del pipeline por-imagen que toma
+/// `&mut Document`, así que corre en serie tras el cómputo (potencialmente
+/// paralelo) de [`prepare_image`].
+pub(crate) fn commit_prepared(doc: &mut Document, prepared: Prepared) -> Option<ImageOutcome> {
+    match prepared {
+        Prepared::Skip => None,
+        Prepared::Ready(outcome) => Some(outcome),
+        Prepared::Write(w) => Some(write_image(doc, w)),
+    }
+}
+
+/// Reescribe el stream y su dict (Filter/Width/Height/BPC/ColorSpace, se quita
+/// DecodeParms). F2: sólo reportamos el tamaño menor si el reemplazo mutable
+/// realmente ocurrió; si falla, el original sigue intacto y reportamos `Skipped`
+/// (no mentir con el tamaño menor). El piso por-imagen (Kept si no mejora) ya lo
+/// resolvió [`prepare_image`]: aquí `encoded` siempre es más chico que el
+/// original.
+fn write_image(doc: &mut Document, w: WriteReq) -> ImageOutcome {
+    let WriteReq {
+        id,
+        encoded,
+        width,
+        height,
+        orig_len,
+        action,
+        mut warnings,
+    } = w;
     // F5: guardamos la longitud antes de mover `bytes` (sin clonar).
     let new_len = encoded.bytes.len() as u64;
     let replaced = match doc.get_object_mut(id).and_then(|obj| obj.as_stream_mut()) {
@@ -422,7 +448,7 @@ fn finalize(
     }
 }
 
-/// Parámetros por-imagen que el bucle del pipeline pasa a [`process_image`].
+/// Parámetros por-imagen que el bucle del pipeline pasa a [`prepare_image`].
 pub(crate) struct ImageParams {
     pub(crate) quality: u8,
     /// Modo perceptual: SSIM2 objetivo (spec 2026-07-11). `Some(τ)` solo si la
@@ -443,31 +469,30 @@ pub(crate) struct ImageParams {
     pub(crate) is_smask: bool,
 }
 
-/// Recomprime una imagen XObject in-place si conviene, encadenando las cinco
-/// etapas. Devuelve un `ImageOutcome` con el `ImageStat` y los warnings
-/// asociados. Las imágenes que no son XObject de tipo Image devuelven `None` (no
+/// Etapas 1-4 (read-only sobre el doc) — decide qué hacer con una imagen XObject
+/// y devuelve un [`Prepared`] listo para que [`commit_prepared`] lo aplique en
+/// serie. NO muta el documento: por eso el pipeline puede correr esta parte (que
+/// es el 99% del CPU: decode + búsqueda + encode) en paralelo sobre `&Document`.
+///
+/// Las imágenes que no son XObject de tipo Image devuelven `Prepared::Skip` (no
 /// generan stat); las que sí lo son pero no se pueden decodificar/recomprimir se
-/// marcan como `Skipped`.
-pub(crate) fn process_image(
-    doc: &mut Document,
-    id: lopdf::ObjectId,
-    p: &ImageParams,
-) -> Option<ImageOutcome> {
+/// marcan como `Skipped` dentro de un `Prepared::Ready`.
+pub(crate) fn prepare_image(doc: &Document, id: lopdf::ObjectId, p: &ImageParams) -> Prepared {
     let src = match load(doc, id, p.preserve) {
-        Load::NotImage => return None,
-        Load::Done(outcome) => return Some(outcome),
+        Load::NotImage => return Prepared::Skip,
+        Load::Done(outcome) => return Prepared::Ready(outcome),
         Load::Ready(src) => src,
     };
 
     let mut decoded = match decode(doc, &src) {
         Ok(d) => d,
-        Err(()) => return Some(skipped(id, src.orig_len)),
+        Err(()) => return Prepared::Ready(skipped(id, src.orig_len)),
     };
 
     // Lever C: la base decodificó con alfa PROPIO y además tiene /SMask
     // externa — re-encodear (JPEG o Flate-RGB) perdería ese alfa → preservar.
     if src.has_smask && decoded.image.color().has_alpha() {
-        return Some(smask_skip(id, src.orig_len, "alfa propio"));
+        return Prepared::Ready(smask_skip(id, src.orig_len, "alfa propio"));
     }
 
     // Lever C: máscara de transparencia — nunca lossy, sin downsample.
@@ -477,7 +502,7 @@ pub(crate) fn process_image(
     if p.is_smask {
         match &decoded.image {
             image::DynamicImage::ImageLuma8(_) => decoded.codec = Codec::FlateLossless,
-            _ => return Some(smask_skip(id, src.orig_len, "máscara no-gris")),
+            _ => return Prepared::Ready(smask_skip(id, src.orig_len, "máscara no-gris")),
         }
     }
 
@@ -541,17 +566,32 @@ pub(crate) fn process_image(
             // no se pudo recomprimir → omitida (conservando los warnings previos)
             let mut out = skipped(id, src.orig_len);
             out.warnings.extend(warnings);
-            return Some(out);
+            return Prepared::Ready(out);
         }
     };
 
-    Some(finalize(
-        doc,
+    // Piso por-imagen (antes en `finalize`, ahora read-only): si el output no es
+    // más chico que el original, conservamos el original (`Kept`) — no hace falta
+    // mutar el doc, así que es un outcome final sin fase de escritura.
+    if encoded.bytes.len() as u64 >= src.orig_len {
+        return Prepared::Ready(ImageOutcome {
+            stat: ImageStat {
+                object_id: id.0,
+                original_bytes: src.orig_len,
+                output_bytes: src.orig_len,
+                action: ImageAction::Kept,
+            },
+            warnings,
+        });
+    }
+
+    Prepared::Write(WriteReq {
         id,
         encoded,
-        (width, height),
-        src.orig_len,
+        width,
+        height,
+        orig_len: src.orig_len,
         action,
         warnings,
-    ))
+    })
 }
