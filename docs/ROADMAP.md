@@ -21,20 +21,43 @@
 
 **Estado:** medido y fallido el gate (2.8×–23.8× vs presupuesto 2.5×; ~240 ms
 por imagen de búsqueda, dominado por ~7 pasos de encode+SSIM2).
-**Mitigaciones identificadas, sin implementar, en orden de payoff esperado:**
-1. **Semilla de la imagen anterior:** los escaneos de un doc son homogéneos; la
-   q ganadora de la imagen N-1 como punto de partida deja la búsqueda en 1-3
-   pasos (esperable 3-4× menos costo).
-2. Bracket inicial estrecho alrededor de la semilla (±10) con fallback al rango
-   completo.
-3. Proxy más chico para el scoring (0.25 MPx en vez de 1 MPx — validar sesgo).
-4. Paralelizar el bucle de imágenes (rayon, solo nativo).
+
+**Mitigaciones — estado tras medición (2026-07-17):**
+1. ~~**Semilla de la imagen anterior**~~ · 2. ~~**Bracket estrecho ±10 + fallback**~~
+   — **FALSIFICADOS por medición.** Implementado como búsqueda exponencial
+   (galloping) sembrada con la q ganadora previa (subsume 1 y 2), con TDD
+   completo y equivalencia probada *bajo monotonía*. En el corpus real NO rinde,
+   por dos causas independientes:
+   - **La premisa "la q apenas se mueve" es falsa.** La q* salta **5–15** entre
+     imágenes elegibles (p. ej. doc-F: 53→51→48→44→39→38→28→27→20), no ≤2. El
+     galloping sobretira cuando la semilla está lejos y cuesta MÁS que un binario
+     fresco. Probes/imagen medidos (sembrado vs binario): doc-A 5.74 vs 6.13
+     (−6%), doc-E 7.04 vs ~6.5, **doc-F 8.53 vs 6.47 (+32%)**. Neto:
+     nulo-a-negativo.
+   - **⚠️ Las curvas SSIM2(q) reales son NO monótonas.** El binario de v2.1 ya es
+     un heurístico bajo esa realidad. **Cualquier** búsqueda que cambie el CAMINO
+     de sondeo (semilla, bracket, galloping) aterriza en una q* distinta a la del
+     binario en imágenes con curva no monótona → **cambia la salida, y en
+     promedio la EMPEORA** (doc-A: galloping da +3991 bytes vs v2.1). Por eso el
+     bracket (§1.2) muere por la misma causa: no se arregla cambiando el algoritmo
+     de búsqueda. Reducir el *número* de probes es, en este corpus, un callejón.
+   Rama revertida; `v2.1` intacto. Rehacer sólo si aparece un corpus con q*
+   demostrablemente estable (±2) Y curvas monótonas — improbable.
+3. **Proxy más chico para el scoring** (0.25 MPx vs 1 MPx — validar sesgo).
+   VIVO. Ataca el costo POR probe (no el número), así que es robusto a la q*
+   inestable, y es el ÚNICO lever que también acelera el Beta wasm (no depende de
+   threads). Cambia scores → q* → salidas: exige gate de calidad/tamaño.
+4. **Paralelizar el bucle de imágenes** (rayon, solo nativo). VIVO y limpio:
+   pura ganancia de wall-clock, byte-idéntica (cada búsqueda por-imagen no
+   cambia). Pero el Beta (wasm single-thread) no se beneficia.
 
 **Lección de medición (NO repetir):** jamás medir calidad con SSIM2 sobre
 renders de página — el resampleo desplaza la rejilla sub-píxel y páginas
 visualmente idénticas puntúan −4. La garantía válida es in-pipeline (rejilla
 alineada). Ídem: nunca comparar encoders a la misma q nominal ni por PSNR
-(trellis sacrifica PSNR a propósito); solo iso-perceptual.
+(trellis sacrifica PSNR a propósito); solo iso-perceptual. **Y (nuevo):** la
+curva SSIM2(q) NO es monótona en escaneos reales — no asumir que "menor q que
+pasa" está bien definido ni que dos búsquedas distintas coinciden.
 
 ## 2. Bake-off de encoders por imagen (fase 2 del perceptual)
 
