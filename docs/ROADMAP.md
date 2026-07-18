@@ -44,10 +44,24 @@ por imagen de búsqueda, dominado por ~7 pasos de encode+SSIM2).
      de búsqueda. Reducir el *número* de probes es, en este corpus, un callejón.
    Rama revertida; `v2.1` intacto. Rehacer sólo si aparece un corpus con q*
    demostrablemente estable (±2) Y curvas monótonas — improbable.
-3. **Proxy más chico para el scoring** (0.25 MPx vs 1 MPx — validar sesgo).
-   VIVO. Ataca el costo POR probe (no el número), así que es robusto a la q*
-   inestable, y es el ÚNICO lever que también acelera el Beta wasm (no depende de
-   threads). Cambia scores → q* → salidas: exige gate de calidad/tamaño.
+3. **Proxy más chico para el scoring** (0.25 MPx vs 1 MPx). ✅ **HECHO**
+   (2026-07-17). Medido a τ65/90dpi contra gema v2.0 (q fija 45) y producción
+   Ghostscript:
+   - **CPU (user)**: doc-A 87→47s, expediente 53→27s, doc-F 7.5→3.3s —
+     ~**2× menos**, y es el único lever que también sirve al Beta wasm.
+   - **Tamaño**: MENOR en todo el corpus (doc-A 13.45→10.55 MB −21.6%;
+     expediente 7.08→5.73 −19%). vs producción Ghostscript (único par real,
+     doc-A 18.3 MB): τ65@0.25MPx da **10.55 MB, −42%**.
+   - **⚠️ Corre la escala de τ**: el proxy borroso puntúa más benévolo → al
+     mismo τ pasa una q menor. τ65@0.25MPx ≈ vara más baja que τ65@1MPx. Los τ
+     orientativos del spec (calibrados con 1 MPx) quedan INVALIDADOS —
+     recalibrar antes de promover.
+   - **Gate visual**: PASADO — peor página de doc-A (p151, −27.6%: manuscrita,
+     sello ministerio y firmas legibles) y sello tenue de expediente p98.
+   - **Gate CPU 2.5× vs fija**: expediente 2.96×, prueba 2.93× (rozando);
+     doc-A 14× (patológico: 218 imágenes elegibles). El proxy solo no
+     desbloquea la promoción universal; sí deja el modo ~2× más barato y
+     estrictamente mejor en tamaño.
 4. **Paralelizar el bucle de imágenes** (rayon, solo nativo). ✅ **HECHO**
    (commit e920d47, 2026-07-17). `process_image` se partió en `prepare_image`
    (etapas 1-4, read-only) + `commit_prepared` (etapa 5, muta en serie); el
