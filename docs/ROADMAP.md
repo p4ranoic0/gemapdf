@@ -53,9 +53,10 @@ por imagen de búsqueda, dominado por ~7 pasos de encode+SSIM2).
      expediente 7.08→5.73 −19%). vs producción Ghostscript (único par real,
      doc-A 18.3 MB): τ65@0.25MPx da **10.55 MB, −42%**.
    - **⚠️ Corre la escala de τ**: el proxy borroso puntúa más benévolo → al
-     mismo τ pasa una q menor. τ65@0.25MPx ≈ vara más baja que τ65@1MPx. Los τ
-     orientativos del spec (calibrados con 1 MPx) quedan INVALIDADOS —
-     recalibrar antes de promover.
+     mismo τ pasa una q menor. τ65@0.25MPx ≈ vara más baja que τ65@1MPx.
+     **τ RECALIBRADOS a la escala nueva (2026-07-17): screen 68 · ebook 84 ·
+     printer 85** — mayor τ con tamaño ≤ q fija del perfil sobre 3 docs, con
+     margen; gate visual pasado. Detalle en spec §3 y baseline de la skill.
    - **Gate visual**: PASADO — peor página de doc-A (p151, −27.6%: manuscrita,
      sello ministerio y firmas legibles) y sello tenue de expediente p98.
    - **Gate CPU 2.5× vs fija**: expediente 2.96×, prueba 2.93× (rozando);
