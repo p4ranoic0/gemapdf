@@ -57,6 +57,10 @@ por imagen de búsqueda, dominado por ~7 pasos de encode+SSIM2).
    rayon es dep `cfg(not wasm32)`: el Beta wasm (single-thread) se queda serial
    y no lo arrastra (wasm 1.30 MB, sin cambios). El Beta NO se beneficia — su
    CPU por-imagen sigue igual; para el Beta el lever pendiente es §1.3 (proxy).
+   Corpus verificado byte-idéntico: 11 docs reales (15–88 MB). Revisión
+   adversarial halló un único caso teórico (paleta Indexed que a la vez es
+   `/Subtype /Image`, sólo input malformado) → cerrado con guard en
+   `colorspace.rs` (commit 6db9062, inerte en docs reales). Garantía airtight.
 
 **Lección de medición (NO repetir):** jamás medir calidad con SSIM2 sobre
 renders de página — el resampleo desplaza la rejilla sub-píxel y páginas
