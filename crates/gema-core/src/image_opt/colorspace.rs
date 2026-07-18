@@ -135,6 +135,18 @@ fn indexed_lookup_bytes(doc: &Document, lookup: &Object) -> Option<Vec<u8>> {
     match resolve(doc, lookup)? {
         Object::String(bytes, _) => Some(bytes.clone()),
         Object::Stream(s) => {
+            // §1.4 (guard byte-identity): si el stream de la paleta es ADEMÁS un
+            // XObject de imagen, el pipeline lo recomprime (muta su `content`).
+            // Leer ese contenido como paleta haría que el resultado dependa de si
+            // esa imagen ya se procesó → distinto entre el bucle serial y el
+            // paralelo. `/Subtype` es un campo que la reescritura NUNCA cambia, así
+            // que la decisión de rechazar es order-independiente. Una paleta que a
+            // la vez es imagen es malformada (ningún productor real la emite): la
+            // imagen que la referencia se salta de forma consistente en ambos
+            // caminos.
+            if matches!(s.dict.get(b"Subtype").and_then(|o| o.as_name()), Ok(n) if n == b"Image") {
+                return None;
+            }
             // La paleta puede venir comprimida (FlateDecode, etc.). Reusamos el
             // des-encadenador. `filter_chain` devuelve `None` en dos casos muy
             // distintos, y sólo uno es seguro (M2):
@@ -617,6 +629,51 @@ mod tests {
         assert!(
             decode_flate_image(&empty_doc(), &s, w, h).is_none(),
             "paleta con longitud incorrecta → SKIP"
+        );
+    }
+
+    /// §1.4 (guard byte-identity): si el stream de la paleta ADEMÁS declara
+    /// `/Subtype /Image`, es un XObject recomprimible cuyo contenido muta el
+    /// pipeline. Leer su contenido como paleta haría que el resultado dependa
+    /// del orden de procesamiento (el bucle serial lo vería mutado si su id es
+    /// menor; el paralelo siempre prístino). Se rechaza → la imagen que lo
+    /// referencia se salta de forma CONSISTENTE en ambos caminos. Una paleta que
+    /// es a la vez imagen es malformada; ningún productor real la emite.
+    #[test]
+    fn indexed_palette_that_is_an_image_is_skipped() {
+        let (w, h) = (4u32, 2u32);
+        // Paleta válida (hival=3 → 12 bytes RGB): sin el guard, decodificaría.
+        let palette: Vec<u8> = vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 200, 210, 220];
+        let indices: Vec<u8> = vec![0, 1, 2, 3, 3, 2, 1, 0];
+        let mut doc = lopdf::Document::new();
+        // El stream de la paleta declara /Subtype /Image (malformado).
+        let pal = Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Image",
+                "Width" => 4, "Height" => 1, "BitsPerComponent" => 8,
+                "ColorSpace" => "DeviceRGB",
+            },
+            palette, // sin /Filter → contenido crudo = paleta
+        );
+        let pal_ref = doc.add_object(Object::Stream(pal));
+        let s = Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Image",
+                "Width" => w as i64, "Height" => h as i64,
+                "BitsPerComponent" => 8,
+                "ColorSpace" => vec![
+                    Object::Name(b"Indexed".to_vec()),
+                    Object::Name(b"DeviceRGB".to_vec()),
+                    Object::Integer(3),
+                    Object::Reference(pal_ref),
+                ],
+                "Filter" => "FlateDecode",
+            },
+            zlib(&indices),
+        );
+        assert!(
+            decode_flate_image(&doc, &s, w, h).is_none(),
+            "paleta que es a la vez /Subtype /Image → rechazada (guard byte-identity)"
         );
     }
 
