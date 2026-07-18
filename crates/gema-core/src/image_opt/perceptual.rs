@@ -3,7 +3,7 @@
 //! Para una imagen decodificada, encuentra la MENOR q∈[Q_MIN, Q_MAX] cuyo
 //! re-decode (con `image`/zune — el decoder real del pipeline) puntúa
 //! SSIMULACRA2 ≥ target contra los píxeles fuente. El score se calcula sobre
-//! un proxy de ≤1 MPx (mismo reduce CatmullRom para fuente y candidata: el
+//! un proxy de ≤0.25 MPx (mismo reduce CatmullRom para fuente y candidata: el
 //! sesgo es consistente y la búsqueda solo necesita orden, no valor absoluto).
 //! Si ni Q_MAX alcanza el target devuelve el encode a Q_MAX con `false`
 //! (mejor esfuerzo — el orquestador lo reporta como warning).
@@ -14,9 +14,14 @@ use ssimulacra2::{compute_frame_ssimulacra2, ColorPrimaries, Rgb, TransferCharac
 
 const Q_MIN: u8 = 20;
 const Q_MAX: u8 = 90;
-const PROXY_MAX_PX: u64 = 1_000_000;
+/// §1.3: 0.25 MPx (antes 1 MPx). SSIM2 escala con los píxeles del proxy, así
+/// que esto abarata ~4× el scoring de cada probe — el único lever de CPU que
+/// también sirve al Beta wasm (single-thread). Validado sobre el corpus contra
+/// gema v2.0 (q fija) y producción Ghostscript: ver baseline de la skill
+/// gemapdf-optimize y ROADMAP §1.3.
+const PROXY_MAX_PX: u64 = 250_000;
 
-/// Reduce a ≤1 MPx si hace falta (CatmullRom ≈ interpolación de viewer).
+/// Reduce a ≤[`PROXY_MAX_PX`] si hace falta (CatmullRom ≈ interpolación de viewer).
 fn proxy(img: &image::RgbImage) -> image::RgbImage {
     let (w, h) = img.dimensions();
     let px = w as u64 * h as u64;
@@ -191,6 +196,27 @@ mod tests {
             reached,
             "τ=50 debe ser alcanzable en una foto sintética >1MPx (rama proxy)"
         );
+    }
+
+    /// §1.3: el proxy de scoring debe capar a 0.25 MPx (no 1 MPx) — es lo que
+    /// abarata cada probe de la búsqueda (SSIM2 escala con los píxeles del
+    /// proxy). Gate de tamaño/calidad validado aparte sobre el corpus contra
+    /// gema v2.0 y producción Ghostscript.
+    #[test]
+    fn proxy_caps_at_quarter_megapixel() {
+        let img = image::RgbImage::from_pixel(1200, 1200, image::Rgb([100, 100, 100]));
+        let p = proxy(&img);
+        let px = p.width() as u64 * p.height() as u64;
+        assert!(
+            px <= 250_000,
+            "el proxy debe capar a 0.25 MPx, quedó en {px} px ({}×{})",
+            p.width(),
+            p.height()
+        );
+        // una imagen ya ≤0.25 MPx no se toca (mismo objeto, sin resample)
+        let small = image::RgbImage::from_pixel(400, 400, image::Rgb([50, 50, 50]));
+        let sp = proxy(&small);
+        assert_eq!(sp.dimensions(), (400, 400), "≤0.25 MPx no se remuestrea");
     }
 
     #[test]
