@@ -76,6 +76,21 @@ por imagen de búsqueda, dominado por ~7 pasos de encode+SSIM2).
    adversarial halló un único caso teórico (paleta Indexed que a la vez es
    `/Subtype /Image`, sólo input malformado) → cerrado con guard en
    `colorspace.rs` (commit 6db9062, inerte en docs reales). Garantía airtight.
+5. **Cache de búsquedas por identidad de fuente** (commit eb941fd, 2026-07-18).
+   ✅ **HECHO**. Copias byte-idénticas del mismo stream (ruta DCT) no repiten la
+   búsqueda de q: clave = raw + `/Filter` + `/DecodeParms` + `/DP` + dims + τ,
+   comparada completa → **output byte-idéntico** al sin-cache (verificado). Solo
+   ruta DCT (ahí los píxeles salen solo de los bytes JPEG); Flate no se cachea.
+   Tope de memoria 128 MB. Medido en `doc-B1` (88 MB merge, 25%
+   imgs redundantes): 83 hits, **user 110.6→80.1s (−27%)**; doc-A (0 dups) sin
+   regresión. Ataca el caso patológico de docs de merge, ortogonal a §1.3/§1.4.
+
+**Cierre §1:** los levers baratos están agotados. El modo perceptual quedó ~2×
+más barato (proxy), 4.5–6.7× en wall-clock (rayon nativo), con cache para docs
+de merge, calibrado (τ 68/84/85) y estrictamente mejor en tamaño que la q fija.
+El único bloqueador de la promoción universal es el costo serial en docs muy
+image-heavy tipo doc-A (~14× vs fija en el Beta wasm single-thread) — eso solo
+lo mueve un cambio de códec (§2 bake-off) o menos imágenes que buscar (MRC, §3).
 
 **Lección de medición (NO repetir):** jamás medir calidad con SSIM2 sobre
 renders de página — el resampleo desplaza la rejilla sub-píxel y páginas
