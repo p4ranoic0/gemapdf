@@ -109,6 +109,14 @@ pub fn compress_with_progress(
         is_smask: smask_ids.contains(&id),
     };
 
+    // Cache de búsquedas perceptuales por-documento (cierre §1): copias
+    // byte-idénticas del mismo stream (mismo dict, mismas dims, misma τ) no
+    // repiten la búsqueda. Compartido entre hilos (Mutex interno); una carrera
+    // recomputa el mismo resultado determinista, así que el output es idéntico
+    // con o sin hit.
+    #[cfg(feature = "perceptual")]
+    let perceptual_cache = crate::image_opt::perceptual::SearchCache::new();
+
     // §1.4 — El cómputo pesado por-imagen (decode + búsqueda + encode) es
     // read-only sobre el doc: en NATIVO corre en paralelo con rayon; sólo la
     // reescritura (`commit_prepared`) muta el doc y va en SERIE, en orden de
@@ -121,13 +129,29 @@ pub fn compress_with_progress(
         use rayon::prelude::*;
         image_ids
             .par_iter()
-            .map(|&id| prepare_image(&doc, id, &mk_params(id)))
+            .map(|&id| {
+                prepare_image(
+                    &doc,
+                    id,
+                    &mk_params(id),
+                    #[cfg(feature = "perceptual")]
+                    &perceptual_cache,
+                )
+            })
             .collect()
     };
     #[cfg(target_arch = "wasm32")]
     let prepared: Vec<_> = image_ids
         .iter()
-        .map(|&id| prepare_image(&doc, id, &mk_params(id)))
+        .map(|&id| {
+            prepare_image(
+                &doc,
+                id,
+                &mk_params(id),
+                #[cfg(feature = "perceptual")]
+                &perceptual_cache,
+            )
+        })
         .collect();
 
     // Fase serial: aplicar las escrituras en orden de `image_ids` y emitir

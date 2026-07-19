@@ -14,6 +14,8 @@ pub struct RawImage {
 }
 
 /// Resultado de recompresión: bytes + los metadatos de dict que le corresponden.
+/// `Clone` para el cache de búsquedas perceptuales (hit = clonar el resultado).
+#[derive(Clone)]
 pub struct Encoded {
     pub bytes: Vec<u8>,
     /// Nombre del filtro PDF: "DCTDecode" para JPEG, "FlateDecode" para PNG/raw.

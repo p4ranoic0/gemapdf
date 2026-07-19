@@ -111,9 +111,156 @@ pub(crate) fn encode_jpeg_at_target(raw: &RawImage, target: f32) -> Option<(Enco
     }
 }
 
+/// Cache de búsquedas dentro de UN documento (cierre §1), SOLO para imágenes
+/// decodificadas por la ruta DCT. En esa ruta los píxeles son función
+/// exclusivamente de los bytes JPEG (tras des-encadenar el prefijo /Filter):
+/// el dict `/ColorSpace` se IGNORA al decodificar y el encoder pone el suyo en
+/// la salida — por eso la clave correcta es `raw + /Filter + dims + τ`, sin
+/// dict. Medido en `doc-B1` (merge): 127/301 búsquedas eran
+/// copias byte-idénticas del mismo stream cuyo dict solo variaba en claves
+/// irrelevantes (p. ej. `/ColorSpace` duplicado con otro id, `/Name`).
+///
+/// La ruta Flate NO se cachea (ahí `/ColorSpace`/`/BitsPerComponent`/
+/// `/DecodeParms` sí determinan píxeles y resolver sus indirecciones de forma
+/// comparable no paga): conservador y correcto.
+///
+/// La clave se compara COMPLETA en el hit — bytes crudos, `/Filter`,
+/// `/DecodeParms`, `/DP`, dims y τ: identidad de las ENTRADAS de la función de
+/// píxeles, sin hashes truncados → el output es EXACTAMENTE el mismo que sin
+/// cache (byte-idéntico, incluso con input adversarial). Compartido entre los
+/// hilos de rayon tras un Mutex que solo se toma para consultar/insertar, nunca
+/// durante la búsqueda: una carrera entre dos copias idénticas computa dos veces
+/// el mismo resultado determinista (correcto, solo algo de trabajo extra).
+///
+/// Tope de memoria: guarda una copia del `raw` de cada entrada única, así que el
+/// peso crece con las imágenes ÚNICAS. Se capea a [`CACHE_MAX_BYTES`]; pasado el
+/// tope deja de insertar (los hits sobre lo ya guardado siguen). No afecta
+/// corrección: una entrada no guardada solo significa que una copia idéntica
+/// futura re-busca — siempre correcto. En docs con muchos duplicados (el caso
+/// que gana) el peso único es chico y el tope no molesta; en docs todo-únicos
+/// (hits≈0) capar no pierde nada.
+pub(crate) struct SearchCache {
+    entries: std::sync::Mutex<Vec<CacheEntry>>,
+    /// Bytes de `raw`+`enc` acumulados; guardado bajo el mismo lock que `entries`.
+    stored_bytes: std::sync::atomic::AtomicU64,
+    /// Tope de memoria (= [`CACHE_MAX_BYTES`] en prod; los tests lo bajan).
+    max_bytes: u64,
+    hits: std::sync::atomic::AtomicU32,
+}
+
+/// Tope de memoria del cache (§1): pasado esto no se insertan entradas nuevas.
+/// Generoso — cubre el corpus real (el doc más pesado, 88 MB, guardó ~90 MB de
+/// únicos y ganó); solo frena docs patológicos todo-únicos de cientos de MB.
+const CACHE_MAX_BYTES: u64 = 128 * 1024 * 1024;
+
+/// Identidad de la FUENTE de una imagen elegible para el cache: los bytes
+/// crudos del stream, su `/Filter` (la cadena determina cómo se des-encadena
+/// hasta el JPEG interno) y sus `/DecodeParms`//`/DP` (los predictores del
+/// prefijo Flate participan en el des-encadenado — `unwrap_to_dct` los aplica,
+/// así que dos raws idénticos con parms distintos pueden dar bytes JPEG
+/// distintos). Solo la ruta DCT construye una — la ruta Flate pasa `None` al
+/// wrapper y va directo a la búsqueda.
+pub(crate) struct CacheKeySrc<'a> {
+    pub(crate) raw_bytes: &'a [u8],
+    pub(crate) filter: Option<lopdf::Object>,
+    pub(crate) decode_parms: Option<lopdf::Object>,
+    pub(crate) dp: Option<lopdf::Object>,
+}
+
+struct CacheEntry {
+    raw: Vec<u8>,
+    filter: Option<lopdf::Object>,
+    decode_parms: Option<lopdf::Object>,
+    dp: Option<lopdf::Object>,
+    w: u32,
+    h: u32,
+    target_bits: u32,
+    enc: Encoded,
+    reached: bool,
+}
+
+impl SearchCache {
+    pub(crate) fn new() -> Self {
+        Self::with_max_bytes(CACHE_MAX_BYTES)
+    }
+
+    fn with_max_bytes(max_bytes: u64) -> Self {
+        Self {
+            entries: std::sync::Mutex::new(Vec::new()),
+            stored_bytes: std::sync::atomic::AtomicU64::new(0),
+            max_bytes,
+            hits: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+
+    /// Hits acumulados (telemetría de tests/diagnóstico).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn hits(&self) -> u32 {
+        self.hits.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// [`encode_jpeg_at_target`] con memoización por identidad de fuente (ver
+/// [`SearchCache`]). `src: None` (ruta Flate) busca directo, sin cachear; las
+/// dims post-transform van implícitas en `raw.image`.
+pub(crate) fn encode_jpeg_at_target_cached(
+    cache: &SearchCache,
+    src: Option<CacheKeySrc<'_>>,
+    raw: &RawImage,
+    target: f32,
+) -> Option<(Encoded, bool)> {
+    let Some(src) = src else {
+        return encode_jpeg_at_target(raw, target);
+    };
+    let (w, h) = (raw.image.width(), raw.image.height());
+    let target_bits = target.to_bits();
+    {
+        let entries = cache.entries.lock().expect("cache lock");
+        if let Some(e) = entries.iter().find(|e| {
+            e.target_bits == target_bits
+                && e.w == w
+                && e.h == h
+                && e.raw == src.raw_bytes
+                && e.filter == src.filter
+                && e.decode_parms == src.decode_parms
+                && e.dp == src.dp
+        }) {
+            cache
+                .hits
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Some((e.enc.clone(), e.reached));
+        }
+        // miss → soltar el lock ANTES de la búsqueda (no serializar rayon)
+    }
+    let (enc, reached) = encode_jpeg_at_target(raw, target)?;
+    // Insertar bajo el lock, respetando el tope de memoria. Pasado el tope se
+    // devuelve el resultado igual pero NO se guarda (una copia futura re-busca —
+    // siempre correcto). El contador vive bajo el mismo lock, así que no hace
+    // falta atomicidad fina: `Relaxed` basta.
+    use std::sync::atomic::Ordering::Relaxed;
+    let entry_bytes = (src.raw_bytes.len() + enc.bytes.len()) as u64;
+    let mut entries = cache.entries.lock().expect("cache lock");
+    if cache.stored_bytes.load(Relaxed) + entry_bytes <= cache.max_bytes {
+        cache.stored_bytes.fetch_add(entry_bytes, Relaxed);
+        entries.push(CacheEntry {
+            raw: src.raw_bytes.to_vec(),
+            filter: src.filter,
+            decode_parms: src.decode_parms,
+            dp: src.dp,
+            w,
+            h,
+            target_bits,
+            enc: enc.clone(),
+            reached,
+        });
+    }
+    Some((enc, reached))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lopdf::dictionary;
 
     /// Foto sintética con contenido real (gradientes + textura): 400×400.
     fn photo() -> RawImage {
@@ -229,5 +376,129 @@ mod tests {
         };
         let (enc, _) = encode_jpeg_at_target(&raw, 55.0).expect("gris debe encodear");
         assert_eq!(enc.color_space, "DeviceGray");
+    }
+
+    /// Cierre §1 — cache por identidad de fuente DCT: misma (raw, filtro,
+    /// dims, τ) → hit con resultado idéntico a la búsqueda directa; cambiar
+    /// CUALQUIER componente → miss; ruta Flate (src None) → nunca cachea.
+    #[test]
+    fn search_cache_hits_only_identical_dct_sources() {
+        let cache = SearchCache::new();
+        let raw = photo();
+        let filt = || Some(lopdf::Object::Name(b"DCTDecode".to_vec()));
+        let src = |bytes: &'static [u8]| {
+            Some(CacheKeySrc {
+                raw_bytes: bytes,
+                filter: filt(),
+                decode_parms: None,
+                dp: None,
+            })
+        };
+        let (e1, r1) =
+            encode_jpeg_at_target_cached(&cache, src(b"STREAMBYTES"), &raw, 60.0).unwrap();
+        assert_eq!(cache.hits(), 0, "primera vez: miss");
+        let (e2, r2) =
+            encode_jpeg_at_target_cached(&cache, src(b"STREAMBYTES"), &raw, 60.0).unwrap();
+        assert_eq!(cache.hits(), 1, "misma clave: hit");
+        assert_eq!(e1.bytes, e2.bytes, "el hit devuelve bytes idénticos");
+        assert_eq!(r1, r2);
+        // el resultado cacheado = el de la búsqueda directa (equivalencia)
+        let (direct, dr) = encode_jpeg_at_target(&raw, 60.0).unwrap();
+        assert_eq!(e2.bytes, direct.bytes, "hit ≡ búsqueda directa");
+        assert_eq!(r2, dr);
+        // τ distinta → miss
+        encode_jpeg_at_target_cached(&cache, src(b"STREAMBYTES"), &raw, 55.0).unwrap();
+        assert_eq!(cache.hits(), 1, "τ distinta no puede hacer hit");
+        // raw distinto → miss
+        encode_jpeg_at_target_cached(&cache, src(b"OTROSBYTES"), &raw, 60.0).unwrap();
+        assert_eq!(cache.hits(), 1, "stream distinto no puede hacer hit");
+        // cadena /Filter distinta → miss (des-encadena a bytes distintos)
+        let src_flate = Some(CacheKeySrc {
+            raw_bytes: b"STREAMBYTES",
+            filter: Some(lopdf::Object::Array(vec![
+                lopdf::Object::Name(b"FlateDecode".to_vec()),
+                lopdf::Object::Name(b"DCTDecode".to_vec()),
+            ])),
+            decode_parms: None,
+            dp: None,
+        });
+        encode_jpeg_at_target_cached(&cache, src_flate, &raw, 60.0).unwrap();
+        assert_eq!(
+            cache.hits(),
+            1,
+            "cadena /Filter distinta no puede hacer hit"
+        );
+        // mismo raw+filter pero /DecodeParms distinto → miss: el prefijo Flate
+        // aplica predictores de DecodeParms al des-encadenar (unwrap_to_dct),
+        // así que los bytes JPEG internos pueden diferir.
+        let parms = lopdf::Object::Dictionary(dictionary! {
+            "Predictor" => 12,
+            "Colors" => 3,
+            "Columns" => 400,
+        });
+        let src_parms = Some(CacheKeySrc {
+            raw_bytes: b"STREAMBYTES",
+            filter: filt(),
+            decode_parms: Some(parms),
+            dp: None,
+        });
+        encode_jpeg_at_target_cached(&cache, src_parms, &raw, 60.0).unwrap();
+        assert_eq!(cache.hits(), 1, "/DecodeParms distinto no puede hacer hit");
+        // ruta Flate (src None): busca directo, ni hace hit ni inserta
+        let before = cache.hits();
+        encode_jpeg_at_target_cached(&cache, None, &raw, 60.0).unwrap();
+        encode_jpeg_at_target_cached(&cache, None, &raw, 60.0).unwrap();
+        assert_eq!(cache.hits(), before, "la ruta sin identidad nunca cachea");
+    }
+
+    /// Cierre §1 — las dims post-transform participan en la clave: el mismo
+    /// stream pintado a otro tamaño produce otra búsqueda (píxeles distintos).
+    #[test]
+    fn search_cache_discriminates_dims() {
+        let cache = SearchCache::new();
+        let src = || {
+            Some(CacheKeySrc {
+                raw_bytes: b"STREAMBYTES",
+                filter: Some(lopdf::Object::Name(b"DCTDecode".to_vec())),
+                decode_parms: None,
+                dp: None,
+            })
+        };
+        encode_jpeg_at_target_cached(&cache, src(), &photo(), 60.0).unwrap();
+        // misma fuente, dims distintas (large_photo 1200×1200 vs 400×400)
+        encode_jpeg_at_target_cached(&cache, src(), &large_photo(), 60.0).unwrap();
+        assert_eq!(cache.hits(), 0, "dims distintas no pueden hacer hit");
+    }
+
+    /// Cierre §1 — el tope de memoria frena la inserción SIN romper corrección:
+    /// con tope 0 no cachea (dos idénticas siguen siendo miss) pero devuelve el
+    /// resultado correcto; con tope amplio, la segunda idéntica hace hit.
+    #[test]
+    fn search_cache_respects_byte_cap() {
+        let raw = photo();
+        let mk = |bytes: &'static [u8]| {
+            Some(CacheKeySrc {
+                raw_bytes: bytes,
+                filter: Some(lopdf::Object::Name(b"DCTDecode".to_vec())),
+                decode_parms: None,
+                dp: None,
+            })
+        };
+        // tope 0 → nunca guarda → dos idénticas siguen siendo miss...
+        let capped = SearchCache::with_max_bytes(0);
+        encode_jpeg_at_target_cached(&capped, mk(b"AAAA"), &raw, 60.0).unwrap();
+        let (capres, _) = encode_jpeg_at_target_cached(&capped, mk(b"AAAA"), &raw, 60.0).unwrap();
+        assert_eq!(capped.hits(), 0, "con tope 0 no debe cachear");
+        // ...pero el resultado sigue siendo el de la búsqueda directa
+        let (direct, _) = encode_jpeg_at_target(&raw, 60.0).unwrap();
+        assert_eq!(
+            capres.bytes, direct.bytes,
+            "capado sigue devolviendo lo correcto"
+        );
+        // sin tope, la segunda idéntica SÍ hace hit (contraste)
+        let big = SearchCache::with_max_bytes(u64::MAX);
+        encode_jpeg_at_target_cached(&big, mk(b"AAAA"), &raw, 60.0).unwrap();
+        encode_jpeg_at_target_cached(&big, mk(b"AAAA"), &raw, 60.0).unwrap();
+        assert_eq!(big.hits(), 1, "sin tope debe cachear");
     }
 }

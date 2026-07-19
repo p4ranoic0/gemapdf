@@ -201,6 +201,12 @@ fn load(doc: &Document, id: lopdf::ObjectId, preserve_this: bool) -> Load {
 struct Decoded {
     image: image::DynamicImage,
     codec: Codec,
+    /// Los píxeles salieron SOLO de los bytes del stream (ruta DCT/sniffing,
+    /// tras des-encadenar el prefijo /Filter): habilita el cache perceptual por
+    /// identidad de fuente. La ruta Flate lee además el dict (ColorSpace/BPC/
+    /// DecodeParms) → `false` (no cacheable por identidad raw+filtro).
+    #[cfg_attr(not(feature = "perceptual"), allow(dead_code))]
+    bytes_only: bool,
 }
 
 /// Etapa 2 — decodificar y clasificar. Rutas:
@@ -234,10 +240,10 @@ fn decode(doc: &Document, src: &ImageSource) -> Result<Decoded, ()> {
         None
     };
 
-    let (image, codec) = match cmyk_decoded {
-        Some(img) => (img, Codec::Jpeg),
+    let (image, codec, bytes_only) = match cmyk_decoded {
+        Some(img) => (img, Codec::Jpeg, true),
         None => match image::load_from_memory(dct_bytes) {
-            Ok(d) => (d, Codec::Jpeg),
+            Ok(d) => (d, Codec::Jpeg, true),
             Err(_) => match crate::image_opt::decode::decode_flate_image(
                 doc,
                 &src.stream_for_flate,
@@ -251,13 +257,17 @@ fn decode(doc: &Document, src: &ImageSource) -> Result<Decoded, ()> {
                         crate::image_opt::classify::Content::Photo => Codec::Jpeg,
                         crate::image_opt::classify::Content::LineArt => Codec::FlateLossless,
                     };
-                    (d, codec)
+                    (d, codec, false)
                 }
                 None => return Err(()),
             },
         },
     };
-    Ok(Decoded { image, codec })
+    Ok(Decoded {
+        image,
+        codec,
+        bytes_only,
+    })
 }
 
 /// Imagen tras la etapa de decisión: píxeles (posiblemente remuestreados), codec,
@@ -285,7 +295,7 @@ fn transform(
     target_dpi: u32,
     effective_dpi: Option<f32>,
 ) -> Transformed {
-    let Decoded { image, codec } = decoded;
+    let Decoded { image, codec, .. } = decoded;
 
     let mut warnings: Vec<Warning> = Vec::new();
     // Si la imagen tiene canal alfa y vamos a JPEG, el re-encode lo descarta.
@@ -477,7 +487,12 @@ pub(crate) struct ImageParams {
 /// Las imágenes que no son XObject de tipo Image devuelven `Prepared::Skip` (no
 /// generan stat); las que sí lo son pero no se pueden decodificar/recomprimir se
 /// marcan como `Skipped` dentro de un `Prepared::Ready`.
-pub(crate) fn prepare_image(doc: &Document, id: lopdf::ObjectId, p: &ImageParams) -> Prepared {
+pub(crate) fn prepare_image(
+    doc: &Document,
+    id: lopdf::ObjectId,
+    p: &ImageParams,
+    #[cfg(feature = "perceptual")] cache: &crate::image_opt::perceptual::SearchCache,
+) -> Prepared {
     let src = match load(doc, id, p.preserve) {
         Load::NotImage => return Prepared::Skip,
         Load::Done(outcome) => return Prepared::Ready(outcome),
@@ -506,6 +521,11 @@ pub(crate) fn prepare_image(doc: &Document, id: lopdf::ObjectId, p: &ImageParams
         }
     }
 
+    // Antes de que `transform` consuma `decoded`: ¿los píxeles son función
+    // exclusiva de los bytes? (habilita el cache perceptual por identidad).
+    #[cfg(feature = "perceptual")]
+    let bytes_only = decoded.bytes_only;
+
     let Transformed {
         image,
         codec,
@@ -533,7 +553,16 @@ pub(crate) fn prepare_image(doc: &Document, id: lopdf::ObjectId, p: &ImageParams
         Some(target) => {
             #[cfg(feature = "perceptual")]
             {
-                match crate::image_opt::perceptual::encode_jpeg_at_target(
+                // Cache por identidad de fuente (raw+filtro+dims+τ), solo ruta
+                // DCT: copias idénticas del mismo stream no repiten la búsqueda.
+                match crate::image_opt::perceptual::encode_jpeg_at_target_cached(
+                    cache,
+                    bytes_only.then(|| crate::image_opt::perceptual::CacheKeySrc {
+                        raw_bytes: &src.raw_bytes,
+                        filter: src.stream_for_flate.dict.get(b"Filter").ok().cloned(),
+                        decode_parms: src.stream_for_flate.dict.get(b"DecodeParms").ok().cloned(),
+                        dp: src.stream_for_flate.dict.get(b"DP").ok().cloned(),
+                    }),
                     &RawImage { image },
                     target,
                 ) {
