@@ -79,23 +79,67 @@ fn score(src_proxy: &image::RgbImage, src_metric: &Rgb, bytes: &[u8]) -> Option<
     compute_frame_ssimulacra2(src_metric.clone(), dm).ok()
 }
 
-/// Ver doc del módulo. `None` solo si el ENCODER falla (dims > u16, etc.) —
-/// el orquestador lo traduce a Skipped igual que hoy.
-pub(crate) fn encode_jpeg_at_target(raw: &RawImage, target: f32) -> Option<(Encoded, bool)> {
-    let src = raw.image.to_rgb8();
-    let src_proxy = proxy(&src);
-    let Some(src_metric) = to_metric(&src_proxy) else {
-        // métrico no construible → degradar a mejor esfuerzo a Q_MAX
-        return JpegRecompressor.recompress(raw, Q_MAX).map(|e| (e, false));
-    };
+/// Recompresor mozjpeg-rs (`BaselineBalanced`: baseline C0 + trellis +
+/// huffman-opt + deringing), para el bake-off del §2. El SOF es C0 baseline, que
+/// zune y poppler abren bien (el bug del tinte verde era de `jpeg-encoder`, no de
+/// mozjpeg). Gris → 1 componente (DeviceGray), color → 4:2:0 (DeviceRGB), igual
+/// que [`JpegRecompressor`]. `None` si dims > u16 o el encode falla.
+struct MozjpegRecompressor;
 
+impl Recompressor for MozjpegRecompressor {
+    fn recompress(&self, raw: &RawImage, quality: u8) -> Option<Encoded> {
+        let q = quality.clamp(1, 100);
+        let enc = || mozjpeg_rs::Encoder::new(mozjpeg_rs::Preset::BaselineBalanced).quality(q);
+        if let image::DynamicImage::ImageLuma8(gray) = &raw.image {
+            let (w, h) = (gray.width(), gray.height());
+            if w == 0 || h == 0 || w > u16::MAX as u32 || h > u16::MAX as u32 {
+                return None;
+            }
+            let bytes = enc()
+                .subsampling(mozjpeg_rs::Subsampling::Gray)
+                .encode_gray(gray.as_raw(), w, h)
+                .ok()?;
+            return Some(Encoded {
+                bytes,
+                filter: "DCTDecode",
+                color_space: "DeviceGray",
+            });
+        }
+        let rgb = raw.image.to_rgb8();
+        let (w, h) = rgb.dimensions();
+        if w == 0 || h == 0 || w > u16::MAX as u32 || h > u16::MAX as u32 {
+            return None;
+        }
+        let bytes = enc()
+            .subsampling(mozjpeg_rs::Subsampling::S420)
+            .encode_rgb(rgb.as_raw(), w, h)
+            .ok()?;
+        Some(Encoded {
+            bytes,
+            filter: "DCTDecode",
+            color_space: "DeviceRGB",
+        })
+    }
+}
+
+/// Búsqueda binaria de la MENOR q∈[Q_MIN,Q_MAX] cuyo re-decode puntúa ≥ `t` con
+/// el recompresor `rc`. Devuelve `(encode, alcanzó_target)`. `None` solo si el
+/// ENCODER falla (dims > u16, etc.). Best-effort a Q_MAX con `false` si ni Q_MAX
+/// llega al target.
+fn search_smallest_q(
+    rc: &dyn Recompressor,
+    raw: &RawImage,
+    src_proxy: &image::RgbImage,
+    src_metric: &Rgb,
+    t: f64,
+) -> Option<(Encoded, bool)> {
     let (mut lo, mut hi) = (Q_MIN, Q_MAX);
     let mut best: Option<Encoded> = None;
     while lo <= hi {
         let mid = ((lo as u16 + hi as u16) / 2) as u8;
-        let enc = JpegRecompressor.recompress(raw, mid)?;
-        match score(&src_proxy, &src_metric, &enc.bytes) {
-            Some(s) if s >= target as f64 => {
+        let enc = rc.recompress(raw, mid)?;
+        match score(src_proxy, src_metric, &enc.bytes) {
+            Some(s) if s >= t => {
                 best = Some(enc);
                 if mid == Q_MIN {
                     break;
@@ -107,8 +151,49 @@ pub(crate) fn encode_jpeg_at_target(raw: &RawImage, target: f32) -> Option<(Enco
     }
     match best {
         Some(e) => Some((e, true)),
-        None => JpegRecompressor.recompress(raw, Q_MAX).map(|e| (e, false)),
+        None => rc.recompress(raw, Q_MAX).map(|e| (e, false)),
     }
+}
+
+/// Bake-off (§2): elige el candidato MÁS CHICO que cumple el target. Si solo uno
+/// cumple, ese; si ninguno, el más chico (mejor esfuerzo). `b: None` (mozjpeg
+/// falló) → `a`. Garantiza selección ≤ jpeg-encoder: nunca empeora.
+fn pick_smaller(a: (Encoded, bool), b: Option<(Encoded, bool)>) -> (Encoded, bool) {
+    let Some(b) = b else { return a };
+    match (a.1, b.1) {
+        (true, false) => a, // solo jpeg-encoder cumple τ
+        (false, true) => b, // solo mozjpeg cumple τ
+        _ => {
+            // ambos cumplen (o ninguno): el más chico
+            if b.0.bytes.len() < a.0.bytes.len() {
+                b
+            } else {
+                a
+            }
+        }
+    }
+}
+
+/// Ver doc del módulo. `None` solo si el ENCODER (jpeg-encoder) falla — el
+/// orquestador lo traduce a Skipped igual que hoy.
+pub(crate) fn encode_jpeg_at_target(raw: &RawImage, target: f32) -> Option<(Encoded, bool)> {
+    let src = raw.image.to_rgb8();
+    let src_proxy = proxy(&src);
+    let Some(src_metric) = to_metric(&src_proxy) else {
+        // métrico no construible → degradar a mejor esfuerzo a Q_MAX
+        return JpegRecompressor.recompress(raw, Q_MAX).map(|e| (e, false));
+    };
+    let t = target as f64;
+
+    // §2 bake-off por imagen: buscar la menor q@τ con CADA encoder y quedarse con
+    // el output más chico que cumple τ. El re-decode zune de `score` garantiza
+    // que sólo se elige mozjpeg si zune lo abre a ≥τ → jamás un output corrupto o
+    // más grande (selección ≤ jpeg-encoder). Medido −5 a −24% en el corpus
+    // (ROADMAP §2); CPU ~2× de la búsqueda (§1 la abarató para pagarlo). El
+    // resultado sigue siendo función pura de los mismos inputs → el cache sirve.
+    let a = search_smallest_q(&JpegRecompressor, raw, &src_proxy, &src_metric, t)?;
+    let b = search_smallest_q(&MozjpegRecompressor, raw, &src_proxy, &src_metric, t);
+    Some(pick_smaller(a, b))
 }
 
 /// Cache de búsquedas dentro de UN documento (cierre §1), SOLO para imágenes
@@ -296,11 +381,16 @@ mod tests {
     fn unreachable_target_falls_back_to_qmax() {
         let raw = photo();
         let (enc, reached) = encode_jpeg_at_target(&raw, 99.9).expect("debe encodear");
-        assert!(!reached, "τ=99.9 no debe alcanzarse con JPEG q90");
+        assert!(!reached, "τ=99.9 no debe alcanzarse con q90");
+        // Best-effort del bake-off (§2): con ambos encoders fallando τ, la
+        // selección se queda con el más chico entre jpeg-encoder@Q_MAX y
+        // mozjpeg@Q_MAX — nunca peor que jpeg-encoder solo.
         let at_qmax = JpegRecompressor.recompress(&raw, Q_MAX).unwrap();
-        assert_eq!(
-            enc.bytes, at_qmax.bytes,
-            "el mejor esfuerzo debe ser exactamente q=Q_MAX"
+        assert!(
+            enc.bytes.len() <= at_qmax.bytes.len(),
+            "el mejor esfuerzo ({}) no puede ser mayor que jpeg-encoder@Q_MAX ({})",
+            enc.bytes.len(),
+            at_qmax.bytes.len()
         );
     }
 
@@ -500,5 +590,115 @@ mod tests {
         encode_jpeg_at_target_cached(&big, mk(b"AAAA"), &raw, 60.0).unwrap();
         encode_jpeg_at_target_cached(&big, mk(b"AAAA"), &raw, 60.0).unwrap();
         assert_eq!(big.hits(), 1, "sin tope debe cachear");
+    }
+
+    // ---- §2 bake-off por imagen (mozjpeg) ----
+
+    fn enc(bytes: usize) -> Encoded {
+        Encoded {
+            bytes: vec![0u8; bytes],
+            filter: "DCTDecode",
+            color_space: "DeviceRGB",
+        }
+    }
+
+    /// La lógica de selección: el más chico que cumple τ; solo-uno-cumple gana
+    /// ese; ninguno → el más chico; b None → a.
+    #[test]
+    fn pick_smaller_selects_correctly() {
+        // ambos cumplen → el más chico
+        assert_eq!(
+            pick_smaller((enc(100), true), Some((enc(60), true)))
+                .0
+                .bytes
+                .len(),
+            60
+        );
+        assert_eq!(
+            pick_smaller((enc(60), true), Some((enc(100), true)))
+                .0
+                .bytes
+                .len(),
+            60
+        );
+        // solo A cumple → A aunque B sea más chico
+        assert_eq!(
+            pick_smaller((enc(100), true), Some((enc(10), false)))
+                .0
+                .bytes
+                .len(),
+            100
+        );
+        // solo B cumple → B aunque A sea más chico
+        assert_eq!(
+            pick_smaller((enc(100), false), Some((enc(200), true)))
+                .0
+                .bytes
+                .len(),
+            200
+        );
+        // ninguno cumple → el más chico (mejor esfuerzo)
+        assert_eq!(
+            pick_smaller((enc(100), false), Some((enc(70), false)))
+                .0
+                .bytes
+                .len(),
+            70
+        );
+        // B None (mozjpeg falló) → A
+        assert_eq!(pick_smaller((enc(100), true), None).0.bytes.len(), 100);
+    }
+
+    /// EL invariante del bake-off: nunca produce un output MÁS GRANDE que el de
+    /// jpeg-encoder solo, a igual τ (la selección elige el mínimo que cumple).
+    #[test]
+    fn bakeoff_never_worse_than_jpeg_encoder() {
+        let raw = photo();
+        let src = raw.image.to_rgb8();
+        let sp = proxy(&src);
+        let sm = to_metric(&sp).unwrap();
+        let (jenc, _) = search_smallest_q(&JpegRecompressor, &raw, &sp, &sm, 60.0).unwrap();
+        let (bake, _) = encode_jpeg_at_target(&raw, 60.0).unwrap();
+        assert!(
+            bake.bytes.len() <= jenc.bytes.len(),
+            "bake-off ({}) no puede ser mayor que jpeg-encoder solo ({})",
+            bake.bytes.len(),
+            jenc.bytes.len()
+        );
+    }
+
+    /// El output de mozjpeg es re-decodificable por zune (el decoder real del
+    /// pipeline) — si no lo fuera, `score` lo rechazaría y nunca se elegiría, pero
+    /// aquí lo verificamos directo: baseline C0 zune-safe.
+    #[test]
+    fn mozjpeg_output_is_zune_decodable() {
+        let raw = photo();
+        let e = MozjpegRecompressor
+            .recompress(&raw, 70)
+            .expect("mozjpeg encodea");
+        assert_eq!(e.filter, "DCTDecode");
+        assert_eq!(e.color_space, "DeviceRGB");
+        let dec = image::load_from_memory(&e.bytes).expect("zune abre el output de mozjpeg");
+        assert_eq!((dec.width(), dec.height()), (400, 400));
+    }
+
+    /// mozjpeg preserva gris como DeviceGray (1 componente), igual que
+    /// JpegRecompressor — y zune lo abre.
+    #[test]
+    fn mozjpeg_gray_stays_devicegray() {
+        let gray = image::GrayImage::from_fn(400, 400, |x, y| {
+            image::Luma([((x * 7 + y * 13) % 256) as u8])
+        });
+        let raw = RawImage {
+            image: image::DynamicImage::ImageLuma8(gray),
+        };
+        let e = MozjpegRecompressor
+            .recompress(&raw, 70)
+            .expect("gris mozjpeg");
+        assert_eq!(e.color_space, "DeviceGray");
+        assert!(
+            image::load_from_memory(&e.bytes).is_ok(),
+            "zune abre gris mozjpeg"
+        );
     }
 }
