@@ -101,18 +101,31 @@ alineada). Ídem: nunca comparar encoders a la misma q nominal ni por PSNR
 curva SSIM2(q) NO es monótona en escaneos reales — no asumir que "menor q que
 pasa" está bien definido ni que dos búsquedas distintas coinciden.
 
-## 2. Bake-off de encoders por imagen (fase 2 del perceptual)
+## 2. Bake-off de encoder por imagen · ✅ HECHO (2026-07-20, commit 9ca7f12)
 
-**Estado:** spike medido (commit d8df044, `examples/enc_mozjpeg.rs`).
+Cada imagen del modo perceptual busca la menor q@τ con jpeg-encoder Y
 [`mozjpeg-rs`](https://github.com/imazen/mozjpeg-rs) (Rust puro, BSD-3,
-`forbid(unsafe_code)`, encoder-only) con `Preset::BaselineBalanced` emite
-baseline C0 que **zune-jpeg decodifica bien CON Huffman optimizado** — el bug
-que obligó a apagar huffman-opt era de `jpeg-encoder`, no del concepto.
-**Payoff iso-SSIM2: dependiente de contenido** — −13.6% en escaneos grandes,
-+15.4% (peor) en docs tipo doc-A → NO adoptar a ciegas; adoptarlo POR IMAGEN
-dentro del modo perceptual (a la q encontrada, gana el más chico al target).
-Duplica el costo CPU del modo → depende de §1. Verificar build wasm32 si algún
-día va al Beta.
+`BaselineBalanced` → C0 baseline) y se queda con el output MÁS CHICO que cumple
+τ. Seguro por construcción: el re-decode zune de `score()` solo deja elegir
+mozjpeg si zune lo abre a ≥τ → jamás corrupto ni más grande (selección ≤
+jpeg-encoder).
+
+**Correcciones al spike original (medido sobre TODAS las imágenes, no top-6):**
+- El "+15.4% peor en doc-A" era de las top-6 (no representativo). En el doc
+  completo mozjpeg gana en **202/232** imágenes.
+- "usar mozjpeg a ciegas" es PELIGROSO: en `doc-D` mozjpeg-siempre
+  da +18.6% (agranda), pero la selección por-imagen lo protege → −0.4%. Por eso
+  el bake-off (min por-imagen) es lo correcto, no cambiar el encoder.
+
+**Medido end-to-end a ebook τ84 vs perceptual sin bake-off:** doc-C
+9.78→7.06 MB (**−27.9%**), doc-A 19.58→15.53 (**−20.7%**), doc-F 3.61→3.17
+(**−12.1%**). Gate poppler pasado (certificado color CMYK y páginas de fotos
+renderizan fiel). CPU ~2× de la búsqueda (§1 la abarató para pagarlo).
+
+mozjpeg-rs es dep OPCIONAL bajo el feature `perceptual` → fuera del árbol wasm
+(el Beta no lo paga). El cache §1 sirve igual (resultado = función pura de los
+inputs). Detalle de medición en `examples/enc_mozjpeg.rs` (reporta el net de
+selección) y baseline de la skill gemapdf-optimize.
 
 ## 3. MRC — Mixed Raster Content · ❌ MATADO por medición (2026-07-20)
 
