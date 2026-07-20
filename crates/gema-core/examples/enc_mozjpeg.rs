@@ -105,7 +105,10 @@ fn main() {
         "{:>3} {:>10} {:>7} {:>10} {:>6} {:>7} {:>7} {:>5}",
         "img", "jenc_KB", "ssim2", "moz_KB", "moz_q", "ssim2", "delta", "SOF"
     );
-    let (mut t_a, mut t_b) = (0usize, 0usize);
+    // t_a = jpeg-encoder (producción); t_b = mozjpeg SIEMPRE; t_sel = SELECCIÓN
+    // por-imagen min(jenc, moz) a iso-SSIM2 (lo que haría el bake-off §2);
+    // n_moz = imágenes donde mozjpeg gana.
+    let (mut t_a, mut t_b, mut t_sel, mut n_moz) = (0usize, 0usize, 0usize, 0usize);
     for (i, (_len, img)) in imgs.iter().enumerate() {
         let rgb = img.to_rgb8();
         let (w, h) = rgb.dimensions();
@@ -146,13 +149,17 @@ fn main() {
             }
         }
 
+        t_a += a.len();
         match best {
             Some((mq, b, b_ssim)) => {
                 let sof = sof_marker(&b)
                     .map(|m| format!("C{:X}", m & 0x0F))
                     .unwrap_or_else(|| "?".into());
-                t_a += a.len();
                 t_b += b.len();
+                t_sel += a.len().min(b.len());
+                if b.len() < a.len() {
+                    n_moz += 1;
+                }
                 println!(
                     "{:>3} {:>10.1} {:>7.1} {:>10.1} {:>6} {:>7.1} {:>6.1}% {:>5}",
                     i,
@@ -165,13 +172,28 @@ fn main() {
                     sof
                 );
             }
-            None => println!("{i:>3} sin q de mozjpeg que alcance SSIM2 {a_ssim:.1}"),
+            None => {
+                // mozjpeg no alcanzó la calidad → la selección se queda con jenc.
+                t_sel += a.len();
+                println!("{i:>3} sin q de mozjpeg que alcance SSIM2 {a_ssim:.1}");
+            }
         }
     }
+    let mb = |b: usize| b as f64 / 1048576.0;
     println!(
-        "TOTAL iso-SSIM2: jenc={:.2}MB moz={:.2}MB -> mozjpeg = {:.1}% del actual",
-        t_a as f64 / 1048576.0,
-        t_b as f64 / 1048576.0,
+        "TOTAL iso-SSIM2 ({} imgs, mozjpeg gana en {n_moz}):",
+        imgs.len()
+    );
+    println!("  jenc (producción actual) : {:.2} MB", mb(t_a));
+    println!(
+        "  mozjpeg SIEMPRE           : {:.2} MB  ({:.1}% del actual)",
+        mb(t_b),
         t_b as f64 / t_a as f64 * 100.0
+    );
+    println!(
+        "  SELECCIÓN §2 min(jenc,moz): {:.2} MB  ({:.1}% del actual → net −{:.1}%)",
+        mb(t_sel),
+        t_sel as f64 / t_a as f64 * 100.0,
+        (1.0 - t_sel as f64 / t_a as f64) * 100.0
     );
 }
