@@ -90,7 +90,8 @@ más barato (proxy), 4.5–6.7× en wall-clock (rayon nativo), con cache para do
 de merge, calibrado (τ 68/84/85) y estrictamente mejor en tamaño que la q fija.
 El único bloqueador de la promoción universal es el costo serial en docs muy
 image-heavy tipo doc-A (~14× vs fija en el Beta wasm single-thread) — eso solo
-lo mueve un cambio de códec (§2 bake-off) o menos imágenes que buscar (MRC, §3).
+lo mueve un cambio de códec (§2 bake-off). MRC (§3) queda MATADO por medición
+(no aplica a la resolución del corpus, ver §3).
 
 **Lección de medición (NO repetir):** jamás medir calidad con SSIM2 sobre
 renders de página — el resampleo desplaza la rejilla sub-píxel y páginas
@@ -113,14 +114,34 @@ dentro del modo perceptual (a la q encontrada, gana el más chico al target).
 Duplica el costo CPU del modo → depende de §1. Verificar build wasm32 si algún
 día va al Beta.
 
-## 3. MRC — Mixed Raster Content (el techo: 3–15×, LA deuda grande)
+## 3. MRC — Mixed Raster Content · ❌ MATADO por medición (2026-07-20)
 
-**Qué es:** segmentar cada página escaneada en máscara de texto bilevel +
-frente de color + fondo, cada capa a su códec óptimo, recompuestas con 3
-XObjects estándar (`ImageMask true`, PDF 1.4 — lo abre cualquier visor). El
-texto nunca pasa por DCT → nítido a resolución completa Y archivo 3-15× menor.
-Ataca la pérdida #1 medida (resolución: −23.2 puntos SSIM2 de −43.8 totales;
-ver `examples/edu_loss.rs` y el experimento "Anatomía de la pérdida").
+**Veredicto: NO aplica a este corpus.** Spike medido (`examples/mrc_spike.rs`,
+spec `docs/superpowers/specs/2026-07-20-mrc-spike-design.md`): Sauvola + máscara
+G4 (`fax`) + frente constante + fondo JPEG, recompuesto en PDF renderizable y
+juzgado a ojo sobre páginas reales. Resultado:
+- **La premisa de MRC no se cumple aquí.** El 3–15× de la literatura / Internet
+  Archive asume escaneos de **300+ dpi**. Las páginas del corpus son **~120 dpi**
+  (1007px para un A4 → texto de ~10px de alto). Binarizar a bilevel a esa
+  resolución **destruye el anti-aliasing** que hacía legible el texto pequeño del
+  JPEG → salida ~4× más chica pero con el texto **FRAGMENTADO**
+  ("Dosihcac ion" en vez de "Dosificación"). MRC no crea resolución que no está.
+- Tamaño: ~4× ✓ (cl_p90 formulario, cl_p151 manuscrito). Legibilidad ≥ actual:
+  ✗ (bilevel más rugoso que el JPEG anti-aliased; crop lado a lado lo prueba).
+  Una limpieza de speckle quita el moteado del fondo pero NO la fragmentación
+  del texto (intrínseca a la resolución).
+- La estructura MRC **sí renderiza** en poppler (el encoder G4 de `fax`
+  funciona, ImageMask válida) — el bloqueo es de CALIDAD, no de plomería.
+- **Revivir SOLO si** el corpus migra a escaneos 300+ dpi (archivo formal):
+  re-correr `examples/mrc_spike.rs`. No antes: es un subsistema de semanas
+  (segmentación robusta, frente de color, clasificador por-página, manejo CMYK)
+  para un beneficio que en *este* corpus CUESTA legibilidad.
+
+**Contexto histórico (por qué se creía que era el techo):** el texto nunca
+pasaría por DCT → nítido a resolución completa Y archivo 3-15× menor; atacaba la
+pérdida #1 medida (resolución: −23.2 puntos SSIM2 de −43.8; ver
+`examples/edu_loss.rs`). El spike mostró que a 120 dpi esa "resolución completa"
+ya está agotada — el JPEG anti-aliased la aprovecha mejor que un bilevel.
 
 **Matemática núcleo:** binarización adaptativa de Sauvola
 `T(x,y) = μ(x,y)·(1 + k·(σ(x,y)/R − 1))` para la máscara; k-means para los
