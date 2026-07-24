@@ -11,7 +11,7 @@ use std::collections::HashSet;
 /// imágenes (misma mecánica que `signatures::collect_preserved_images`).
 pub(crate) fn collect_smask_ids(doc: &Document) -> HashSet<ObjectId> {
     let mut out = HashSet::new();
-    for (_, obj) in doc.objects.iter() {
+    for obj in doc.objects.values() {
         let Ok(stream) = obj.as_stream() else {
             continue;
         };
