@@ -1,0 +1,26 @@
+{
+  "name": "gema-wasm",
+  "type": "module",
+  "description": "WASM bindings for GemaPDF: pure-Rust portable PDF compression, no AGPL",
+  "version": "0.1.0",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/p4ranoic0/gemapdf"
+  },
+  "files": [
+    "gema_wasm_bg.wasm",
+    "gema_wasm.js",
+    "gema_wasm.d.ts"
+  ],
+  "main": "gema_wasm.js",
+  "types": "gema_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ],
+  "keywords": [
+    "pdf",
+    "compression",
+    "wasm"
+  ]
+}
