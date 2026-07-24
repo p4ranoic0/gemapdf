@@ -3,8 +3,7 @@
 > Registro durable de los levers investigados que requieren inversión grande.
 > Cada entrada lleva payoff MEDIDO (no estimado) donde existe, riesgo, y los
 > bloques de construcción con sus licencias (constraint del proyecto: sin AGPL).
-> Estado al 2026-07-12. Contexto: specs en `docs/superpowers/specs/`, mediciones
-> en el baseline de la skill `gemapdf-optimize`.
+> Estado al 2026-07-12.
 
 ## Estado actual (para ubicarse)
 
@@ -129,10 +128,9 @@ selección) y baseline de la skill gemapdf-optimize.
 
 ## 3. MRC — Mixed Raster Content · ❌ MATADO por medición (2026-07-20)
 
-**Veredicto: NO aplica a este corpus.** Spike medido (`examples/mrc_spike.rs`,
-spec `docs/superpowers/specs/2026-07-20-mrc-spike-design.md`): Sauvola + máscara
-G4 (`fax`) + frente constante + fondo JPEG, recompuesto en PDF renderizable y
-juzgado a ojo sobre páginas reales. Resultado:
+**Veredicto: NO aplica a este corpus.** Spike medido (`examples/mrc_spike.rs`):
+Sauvola + máscara G4 (`fax`) + frente constante + fondo JPEG, recompuesto en PDF
+renderizable y juzgado a ojo sobre páginas reales. Resultado:
 - **La premisa de MRC no se cumple aquí.** El 3–15× de la literatura / Internet
   Archive asume escaneos de **300+ dpi**. Las páginas del corpus son **~120 dpi**
   (1007px para un A4 → texto de ~10px de alto). Binarizar a bilevel a esa

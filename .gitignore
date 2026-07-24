@@ -2,3 +2,7 @@
 **/*.rs.bk
 node_modules
 pkg
+
+# artefactos de desarrollo internos — nunca publicar (specs/planes/handoff)
+docs/superpowers/
+HANDOFF.md
