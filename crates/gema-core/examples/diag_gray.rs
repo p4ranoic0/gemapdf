@@ -64,9 +64,7 @@ fn main() {
         let (mut rgb_bytes, mut gray_bytes, mut colorful_bytes) = (0usize, 0usize, 0usize);
         for obj in doc.objects.values() {
             let Ok(s) = obj.as_stream() else { continue };
-            if s.dict.get(b"Subtype").and_then(|o| o.as_name()).ok()
-                != Some(b"Image".as_slice())
-            {
+            if s.dict.get(b"Subtype").and_then(|o| o.as_name()).ok() != Some(b"Image".as_slice()) {
                 continue;
             }
             // solo DCT razonablemente grandes (donde vive el peso)

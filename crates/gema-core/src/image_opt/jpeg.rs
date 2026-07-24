@@ -59,7 +59,13 @@ impl Recompressor for JpegRecompressor {
             DynamicImage::ImageRgb8(img) => Cow::Borrowed(img),
             other => Cow::Owned(other.to_rgb8()),
         };
-        let bytes = encode_jpeg(rgb.as_raw(), rgb.width(), rgb.height(), ColorType::Rgb, quality)?;
+        let bytes = encode_jpeg(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            ColorType::Rgb,
+            quality,
+        )?;
         Some(Encoded {
             bytes,
             filter: "DCTDecode",
