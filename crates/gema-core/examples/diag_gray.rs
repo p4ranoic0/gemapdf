@@ -62,7 +62,7 @@ fn main() {
         let doc = Document::load_mem(&bytes).expect("parsear");
         let (mut n_gray, mut n_color) = (0u32, 0u32);
         let (mut rgb_bytes, mut gray_bytes, mut colorful_bytes) = (0usize, 0usize, 0usize);
-        for (_, obj) in doc.objects.iter() {
+        for obj in doc.objects.values() {
             let Ok(s) = obj.as_stream() else { continue };
             if s.dict.get(b"Subtype").and_then(|o| o.as_name()).ok()
                 != Some(b"Image".as_slice())

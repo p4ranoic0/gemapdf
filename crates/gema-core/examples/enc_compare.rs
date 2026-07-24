@@ -20,7 +20,7 @@ fn main() {
 
     // Recolectar imágenes DCT abribles, ordenadas por peso desc.
     let mut imgs: Vec<(usize, image::DynamicImage)> = Vec::new();
-    for (_, obj) in doc.objects.iter() {
+    for obj in doc.objects.values() {
         let Ok(s) = obj.as_stream() else { continue };
         if s.dict.get(b"Subtype").and_then(|o| o.as_name()).ok() != Some(b"Image".as_slice()) {
             continue;

@@ -32,7 +32,7 @@ fn probe(path: &str) {
     let mut map: HashMap<Vec<u8>, (usize, usize, bool)> = HashMap::new();
     let mut n_streams = 0usize;
     let mut total_bytes = 0usize;
-    for (_, obj) in doc.objects.iter() {
+    for obj in doc.objects.values() {
         if let Object::Stream(s) = obj {
             n_streams += 1;
             let size = s.content.len();
