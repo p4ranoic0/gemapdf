@@ -31,6 +31,73 @@ const PHOTO_UNIQUE_COLORS: usize = 4096;
 /// grandes. Se deriva un stride para no visitar más de ~esto.
 const SAMPLE_TARGET: u64 = 200_000;
 
+/// Fracción mínima de "grano" para considerar que una imagen es un raster
+/// capturado (escaneo) y no arte sintético. Medido sobre el corpus real
+/// (`doc-B2`, 8 páginas escaneadas completas): grano 0.336-0.422.
+/// El único sintético grande del corpus (firma institucional 1436×340) da
+/// 0.091. El umbral parte esa separación con margen a ambos lados.
+const PHOTO_GRAIN: f32 = 0.20;
+
+/// Lado menor mínimo para que el grano pueda decidir. Los emblemas y sellos
+/// vectoriales chicos, al reducirse, generan tanto grano como un escaneo (el
+/// escudo del Perú a 110×112: 0.356) — la señal no los separa, así que debajo
+/// de este tamaño mandamos el sesgo conservador del módulo. Las páginas
+/// escaneadas del corpus miden ~1000×1570; el mayor sintético medido, 1436×340.
+const GRAIN_MIN_SIDE: u32 = 400;
+
+/// Diferencia mínima entre vecinos para contar como grano. Por debajo de 2 el
+/// ruido de cuantización y las rampas suaves (un degradado avanza de a 1)
+/// producirían falsos positivos.
+const GRAIN_MIN_DELTA: i16 = 2;
+
+/// Diferencia máxima para contar como grano. Un salto mayor es un BORDE (texto
+/// sobre fondo, dithering bilevel), no ruido de sensor: excluirlo es lo que
+/// impide que el arte de línea nítido dispare esta señal.
+const GRAIN_MAX_DELTA: i16 = 32;
+
+/// Luma entera aproximada (Rec.601) de un píxel RGB8.
+fn luma(px: &[u8]) -> i16 {
+    ((77 * px[0] as i32 + 151 * px[1] as i32 + 28 * px[2] as i32) >> 8) as i16
+}
+
+/// Fracción de píxeles horizontalmente adyacentes cuya diferencia de luma cae
+/// en `[GRAIN_MIN_DELTA, GRAIN_MAX_DELTA)`.
+///
+/// Es la huella del ruido del sensor: un escaneo la tiene en toda la superficie
+/// (no existe una sola región perfectamente plana), mientras que el arte
+/// sintético alterna regiones exactamente constantes (diferencia 0) con bordes
+/// duros (diferencia grande), y ninguna de las dos cuenta.
+///
+/// Muestrea filas completas con un stride derivado del tamaño: la adyacencia
+/// horizontal se conserva intacta, y el coste queda acotado como en `classify`.
+fn grain(raw: &[u8], w: u32, h: u32) -> f32 {
+    if w < 2 || h == 0 {
+        return 0.0;
+    }
+    let row_stride = (((w as u64) * (h as u64)) / SAMPLE_TARGET).max(1) as u32;
+
+    let mut pairs: u64 = 0;
+    let mut grainy: u64 = 0;
+    let mut y = 0;
+    while y < h {
+        let row = (y as usize) * (w as usize) * 3;
+        for x in 0..(w as usize - 1) {
+            let d = (luma(&raw[row + x * 3..]) - luma(&raw[row + (x + 1) * 3..])).abs();
+            if (GRAIN_MIN_DELTA..GRAIN_MAX_DELTA).contains(&d) {
+                grainy += 1;
+            }
+            pairs += 1;
+        }
+        y += row_stride;
+    }
+
+    if pairs == 0 {
+        0.0
+    } else {
+        grainy as f32 / pairs as f32
+    }
+}
+
 /// Clasifica una imagen decodificada como `Photo` o `LineArt`.
 ///
 /// Muestrea con un stride derivado del tamaño para no recorrer más de
@@ -72,6 +139,13 @@ pub(crate) fn classify(img: &image::DynamicImage) -> Content {
         i += stride;
     }
 
+    // Tonalmente pobre, pero eso no basta para llamarlo línea: un escaneo de
+    // papel también lo es. Si es lo bastante grande para ser una página
+    // capturada y tiene grano de sensor, va a JPEG.
+    if w.min(h) >= GRAIN_MIN_SIDE && grain(raw, w, h) >= PHOTO_GRAIN {
+        return Content::Photo;
+    }
+
     Content::LineArt
 }
 
@@ -110,9 +184,69 @@ mod tests {
         image::DynamicImage::ImageRgb8(img)
     }
 
+    /// Generador determinista de ruido (LCG): los fixtures no dependen de
+    /// `rand` ni varían entre corridas.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            self.0
+        }
+
+        /// Entero en `[-amp, amp]`.
+        fn noise(&mut self, amp: i16) -> i16 {
+            (self.next() >> 33) as i16 % (2 * amp + 1) - amp
+        }
+    }
+
+    /// Papel escaneado: fondo casi blanco con RUIDO de sensor en todos lados y
+    /// renglones de texto oscuros. Es tonalmente pobre (pocos colores distintos
+    /// → la heurística de colores lo da por LineArt) pero NO es línea sintética:
+    /// no tiene ni una región perfectamente plana. Reproduce lo medido sobre los
+    /// escaneos reales del corpus (`doc-B2`: 62 colores
+    /// cuantizados, grano 0.34-0.42).
+    fn scanned_paper(w: u32, h: u32) -> image::DynamicImage {
+        let mut rng = Lcg(0x5EED);
+        let mut img = image::RgbImage::new(w, h);
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            // renglones de texto: 3 filas oscuras cada 16, con huecos entre
+            // "palabras" para que no sea una franja continua.
+            let on_text_row = (y % 16) < 3;
+            let in_word = (x / 37) % 4 != 3;
+            let base: i16 = if on_text_row && in_word { 70 } else { 242 };
+            let v = (base + rng.noise(5)).clamp(0, 255) as u8;
+            *px = image::Rgb([v, v, v]);
+        }
+        image::DynamicImage::ImageRgb8(img)
+    }
+
     #[test]
     fn gradient_is_photo() {
         assert_eq!(classify(&gradient(512, 512)), Content::Photo);
+    }
+
+    /// Un escaneo de papel debe ir a JPEG. Con la heurística de sólo-colores
+    /// caía en LineArt y se quedaba en Flate sin pérdida, que es la brecha de
+    /// ~30 MB contra Ghostscript en los documentos cuyos escaneos vienen en
+    /// Flate en vez de DCT.
+    #[test]
+    fn scanned_paper_is_photo() {
+        assert_eq!(classify(&scanned_paper(512, 512)), Content::Photo);
+    }
+
+    /// El grano NO distingue un escaneo de un emblema vectorial chico: medido
+    /// sobre el corpus, el escudo del Perú a 110×112 da grano 0.356, dentro del
+    /// rango de los escaneos reales (0.336-0.422) — al reducirse, cada borde se
+    /// vuelve una rampa suave de saltos chicos. Por debajo del gate de tamaño
+    /// mandamos el sesgo conservador del módulo (ante la duda, sin pérdida).
+    /// Esas imágenes además pesan poco y el heurístico de sellos ya las preserva.
+    #[test]
+    fn small_grainy_image_stays_line_art() {
+        assert_eq!(classify(&scanned_paper(200, 200)), Content::LineArt);
     }
 
     #[test]
