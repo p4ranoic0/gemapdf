@@ -3,17 +3,26 @@
 > Registro durable de los levers investigados que requieren inversión grande.
 > Cada entrada lleva payoff MEDIDO (no estimado) donde existe, riesgo, y los
 > bloques de construcción con sus licencias (constraint del proyecto: sin AGPL).
-> Estado al 2026-07-12.
+> Estado al 2026-07-26.
 
 ## Estado actual (para ubicarse)
 
 - **v2.0-levers** (== main == producción): levers A (cadena Flate→DCT),
-  B (encoder 4:2:0), C (/SMask), reflate_streams. Corpus: gana a producción
-  Ghostscript en todos los docs con par de referencia.
-- **v2.1** (rama activa): modo perceptual `--quality-target` COMPLETO pero
-  EXPERIMENTAL (opt-in, CLI-only, feature `perceptual`, wasm blindado).
-  Bloqueado para promoción por costo CPU en el Beta wasm (ver §1). En NATIVO el
-  bucle de imágenes ya va en paralelo (§1.4 hecho: 4.5–6.7× byte-idéntico).
+  B (encoder 4:2:0), C (/SMask), reflate_streams. Contra las 9 referencias
+  reales de Ghostscript **pierde en 6 de 9** — gana donde el contenido es JPEG y
+  pierde donde es raw/Flate (ver §2.b; el "gana en todos" viejo se midió cuando
+  sólo `doc-A` tenía referencia).
+- **v2.1** (rama activa): dos cosas distintas, no confundirlas.
+  - **Clasificador de papel escaneado** (§2.b, commit 9064b60): en el path por
+    defecto, sin features. Da vuelta el marcador a **gema gana 6 de 9**. Es lo
+    que corresponde promover al Beta.
+  - **Modo perceptual** `--quality-target`: COMPLETO pero EXPERIMENTAL (opt-in,
+    CLI-only, feature `perceptual`, wasm blindado). Bloqueado para promoción por
+    costo CPU en el Beta wasm (ver §1). En NATIVO el bucle de imágenes ya va en
+    paralelo (§1.4 hecho: 4.5–6.7× byte-idéntico). **Ojo con el framing de §2:**
+    ese −12/−28% está medido contra *perceptual sin bake-off*, NO contra el modo
+    desplegado; medido contra la q fija real empata o pierde en la mitad del
+    corpus (doc-A +7.7%, doc-D +8.0%) pagando 5–26× de CPU.
 
 ---
 
@@ -126,54 +135,83 @@ mozjpeg-rs es dep OPCIONAL bajo el feature `perceptual` → fuera del árbol was
 inputs). Detalle de medición en `examples/enc_mozjpeg.rs` (reporta el net de
 selección) y baseline de la skill gemapdf-optimize.
 
-## 2.b. 🔴 El lever GRANDE que faltaba: imágenes raw/Flate (2026-07-24)
+## 2.b. ✅ RESUELTO: imágenes raw/Flate iban a lossless (2026-07-24 → 07-26)
 
 **Medido contra 9 referencias reales de Ghostscript** (generadas con
 `portfolio/scripts/gs-reference.mjs`, mismos args que el worker desplegado).
-Corrige el supuesto viejo de que "gema le gana a producción en todo doc con par
+Corrigió el supuesto viejo de que "gema le gana a producción en todo doc con par
 de referencia" — eso se midió cuando SÓLO `doc-A` tenía referencia.
-**Ghostscript gana en 6 de 9**, y la correlación con el tipo de contenido es
-prácticamente perfecta:
+**Ghostscript ganaba en 6 de 9**, con correlación casi perfecta con el tipo de
+contenido; tras el fix (commit 9064b60) **gema gana 6 de 9**:
 
-| doc | peso en raw/Flate | resultado |
-|---|--:|---|
-| doc-B2 | ~100% | GS 7.85 vs gema 37.79 MB (**4.8×**) |
-| doc-D | 88.4% | GS 9.10 vs gema 11.06 MB |
-| doc-B3 | 67.1% | GS 7.93 vs gema 25.01 MB (**3.2×**) |
-| doc-E | 21.6% | GS 9.03 vs gema 10.50 MB |
-| doc-A | 0.7% | **gema 13.18** vs GS 17.44 MB |
-| doc-C | 0.3% | **gema 6.53** vs GS 7.55 MB |
-
-**gema gana donde el contenido es JPEG y pierde donde es raw/Flate.**
+| doc | peso en raw/Flate | antes | después | GS |
+|---|--:|--:|--:|--:|
+| doc-B2 | ~100% | 37.79 (**4.8×** peor) | **6.61** ✅ | 7.85 |
+| doc-D | 88.4% | 11.06 | **7.94** ✅ | 9.10 |
+| doc-B3 | 67.1% | 25.01 (**3.2×** peor) | **7.45** ✅ | 7.93 |
+| doc-E | 21.6% | 10.50 | 10.50 🔴 | 9.03 |
+| doc-A | 0.7% | **13.18** ✅ | 13.18 ✅ | 17.44 |
+| doc-C | 0.3% | **6.53** ✅ | 6.53 ✅ | 7.55 |
 
 **Causa raíz** (`diag_buckets` + `pdfimages -list` sobre `doc-B2`):
-las 194 imágenes son raster raw/Flate; `classify()` las manda a `LineArt` →
-`Codec::FlateLossless`, así que **se re-comprimen sin pérdida y NO se convierten
-a JPEG**: 49.2 → 36.3 MB (−26%). Ghostscript las pasa a JPEG q45 y las
-downsamplea (ancho máx 1363 → 857 px): 7.0 MB. Además el ancho máx de la salida
-de gema **sigue en 1363 px**: buena parte no se downsampleó tampoco (sólo 67 de
-194 quedaron en el bucket `downsampled`).
+el raster raw/Flate lo mandaba `classify()` a `LineArt` → `Codec::FlateLossless`,
+así que **se re-comprimía sin pérdida y nunca pasaba a JPEG**: 49.2 → 36.3 MB
+(−26%) contra 7.0 MB de Ghostscript. Una página escaneada es tonalmente pobre
+(62 colores cuantizados) y por eso caía del lado line-art, pero NO es línea
+sintética.
 
 **Gate visual: NO hay diferencia perceptible.** Crops 2× de la misma página
-(memo con texto tecleado) desde ambas salidas son indistinguibles — mismo texto
-nítido y legible. Es decir: la política "line-art siempre lossless" está
-comprando 4.8× de peso a cambio de una calidad que en este contenido **no se
-ve**.
+(memo con texto tecleado) desde ambas salidas son indistinguibles. La política
+"line-art siempre lossless" estaba comprando 4.8× de peso a cambio de una
+calidad que en este contenido **no se ve**.
 
-**Qué hacer (sin implementar aún, en orden):**
-1. Que el path line-art también downsamplee por DPI efectivo (hoy buena parte
-   se salta el resample: investigar por qué `effective_dpi` sale desconocido en
-   estos docs).
-2. Permitir JPEG en line-art cuando el ahorro es grande, decidiéndolo **por
-   imagen con el modo perceptual** (§1/§2 ya dan el arnés: buscar la q que
-   cumple τ y comparar contra el Flate lossless; quedarse con el más chico).
-   Esto reusa maquinaria existente en vez de inventar heurística nueva.
-3. Revisar la discrepancia de conteo: `pdfimages` ve 198 imágenes y el reporte
-   de gema emite 97 stats — hay ~100 objetos que no generan stat (¿SMask,
-   inline images, XObjects no-Image?).
+### Qué se hizo
+
+**Fix (commit 9064b60):** `classify()` suma una señal de GRANO — fracción de
+vecinos horizontales con `2 <= |Δluma| < 32`, la huella del ruido de sensor que
+un escaneo tiene en toda su superficie y el arte sintético no (éste alterna
+regiones exactamente planas con bordes duros, y ninguna cuenta). Umbrales
+medidos, no elegidos a ojo: **grano ≥ 0.20** (8 páginas escaneadas completas dan
+0.336-0.422; el mayor sintético del corpus, firma institucional 1436×340, da
+0.091) y **lado menor ≥ 400 px** (el grano NO separa emblemas vectoriales
+chicos: el escudo del Perú a 110×112 da 0.356, dentro del rango de los
+escaneos). Los 7 docs restantes del corpus quedan byte-idénticos: el path DCT no
+se toca.
+
+**Diverge del plan original (decidirlo por imagen con el modo perceptual):** esa
+maquinaria es CLI-only (feature `perceptual` fuera del árbol wasm), así que no
+puede llegar al Beta, que es donde estaba la pérdida. La señal de grano corre en
+el path por defecto.
+
+**Caveat sin maquillar:** a 90/45 el bloque de firma digital queda más blando
+que producción — pero entregando 16% menos tamaño. A iso-tamaño (q60 → 7.37 MB,
+aún por debajo de los 7.85 de GS) la nitidez es equivalente. **Calibrar la
+perilla para escaneos-en-Flate sigue pendiente**: subir q global engordaría los
+otros nueve docs, que hoy están bien.
+
+### Falsos leads, cerrados por medición (2026-07-26) — NO reabrir
+
+1. ~~"El path line-art no downsamplea; investigar por qué `effective_dpi` sale
+   desconocido"~~ — **la premisa era falsa.** El content stream pinta la imagen
+   directo (`q 515.231 0 0 792 48.38452 0 cm /Im15 Do Q`) y con 1076×1654 px da
+   **150.4 dpi**, perfectamente derivable. A 90 dpi, `diag_buckets` da **67 de
+   97** XObjects downsampleados, que concentran **49.11 de los 49.12 MB** de
+   imagen: el resample se aplica sobre todo el peso. El "sólo 67 de 194"
+   comparaba los 97 stats de gema contra las 198 filas de `pdfimages` — unidades
+   distintas. El `ppi=0` de `pdfimages` es artefacto de esa herramienta.
+2. ~~"El ancho máx de la salida sigue en 1363 px"~~ — es **una `/SMask`, por
+   diseño**. Objeto compartido `obj 164` (1363×60) reusado en páginas 17-24; su
+   base sí se downsampleó, la máscara no, porque `process.rs` desactiva el
+   resample en máscaras para no mover valores de transparencia. Pesa 0.01 MB.
+3. ~~"~100 objetos no generan stat"~~ — es diferencia de unidades: `pdfimages`
+   emite una fila por *colocación en página* (136 image + 62 smask = 198); gema
+   un stat por *XObject* (82 bases + 15 máscaras = **97**). Cuadra exacto: no
+   hay objetos perdidos ni inline images sin contabilizar.
 
 Reproducir: `npm run gs:ref -- ~/Downloads/doc-A ebook` y después
-`gemapdf/scripts/compare-engines.sh ~/Downloads/doc-A ebook 84`.
+`gemapdf/scripts/compare-engines.sh ~/Downloads/doc-A ebook 84` (desde el
+commit 57e30ac el arnés recompila siempre: antes podía medir un binario viejo y
+emitir una tabla creíble pero falsa).
 
 ## 3. MRC — Mixed Raster Content · ❌ MATADO por medición (2026-07-20)
 
