@@ -126,6 +126,55 @@ mozjpeg-rs es dep OPCIONAL bajo el feature `perceptual` → fuera del árbol was
 inputs). Detalle de medición en `examples/enc_mozjpeg.rs` (reporta el net de
 selección) y baseline de la skill gemapdf-optimize.
 
+## 2.b. 🔴 El lever GRANDE que faltaba: imágenes raw/Flate (2026-07-24)
+
+**Medido contra 9 referencias reales de Ghostscript** (generadas con
+`portfolio/scripts/gs-reference.mjs`, mismos args que el worker desplegado).
+Corrige el supuesto viejo de que "gema le gana a producción en todo doc con par
+de referencia" — eso se midió cuando SÓLO `doc-A` tenía referencia.
+**Ghostscript gana en 6 de 9**, y la correlación con el tipo de contenido es
+prácticamente perfecta:
+
+| doc | peso en raw/Flate | resultado |
+|---|--:|---|
+| doc-B2 | ~100% | GS 7.85 vs gema 37.79 MB (**4.8×**) |
+| doc-D | 88.4% | GS 9.10 vs gema 11.06 MB |
+| doc-B3 | 67.1% | GS 7.93 vs gema 25.01 MB (**3.2×**) |
+| doc-E | 21.6% | GS 9.03 vs gema 10.50 MB |
+| doc-A | 0.7% | **gema 13.18** vs GS 17.44 MB |
+| doc-C | 0.3% | **gema 6.53** vs GS 7.55 MB |
+
+**gema gana donde el contenido es JPEG y pierde donde es raw/Flate.**
+
+**Causa raíz** (`diag_buckets` + `pdfimages -list` sobre `doc-B2`):
+las 194 imágenes son raster raw/Flate; `classify()` las manda a `LineArt` →
+`Codec::FlateLossless`, así que **se re-comprimen sin pérdida y NO se convierten
+a JPEG**: 49.2 → 36.3 MB (−26%). Ghostscript las pasa a JPEG q45 y las
+downsamplea (ancho máx 1363 → 857 px): 7.0 MB. Además el ancho máx de la salida
+de gema **sigue en 1363 px**: buena parte no se downsampleó tampoco (sólo 67 de
+194 quedaron en el bucket `downsampled`).
+
+**Gate visual: NO hay diferencia perceptible.** Crops 2× de la misma página
+(memo con texto tecleado) desde ambas salidas son indistinguibles — mismo texto
+nítido y legible. Es decir: la política "line-art siempre lossless" está
+comprando 4.8× de peso a cambio de una calidad que en este contenido **no se
+ve**.
+
+**Qué hacer (sin implementar aún, en orden):**
+1. Que el path line-art también downsamplee por DPI efectivo (hoy buena parte
+   se salta el resample: investigar por qué `effective_dpi` sale desconocido en
+   estos docs).
+2. Permitir JPEG en line-art cuando el ahorro es grande, decidiéndolo **por
+   imagen con el modo perceptual** (§1/§2 ya dan el arnés: buscar la q que
+   cumple τ y comparar contra el Flate lossless; quedarse con el más chico).
+   Esto reusa maquinaria existente en vez de inventar heurística nueva.
+3. Revisar la discrepancia de conteo: `pdfimages` ve 198 imágenes y el reporte
+   de gema emite 97 stats — hay ~100 objetos que no generan stat (¿SMask,
+   inline images, XObjects no-Image?).
+
+Reproducir: `npm run gs:ref -- ~/Downloads/doc-A ebook` y después
+`gemapdf/scripts/compare-engines.sh ~/Downloads/doc-A ebook 84`.
+
 ## 3. MRC — Mixed Raster Content · ❌ MATADO por medición (2026-07-20)
 
 **Veredicto: NO aplica a este corpus.** Spike medido (`examples/mrc_spike.rs`):

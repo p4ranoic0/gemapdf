@@ -85,9 +85,12 @@ for f in "$CORPUS"/*.pdf; do
   fi
   sa=$(stat -f%z "$a"); sn=$(stat -f%z "$n")
 
-  # referencia de producción para este documento, si existe
+  # Referencia de producción (Ghostscript). Se prefiere la canónica
+  # `<base>_comprimido.pdf` que genera portfolio/scripts/gs-reference.mjs con
+  # los args exactos del worker desplegado; si no está, se acepta cualquier
+  # otra salida de producción que haya en el corpus (_comprimido_VIEJO, etc.).
   prod="-"
-  for cand in "$CORPUS/${base}_comprimido"*.pdf(N) "$CORPUS/${base}"*_compressed*.pdf(N); do
+  for cand in "$CORPUS/${base}_comprimido.pdf"(N) "$CORPUS/${base}_comprimido"*.pdf(N) "$CORPUS/${base}"*_compressed*.pdf(N); do
     [[ -f "$cand" ]] && { prod=$(mb $(stat -f%z "$cand")); break }
   done
 
