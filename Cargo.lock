@@ -523,7 +523,7 @@ dependencies = [
 
 [[package]]
 name = "gema-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "gema-core",
@@ -531,7 +531,7 @@ dependencies = [
 
 [[package]]
 name = "gema-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fax",
  "flate2",
@@ -547,7 +547,7 @@ dependencies = [
 
 [[package]]
 name = "gema-wasm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "gema-core",
  "getrandom",
