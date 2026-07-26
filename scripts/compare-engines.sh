@@ -37,22 +37,19 @@ GEMA="$ROOT/target/release/gema"
 OUT="${TMPDIR:-/tmp}/gema-compare"
 mkdir -p "$OUT"
 
-if [[ ! -x "$GEMA" ]]; then
-  echo "→ compilando el CLI (con feature perceptual)…"
-  (cd "$ROOT" && cargo build --release -p gema-cli) || exit 1
-fi
+# SIEMPRE recompilar antes de medir. Cargo es incremental (~3s cuando no hay
+# cambios), así que el costo es ruido; saltarse este paso porque el binario ya
+# existe es lo que hace que un cambio en el fuente se mida con la versión
+# VIEJA — y la tabla sale perfectamente creíble siendo mentira.
+echo "→ compilando el CLI (con feature perceptual)…"
+(cd "$ROOT" && cargo build --release -p gema-cli) || exit 1
 
-# El binario puede haber quedado compilado desde una rama sin el modo
-# perceptual (p. ej. main): entonces --quality-target no existe y el "modo
-# nuevo" fallaría en silencio. Verificar y recompilar antes de medir nada.
-if ! "$GEMA" compress --help 2>&1 | grep -q -- '--quality-target'; then
-  echo "→ el binario no soporta --quality-target; recompilando desde el checkout actual…"
-  (cd "$ROOT" && cargo build --release -p gema-cli) || exit 1
-  "$GEMA" compress --help 2>&1 | grep -q -- '--quality-target' || {
-    echo "ERROR: este checkout no expone --quality-target (¿estás en main?). Cambiá a la rama con el modo perceptual." >&2
-    exit 1
-  }
-fi
+# El checkout puede no tener el modo perceptual (p. ej. main): ahí
+# --quality-target no existe y el "modo nuevo" fallaría en silencio.
+"$GEMA" compress --help 2>&1 | grep -q -- '--quality-target' || {
+  echo "ERROR: este checkout no expone --quality-target (¿estás en main?). Cambiá a la rama con el modo perceptual." >&2
+  exit 1
+}
 
 mb()   { echo "scale=2; $1/1048576" | bc }
 pct()  { [[ "$2" -eq 0 ]] && echo "-" || echo "scale=1; $1*100/$2" | bc }
