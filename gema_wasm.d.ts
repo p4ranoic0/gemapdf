@@ -20,7 +20,10 @@ export function compress(input: Uint8Array, profile: string): Uint8Array;
  * Comprime un PDF devolviendo `{ output: Uint8Array, report: {...} }`.
  *
  * - `profile`: "screen" | "ebook" | "printer".
- * - `options`: objeto `{ image_dpi?, jpeg_quality?, signatures?: "strict"|"ignore"|"flatten" }`
+ * - `options`: objeto `{ image_dpi?, jpeg_quality?, transcode_dpi?,
+ *   transcode_quality?, signatures?: "strict"|"ignore"|"flatten" }`.
+ *   Las `transcode_*` sólo afectan a escaneos que llegan sin pérdida y salen
+ *   como JPEG (ver ROADMAP §2.b).
  *   o undefined/null para usar los defaults del perfil. Claves desconocidas se
  *   ignoran; valores inválidos son un error.
  * - `on_phase`: función opcional que recibe `{ phase, done?, total? }` con
