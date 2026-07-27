@@ -183,11 +183,45 @@ maquinaria es CLI-only (feature `perceptual` fuera del árbol wasm), así que no
 puede llegar al Beta, que es donde estaba la pérdida. La señal de grano corre en
 el path por defecto.
 
-**Caveat sin maquillar:** a 90/45 el bloque de firma digital queda más blando
-que producción — pero entregando 16% menos tamaño. A iso-tamaño (q60 → 7.37 MB,
-aún por debajo de los 7.85 de GS) la nitidez es equivalente. **Calibrar la
-perilla para escaneos-en-Flate sigue pendiente**: subir q global engordaría los
-otros nueve docs, que hoy están bien.
+### Calibración: dos regímenes, no uno (commit 5f649e3)
+
+La q global no era la perilla correcta. Lo que cambia entre un escaneo que
+llega SIN pérdida y uno que ya venía en JPEG es **cómo conviene repartir los
+bytes**:
+
+- **Primera generación** (raster Flate → JPEG): la fuente está intacta, así que
+  rinde más gastar en RESOLUCIÓN que en cuantización.
+- **Segunda generación** (ya en DCT): carga artefactos de anillo que la
+  cuantización extra compone, y subir el dpi sólo preserva esos artefactos.
+
+Medido sobre `doc-B2` (97% del peso en Flate), contra 7.85 MB de
+Ghostscript: 90/q45 = 6.61 MB (firma por debajo de producción) · 90/q65 =
+7.72 MB (≈ producción) · **110/q30 = 7.23 MB (≈ producción y MÁS nítida que
+90/q65 → domina)**. Ghostscript resultó estar en 110 dpi: su imagen de la
+pág. 11 mide 787×1210 sobre 515.231 pt; el Beta le daba 90.
+
+`transcode_dpi` / `transcode_quality` (opt-in, `None` = inerte) aplican sólo
+cuando la fuente llegó sin pérdida Y sale como JPEG. Con 110/30: ad2 6.61→7.23,
+ad3 7.45→**7.23** (más chico Y mejor), doc-D 7.94→8.05; doc-A,
+doc-C, doc-E y doc-B1 **byte-idénticos**.
+
+**Sólo aplica a `ebook`.** Los otros dos perfiles se midieron el 2026-07-26 y
+quedan SIN perillas de transcodificado, por razones distintas:
+
+- **`printer` (175/70): el dpi es INERTE en este corpus.** Los escaneos están a
+  150 dpi efectivos, por debajo del objetivo 175 → no hay downsampling que
+  canjear. Medido: 175, 200 y 250 dpi dan 14.66/14.67/14.67 MB y el ancho máx
+  se queda en 1363 px (el original). No existe el trade que calibramos.
+- **`screen` (50/25): el hallazgo se INVIERTE.** A iso-tamaño (50/q25 = 3.00 MB
+  vs 60/q12 = 2.96 MB), la firma manuscrita sale MEJOR con la perilla actual:
+  a q12 el bloqueo se come los trazos y la fecha se vuelve manchas. Hay un piso
+  de q y screen ya está cerca. El bloque de firma digital es ilegible en TODAS
+  las variantes (a 50-60 dpi el texto de 6 pt no sobrevive), así que ahí el
+  criterio de legibilidad ni siquiera puede arbitrar.
+
+**Lección:** la asignación óptima depende del punto de operación. No extrapolar
+la proporción de ebook (dpi ×1.22, q ×0.67) a otros perfiles — medida en los
+tres, sólo se sostiene en uno.
 
 ### Falsos leads, cerrados por medición (2026-07-26) — NO reabrir
 
