@@ -3,26 +3,38 @@
 > Registro durable de los levers investigados que requieren inversión grande.
 > Cada entrada lleva payoff MEDIDO (no estimado) donde existe, riesgo, y los
 > bloques de construcción con sus licencias (constraint del proyecto: sin AGPL).
-> Estado al 2026-07-26.
+> Estado al 2026-07-27.
 
 ## Estado actual (para ubicarse)
 
-- **v2.0-levers** (== main == producción): levers A (cadena Flate→DCT),
-  B (encoder 4:2:0), C (/SMask), reflate_streams. Contra las 9 referencias
-  reales de Ghostscript **pierde en 6 de 9** — gana donde el contenido es JPEG y
-  pierde donde es raw/Flate (ver §2.b; el "gana en todos" viejo se midió cuando
-  sólo `doc-A` tenía referencia).
-- **v2.1** (rama activa): dos cosas distintas, no confundirlas.
-  - **Clasificador de papel escaneado** (§2.b, commit 9064b60): en el path por
-    defecto, sin features. Da vuelta el marcador a **gema gana 6 de 9**. Es lo
-    que corresponde promover al Beta.
-  - **Modo perceptual** `--quality-target`: COMPLETO pero EXPERIMENTAL (opt-in,
-    CLI-only, feature `perceptual`, wasm blindado). Bloqueado para promoción por
-    costo CPU en el Beta wasm (ver §1). En NATIVO el bucle de imágenes ya va en
-    paralelo (§1.4 hecho: 4.5–6.7× byte-idéntico). **Ojo con el framing de §2:**
-    ese −12/−28% está medido contra *perceptual sin bake-off*, NO contra el modo
-    desplegado; medido contra la q fija real empata o pierde en la mitad del
-    corpus (doc-A +7.7%, doc-D +8.0%) pagando 5–26× de CPU.
+**Se trabaja sobre `main`.** La rama `v2.1` se retiró el 2026-07-27: todo su
+contenido está en `main` y mantenerla como "rama activa" ya sólo confundía.
+Ramas vivas: `main` (código) y `npm` (distribución generada por `wasm-pack`,
+sin fuente). `v2.0-levers`, `v2.0-portable` y `exp/save-modern` son anclas
+históricas: no se les commitea.
+
+Qué corre hoy en el Beta — **gema-wasm 0.3.0** (tag `wasm-v0.3.0`, rama `npm`):
+
+- **Levers v2.0**: A (cadena Flate→DCT), B (encoder 4:2:0), C (/SMask),
+  `reflate_streams`.
+- **Clasificador de papel escaneado** (§2.b, commit 9064b60): el raster
+  guardado sin pérdida ya no se queda en Flate. Contra las 9 referencias reales
+  de Ghostscript, da vuelta el marcador de **perdía 6 de 9** a **gana 6 de 9**.
+- **Perillas de transcodificado** (§2.b, commit 5f649e3): `transcode_dpi 110` /
+  `transcode_quality 30`, **sólo en `ebook`** — en `printer` el dpi es inerte y
+  en `screen` el hallazgo se invierte. Verificado en el navegador:
+  `doc-B2` 50.91 → 7.23 MB (−85.8%).
+
+Qué NO corre en el Beta:
+
+- **Modo perceptual** `--quality-target`: COMPLETO pero EXPERIMENTAL (opt-in,
+  CLI-only, feature `perceptual`, wasm blindado). Bloqueado por costo CPU en el
+  Beta wasm (ver §1). En NATIVO el bucle de imágenes ya va en paralelo
+  (§1.4: 4.5–6.7× byte-idéntico). **Ojo con el framing de §2:** ese −12/−28%
+  está medido contra *perceptual sin bake-off*, NO contra el modo desplegado;
+  medido contra la q fija real empata o pierde en la mitad del corpus
+  (doc-A +7.7%, doc-D +8.0%) pagando 5–26× de CPU. Antes de
+  retomarlo conviene decidir si justifica su complejidad.
 
 ---
 
@@ -50,8 +62,9 @@ por imagen de búsqueda, dominado por ~7 pasos de encode+SSIM2).
      promedio la EMPEORA** (doc-A: galloping da +3991 bytes vs v2.1). Por eso el
      bracket (§1.2) muere por la misma causa: no se arregla cambiando el algoritmo
      de búsqueda. Reducir el *número* de probes es, en este corpus, un callejón.
-   Rama revertida; `v2.1` intacto. Rehacer sólo si aparece un corpus con q*
-   demostrablemente estable (±2) Y curvas monótonas — improbable.
+   El experimento se revirtió y no llegó a integrarse (el "binario de v2.1" de
+   arriba es el código que hoy vive en `main`). Rehacer sólo si aparece un
+   corpus con q* demostrablemente estable (±2) Y curvas monótonas — improbable.
 3. **Proxy más chico para el scoring** (0.25 MPx vs 1 MPx). ✅ **HECHO**
    (2026-07-17). Medido a τ65/90dpi contra gema v2.0 (q fija 45) y producción
    Ghostscript:

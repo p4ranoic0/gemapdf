@@ -91,13 +91,19 @@ do not delete them, they document what shipped and when.
     constraint as item 9.
     _File: `crates/gema-core/src/pipeline.rs`._
 
-12. **Recurse into Form XObjects for DPI (v2.1).**
+12. **Recurse into Form XObjects for DPI — real gap, measured as LOW priority.**
     `effective_dpi_map` only walks the page content streams and their direct
     image XObjects. Images drawn *inside* a Form XObject (`/Subtype /Form` with
     its own content + `/Resources`) are never reached, so their effective DPI is
-    unknown and they are not downsampled (conservative fallback). v2.1 should
-    recurse into Form XObjects, composing the form's `/Matrix` and the `cm` from
-    the outer `Do`.
+    unknown and they are not downsampled (conservative fallback). The fix is to
+    recurse, composing the form's `/Matrix` with the `cm` from the outer `Do`.
+    **Measured 2026-07-27:** this gap does *not* explain any observed symptom in
+    the current corpus. `doc-B2` has 6 Form XObjects against 97
+    images, all painted straight from the page content (`q 515.231 0 0 792 … cm
+    /Im15 Do Q` ⇒ 150.4 dpi, derived fine), and 67 of 97 XObjects — carrying
+    49.11 of the 49.12 MB of image weight — do get downsampled. Do NOT reach for
+    this expecting a compression win; only do it for correctness on documents
+    that actually nest images in forms. See ROADMAP §2.b "Falsos leads".
     _File: `crates/gema-core/src/geometry.rs`._
 
 13. **Inline images (`BI`/`ID`/`EI`) are ignored.**
