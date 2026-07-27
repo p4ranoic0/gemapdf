@@ -207,6 +207,10 @@ struct Decoded {
     /// DecodeParms) → `false` (no cacheable por identidad raw+filtro).
     #[cfg_attr(not(feature = "perceptual"), allow(dead_code))]
     bytes_only: bool,
+    /// La fuente llegó SIN pérdida (raster en Flate) — si además sale como
+    /// JPEG, es un transcodificado de PRIMERA generación y usa sus propias
+    /// perillas. Las que ya venían en DCT son de segunda generación.
+    lossless_source: bool,
 }
 
 /// Etapa 2 — decodificar y clasificar. Rutas:
@@ -240,10 +244,10 @@ fn decode(doc: &Document, src: &ImageSource) -> Result<Decoded, ()> {
         None
     };
 
-    let (image, codec, bytes_only) = match cmyk_decoded {
-        Some(img) => (img, Codec::Jpeg, true),
+    let (image, codec, bytes_only, lossless_source) = match cmyk_decoded {
+        Some(img) => (img, Codec::Jpeg, true, false),
         None => match image::load_from_memory(dct_bytes) {
-            Ok(d) => (d, Codec::Jpeg, true),
+            Ok(d) => (d, Codec::Jpeg, true, false),
             Err(_) => match crate::image_opt::decode::decode_flate_image(
                 doc,
                 &src.stream_for_flate,
@@ -257,7 +261,7 @@ fn decode(doc: &Document, src: &ImageSource) -> Result<Decoded, ()> {
                         crate::image_opt::classify::Content::Photo => Codec::Jpeg,
                         crate::image_opt::classify::Content::LineArt => Codec::FlateLossless,
                     };
-                    (d, codec, false)
+                    (d, codec, false, true)
                 }
                 None => return Err(()),
             },
@@ -267,6 +271,7 @@ fn decode(doc: &Document, src: &ImageSource) -> Result<Decoded, ()> {
         image,
         codec,
         bytes_only,
+        lossless_source,
     })
 }
 
@@ -466,6 +471,12 @@ pub(crate) struct ImageParams {
     /// encode busca la menor q con score ≥ τ en vez de usar `quality`.
     pub(crate) quality_target: Option<f32>,
     pub(crate) target_dpi: u32,
+    /// DPI objetivo alternativo para transcodificados de primera generación
+    /// (fuente sin pérdida → JPEG). `None` = usar `target_dpi` para todo.
+    pub(crate) transcode_dpi: Option<u32>,
+    /// Calidad JPEG alternativa para transcodificados de primera generación.
+    /// `None` = usar `quality` para todo.
+    pub(crate) transcode_quality: Option<u8>,
     /// Downsampling habilitado (opts.downsample).
     pub(crate) downsample: bool,
     /// DPI efectivo real de la imagen (máximo entre sus usos), derivado del
@@ -526,6 +537,19 @@ pub(crate) fn prepare_image(
     #[cfg(feature = "perceptual")]
     let bytes_only = decoded.bytes_only;
 
+    // Transcodificado de PRIMERA generación: la fuente llegó sin pérdida y sale
+    // como JPEG. `transform` no toca el codec (sólo avisa por alfa), así que
+    // decidirlo acá es equivalente a decidirlo después. Ver `transcode_dpi`.
+    let first_gen = decoded.lossless_source && decoded.codec == Codec::Jpeg;
+    let target_dpi = match p.transcode_dpi {
+        Some(dpi) if first_gen => dpi,
+        _ => p.target_dpi,
+    };
+    let quality = match p.transcode_quality {
+        Some(q) if first_gen => q,
+        _ => p.quality,
+    };
+
     let Transformed {
         image,
         codec,
@@ -537,7 +561,7 @@ pub(crate) fn prepare_image(
         decoded,
         &src,
         p.downsample && !p.is_smask,
-        p.target_dpi,
+        target_dpi,
         p.effective_dpi,
     );
 
@@ -583,10 +607,10 @@ pub(crate) fn prepare_image(
                     "quality_target ignorado: build sin el feature 'perceptual'".into(),
                 ));
                 let _ = target;
-                encode(image, codec, p.quality)
+                encode(image, codec, quality)
             }
         }
-        None => encode(image, codec, p.quality),
+        None => encode(image, codec, quality),
     };
 
     let encoded = match encoded_result {

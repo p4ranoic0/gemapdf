@@ -103,6 +103,8 @@ pub fn compress_with_progress(
         quality: params.jpeg_quality,
         quality_target: opts.quality_target,
         target_dpi: params.image_dpi,
+        transcode_dpi: opts.transcode_dpi,
+        transcode_quality: opts.transcode_quality,
         downsample: opts.downsample,
         effective_dpi: dpi_map.get(&id).copied(),
         preserve: preserve.contains(&id),
@@ -1266,6 +1268,165 @@ mod tests {
         assert!(
             matches!(s.dict.get(b"Filter"), Ok(Object::Name(_))),
             "el filtro de salida debe ser un Name único"
+        );
+    }
+
+    // ---- perillas de transcodificado (fuente sin pérdida → JPEG) ----
+
+    /// PDF con un escaneo de papel guardado en Flate CRUDO (no un JPEG
+    /// envuelto): es el caso de `doc-B2`. 800×800 px pintados
+    /// sobre 288 pt ⇒ **200 dpi efectivos**, para que 90 y 110 den anchos
+    /// distintos y medibles. El ruido de sensor hace que `classify` lo reconozca
+    /// como raster capturado y lo mande a JPEG.
+    fn pdf_with_flate_scan() -> (Vec<u8>, u32) {
+        use flate2::{write::ZlibEncoder, Compression};
+        use lopdf::{dictionary, Document, Object, Stream};
+        use std::io::Write;
+
+        let (w, h) = (800u32, 800u32);
+        let mut px = Vec::with_capacity((w * h * 3) as usize);
+        let mut seed = 0x5EEDu64;
+        for y in 0..h {
+            for x in 0..w {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let noise = (seed >> 33) as i16 % 11 - 5;
+                let on_text_row = (y % 16) < 3;
+                let in_word = (x / 37) % 4 != 3;
+                let base: i16 = if on_text_row && in_word { 70 } else { 242 };
+                let v = (base + noise).clamp(0, 255) as u8;
+                px.extend_from_slice(&[v, v, v]);
+            }
+        }
+        let mut z = ZlibEncoder::new(Vec::new(), Compression::default());
+        z.write_all(&px).unwrap();
+        let flate = z.finish().unwrap();
+
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let img_id = doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Image",
+                "Width" => w as i64, "Height" => h as i64,
+                "BitsPerComponent" => 8, "ColorSpace" => "DeviceRGB",
+                "Filter" => "FlateDecode",
+            },
+            flate,
+        ));
+        let content_id = doc.add_object(Stream::new(
+            dictionary! {},
+            b"q 288 0 0 288 0 0 cm /Im0 Do Q".to_vec(),
+        ));
+        let resources_id =
+            doc.add_object(dictionary! { "XObject" => dictionary! { "Im0" => img_id } });
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages_id, "Contents" => content_id,
+            "Resources" => resources_id,
+            "MediaBox" => vec![0.into(), 0.into(), 288.into(), 288.into()],
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
+            }),
+        );
+        let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", catalog_id);
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf).unwrap();
+        (buf, img_id.0)
+    }
+
+    /// Ancho en píxeles con que quedó escrita una imagen en el output.
+    fn output_width(out: &[u8], img_id: u32) -> i64 {
+        use lopdf::Document;
+
+        Document::load_mem(out)
+            .expect("el output debe re-parsear")
+            .get_object((img_id, 0))
+            .unwrap()
+            .as_stream()
+            .unwrap()
+            .dict
+            .get(b"Width")
+            .unwrap()
+            .as_i64()
+            .unwrap()
+    }
+
+    /// Calibración 2026-07-26: los escaneos que llegan SIN pérdida (Flate) y se
+    /// transcodifican a JPEG son de primera generación y rinden más gastando
+    /// bytes en resolución que en cuantización — al revés que los que ya venían
+    /// en JPEG. `transcode_dpi` les da su propio objetivo de resolución.
+    #[test]
+    fn transcode_dpi_overrides_target_for_lossless_sources() {
+        let (input, img_id) = pdf_with_flate_scan();
+        let opts = CompressOptions {
+            image_dpi: Some(90),
+            transcode_dpi: Some(110),
+            jpeg_quality: Some(45),
+            ..Default::default()
+        };
+        let res = compress(&input, &opts).unwrap();
+        // 800 px a 200 dpi efectivos: 90 dpi ⇒ 360 px, 110 dpi ⇒ 440 px.
+        assert_eq!(
+            output_width(&res.output, img_id),
+            440,
+            "el escaneo en Flate debe remuestrearse al dpi de transcodificado"
+        );
+    }
+
+    /// La otra mitad de la calibración: los transcodificados de primera
+    /// generación toleran una q más baja que los de segunda. Con la única
+    /// imagen del doc viniendo de Flate, fijar `transcode_quality` tiene que
+    /// dar exactamente lo mismo que fijar esa q globalmente.
+    #[test]
+    fn transcode_quality_overrides_quality_for_lossless_sources() {
+        let (input, _) = pdf_with_flate_scan();
+        let scoped = compress(
+            &input,
+            &CompressOptions {
+                jpeg_quality: Some(45),
+                transcode_quality: Some(30),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let global = compress(
+            &input,
+            &CompressOptions {
+                jpeg_quality: Some(30),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            scoped.output, global.output,
+            "para una fuente sin pérdida, transcode_quality debe mandar sobre jpeg_quality"
+        );
+    }
+
+    /// Guard del scope: una imagen que YA venía en JPEG es de segunda
+    /// generación y las perillas de transcodificado no deben tocarla. Sin este
+    /// guard, la calibración medida para escaneos en Flate se derramaría sobre
+    /// documentos como `doc-A`, donde midió +9.6% de peso sin ganancia.
+    #[test]
+    fn transcode_knobs_do_not_touch_dct_sources() {
+        let input = pdf_with_jpeg();
+        let base = compress(&input, &CompressOptions::default()).unwrap();
+        let with_knobs = compress(
+            &input,
+            &CompressOptions {
+                transcode_dpi: Some(110),
+                transcode_quality: Some(30),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            base.output, with_knobs.output,
+            "las perillas de transcodificado deben ser inertes sobre fuentes DCT"
         );
     }
 

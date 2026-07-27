@@ -38,6 +38,22 @@ pub struct CompressOptions {
     /// Requiere el cargo feature `perceptual`; sin él, degrada a q fija con un
     /// warning en el reporte. `None` (default) = comportamiento clásico.
     pub quality_target: Option<f32>,
+    /// DPI objetivo SOLO para imágenes que llegan sin pérdida (raster en Flate)
+    /// y se transcodifican a JPEG. `None` = usar `image_dpi`/perfil.
+    ///
+    /// Existe porque son dos regímenes distintos, medido el 2026-07-26: la
+    /// fuente de primera generación está intacta, así que rinde más gastar
+    /// bytes en resolución que en cuantización; una que YA venía en JPEG carga
+    /// artefactos de anillo que la cuantización extra compone. Sobre
+    /// `doc-B2`, 110/q30 se ve mejor que 90/q65 y pesa medio mega
+    /// menos; sobre `doc-A` (ya en JPEG) el mismo cambio sólo agrega 9.6% sin
+    /// ganancia visible.
+    pub transcode_dpi: Option<u32>,
+    /// Calidad JPEG SOLO para transcodificados de primera generación (fuente
+    /// sin pérdida). `None` = usar `jpeg_quality`/perfil. Va de la mano de
+    /// [`CompressOptions::transcode_dpi`]: la asignación medida gasta los bytes
+    /// en resolución y afloja la cuantización.
+    pub transcode_quality: Option<u8>,
     pub downsample: bool,
     pub recompress_streams: bool,
     pub remove_metadata: bool,
@@ -57,6 +73,8 @@ impl Default for CompressOptions {
             image_dpi: None,
             jpeg_quality: None,
             quality_target: None,
+            transcode_dpi: None,
+            transcode_quality: None,
             downsample: true,
             recompress_streams: true,
             remove_metadata: true,

@@ -28,6 +28,13 @@ enum Cmd {
         /// feature `perceptual` (habilitado por default en el CLI).
         #[arg(long)]
         quality_target: Option<f32>,
+        /// DPI objetivo sólo para escaneos que llegan sin pérdida (Flate) y se
+        /// transcodifican a JPEG. Para calibración.
+        #[arg(long)]
+        transcode_dpi: Option<u32>,
+        /// Calidad JPEG sólo para esos transcodificados. Para calibración.
+        #[arg(long)]
+        transcode_quality: Option<u8>,
     },
     /// Analiza un PDF y muestra el reporte.
     Analyze { input: String },
@@ -53,6 +60,8 @@ fn run(cli: Cli) -> Result<(), String> {
             image_dpi,
             jpeg_quality,
             quality_target,
+            transcode_dpi,
+            transcode_quality,
         } => {
             let bytes = fs::read(&input).map_err(|e| e.to_string())?;
             let profile = match profile.as_str() {
@@ -72,6 +81,8 @@ fn run(cli: Cli) -> Result<(), String> {
                     image_dpi,
                     jpeg_quality,
                     quality_target,
+                    transcode_dpi,
+                    transcode_quality,
                     ..Default::default()
                 },
             )
