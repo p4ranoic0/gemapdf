@@ -41,7 +41,10 @@ pub fn analyze(input: &[u8]) -> Result<JsValue, JsError> {
 /// Comprime un PDF devolviendo `{ output: Uint8Array, report: {...} }`.
 ///
 /// - `profile`: "screen" | "ebook" | "printer".
-/// - `options`: objeto `{ image_dpi?, jpeg_quality?, signatures?: "strict"|"ignore"|"flatten" }`
+/// - `options`: objeto `{ image_dpi?, jpeg_quality?, transcode_dpi?,
+///   transcode_quality?, signatures?: "strict"|"ignore"|"flatten" }`.
+///   Las `transcode_*` sólo afectan a escaneos que llegan sin pérdida y salen
+///   como JPEG (ver ROADMAP §2.b).
 ///   o undefined/null para usar los defaults del perfil. Claves desconocidas se
 ///   ignoran; valores inválidos son un error.
 /// - `on_phase`: función opcional que recibe `{ phase, done?, total? }` con
@@ -168,6 +171,11 @@ fn to_js_report(r: &Report) -> JsReport {
 struct JsOptions {
     image_dpi: Option<u32>,
     jpeg_quality: Option<u8>,
+    /// Perillas sólo para escaneos que llegan sin pérdida (raster en Flate) y
+    /// se transcodifican a JPEG. Calibradas para `ebook` (110/30); en `screen`
+    /// y `printer` no aplican — ver ROADMAP §2.b.
+    transcode_dpi: Option<u32>,
+    transcode_quality: Option<u8>,
     /// "strict" | "ignore" | "flatten" (default: flatten)
     signatures: Option<String>,
 }
@@ -197,6 +205,8 @@ fn to_compress_options(profile: &str, o: &JsOptions) -> Result<CompressOptions, 
         profile,
         image_dpi: o.image_dpi,
         jpeg_quality: o.jpeg_quality,
+        transcode_dpi: o.transcode_dpi,
+        transcode_quality: o.transcode_quality,
         signatures,
         ..Default::default()
     })
@@ -269,12 +279,29 @@ mod tests {
         assert!(opts.downsample && opts.recompress_streams && opts.remove_metadata);
     }
 
+    /// Las perillas de transcodificado tienen que CRUZAR el binding. serde
+    /// ignora las claves que no conoce, así que sin este mapeo el worker las
+    /// pasaría y se perderían en silencio — el Beta comprimiría como antes y
+    /// nada avisaría.
+    #[test]
+    fn options_mapper_carries_transcode_knobs() {
+        let o = JsOptions {
+            transcode_dpi: Some(110),
+            transcode_quality: Some(30),
+            ..Default::default()
+        };
+        let opts = to_compress_options("ebook", &o).unwrap();
+        assert_eq!(opts.transcode_dpi, Some(110));
+        assert_eq!(opts.transcode_quality, Some(30));
+    }
+
     #[test]
     fn options_mapper_applies_overrides_and_signatures() {
         let o = JsOptions {
             image_dpi: Some(96),
             jpeg_quality: Some(55),
             signatures: Some("ignore".into()),
+            ..Default::default()
         };
         let opts = to_compress_options("screen", &o).unwrap();
         assert_eq!(opts.profile, Profile::Screen);
