@@ -69,13 +69,13 @@ these numbers):
   to **64.7%** (~35% reduction) — a large jump from v1's single-digit
   percentages, driven mostly by downsampling actually firing on high-DPI
   scanned content (1,842 images downsampled in that corpus).
-- **Signature preservation:** if a PDF is cryptographically signed,
-  `SignaturePolicy::Strict` (the default) refuses to touch image streams that
-  would invalidate the signature — the document round-trips byte-for-byte
-  where it matters, with a `Warning::SignedDocument` in the report instead of
-  a silently broken signature. This also covers flattened stamps/signatures
-  that were rasterized into an image XObject, not just the widget/annotation
-  case.
+- **Explicit signature policy:** `SignaturePolicy::Flatten` is the default. It
+  keeps visible signatures and seals as page content so they remain visible,
+  but any cryptographic validity is lost because the PDF changes.
+  `SignaturePolicy::Strict` is available when validity matters: a signed PDF is
+  returned byte-for-byte unchanged and the requested transformation is reported
+  as blocked. Strict does not mean “compress while keeping the signature valid”;
+  it means “do not modify the signed document.”
 - **SMask (soft-mask) preservation:** images with an attached transparency
   mask (`/SMask`) are left untouched rather than recompressed, since
   recompressing the color data without also handling the mask would either
@@ -128,7 +128,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 `CompressOptions` lets you override the per-profile defaults
 (`image_dpi`, `jpeg_quality`), choose the signature policy
-(`SignaturePolicy::Strict` — the default — vs `Ignore`), and toggle
+(`SignaturePolicy::Flatten` — the default — vs `Strict` or the advanced
+`Ignore` policy), and toggle
 `downsample`/`recompress_streams`/`remove_metadata`. See
 `crates/gema-core/src/options.rs` for the full set and their profile
 defaults (Screen 72dpi/q40, Ebook 150dpi/q65, Printer 300dpi/q80).

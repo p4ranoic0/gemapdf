@@ -6,7 +6,7 @@ pub enum GemaError {
     Parse(String),
     #[error("el PDF está protegido por contraseña")]
     Encrypted,
-    #[error("documento firmado criptográficamente; usa SignaturePolicy::Ignore para forzar")]
+    #[error("documento firmado criptográficamente; usa SignaturePolicy::Flatten para conservar su apariencia visual o Strict para mantener el archivo intacto")]
     SignedDocument,
     #[error("error de E/S: {0}")]
     Io(String),

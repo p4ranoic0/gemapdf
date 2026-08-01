@@ -35,7 +35,7 @@ pub fn compress(input: &[u8], profile: &str) -> Result<Vec<u8>, JsError> {
 #[wasm_bindgen]
 pub fn analyze(input: &[u8]) -> Result<JsValue, JsError> {
     let report = gema_core::analyze(input).map_err(|e| JsError::new(&e.to_string()))?;
-    to_js_object(&to_js_report(&report))
+    to_js_object(&to_js_report(&report, None))
 }
 
 /// Comprime un PDF devolviendo `{ output: Uint8Array, report: {...} }`.
@@ -98,7 +98,7 @@ pub fn compress_with_report(
     let res = compress_with_progress(input, &opts, &mut emit)
         .map_err(|e| JsError::new(&e.to_string()))?;
 
-    let report = to_js_object(&to_js_report(&res.report))?;
+    let report = to_js_object(&to_js_report(&res.report, Some(opts.signatures)))?;
     let out = js_sys::Object::new();
     js_sys::Reflect::set(
         &out,
@@ -130,10 +130,28 @@ struct JsReport {
     images_preserved: usize,
     /// Firmas/sellos aplanados al contenido de página (política flatten).
     flattened_signatures: usize,
+    /// Política aplicada por la operación. Ausente en `analyze`, que no modifica.
+    signature_policy: Option<&'static str>,
+    /// `true` cuando Flatten integró la apariencia al contenido de página.
+    visual_appearance_preserved: bool,
+    /// Sólo es `true` para un PDF firmado si Strict dejó el archivo intacto.
+    cryptographic_validity_preserved: bool,
+    /// Indica que Strict impidió la transformación solicitada.
+    operation_blocked: bool,
+    /// Indica si una operación sobre un PDF firmado produjo contenido nuevo.
+    document_modified: bool,
     warnings: Vec<String>,
 }
 
-fn to_js_report(r: &Report) -> JsReport {
+fn signature_policy_name(policy: SignaturePolicy) -> &'static str {
+    match policy {
+        SignaturePolicy::Strict => "strict",
+        SignaturePolicy::Ignore => "ignore",
+        SignaturePolicy::Flatten => "flatten",
+    }
+}
+
+fn to_js_report(r: &Report, policy: Option<SignaturePolicy>) -> JsReport {
     let mut recompressed = 0;
     let mut downsampled = 0;
     let mut kept = 0;
@@ -148,6 +166,8 @@ fn to_js_report(r: &Report) -> JsReport {
             ImageAction::Preserved => preserved += 1,
         }
     }
+    let strict_blocked = r.is_signed && policy == Some(SignaturePolicy::Strict);
+    let flattened = r.is_signed && policy == Some(SignaturePolicy::Flatten);
     JsReport {
         pages: r.pages,
         original_size: r.original_size,
@@ -161,6 +181,11 @@ fn to_js_report(r: &Report) -> JsReport {
         images_skipped: skipped,
         images_preserved: preserved,
         flattened_signatures: r.flattened_signatures,
+        signature_policy: policy.map(signature_policy_name),
+        visual_appearance_preserved: !r.is_signed || flattened || strict_blocked,
+        cryptographic_validity_preserved: !r.is_signed || strict_blocked,
+        operation_blocked: strict_blocked,
+        document_modified: r.is_signed && policy.is_some() && !strict_blocked,
         warnings: r.warnings.iter().map(|w| w.to_string()).collect(),
     }
 }
@@ -360,7 +385,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let js = to_js_report(&r);
+        let js = to_js_report(&r, Some(SignaturePolicy::Flatten));
         assert_eq!(js.pages, 3);
         assert_eq!(js.original_size, 1000);
         assert_eq!(js.output_size, Some(400));
@@ -372,10 +397,31 @@ mod tests {
         assert_eq!(js.images_kept, 1);
         assert_eq!(js.images_skipped, 1);
         assert_eq!(js.flattened_signatures, 0);
+        assert_eq!(js.signature_policy, Some("flatten"));
+        assert!(js.visual_appearance_preserved);
+        assert!(!js.cryptographic_validity_preserved);
+        assert!(!js.operation_blocked);
+        assert!(js.document_modified);
         assert_eq!(js.warnings.len(), 3);
         assert!(js.warnings[0].contains("firmado"));
         assert!(js.warnings[1].contains('9'));
         assert_eq!(js.warnings[2], "x");
+    }
+
+    #[test]
+    fn strict_report_makes_the_block_explicit() {
+        let r = Report {
+            is_signed: true,
+            original_size: 100,
+            output_size: Some(100),
+            ..Default::default()
+        };
+        let js = to_js_report(&r, Some(SignaturePolicy::Strict));
+        assert_eq!(js.signature_policy, Some("strict"));
+        assert!(js.visual_appearance_preserved);
+        assert!(js.cryptographic_validity_preserved);
+        assert!(js.operation_blocked);
+        assert!(!js.document_modified);
     }
 
     #[test]

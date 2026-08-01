@@ -97,6 +97,11 @@ fn run(cli: Cli) -> Result<(), String> {
                 r.ratio.unwrap_or(1.0) * 100.0,
                 r.images.len()
             );
+            if r.is_signed {
+                println!(
+                    "aviso: la apariencia de la firma se conservó como contenido visual; su validez criptográfica se perdió"
+                );
+            }
             Ok(())
         }
         Cmd::Analyze { input } => {
