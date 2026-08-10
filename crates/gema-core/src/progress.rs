@@ -12,13 +12,21 @@
 ///   (retorno temprano, no se toca nada).
 /// - PDF sin imágenes: se emite `OptimizingImages { done: 0, total: 0 }` una
 ///   sola vez antes de pasar a `Rewriting`.
+///
+/// Las variantes pueden crecer si el pipeline gana etapas observables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Phase {
     /// Parseo del PDF y análisis inicial (páginas, firma, tamaño).
     Analyzing,
     /// Bucle de optimización de imágenes. Se emite con `done = 0` antes de la
     /// primera imagen y de nuevo tras procesar cada una (`done = i + 1`).
-    OptimizingImages { done: usize, total: usize },
+    OptimizingImages {
+        /// Imágenes ya procesadas.
+        done: usize,
+        /// Total de imágenes a procesar en este documento.
+        total: usize,
+    },
     /// Limpieza estructural y serialización (strip de metadata, prune,
     /// recompresión de streams, save).
     Rewriting,

@@ -10,8 +10,8 @@
 //! Primer argumento = perfil (screen|ebook|printer). El resto = rutas a PDFs.
 //! No imprime nombres completos: solo el basename, para no filtrar rutas.
 
-use gema_core::report::ImageAction;
-use gema_core::{compress, CompressOptions, Profile};
+use gema_core::{compress, CompressOptions, ImageAction, ImageSkipReason, Profile};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 fn main() {
@@ -35,6 +35,7 @@ fn main() {
         (0u32, 0u32, 0u32, 0u32, 0u32);
     let (mut a_recomp, mut a_down, mut a_kept, mut a_skip, mut a_preserved) =
         (0u32, 0u32, 0u32, 0u32, 0u32);
+    let mut skip_totals: BTreeMap<ImageSkipReason, (usize, u64)> = BTreeMap::new();
 
     for path in &args {
         let name = Path::new(path)
@@ -68,6 +69,8 @@ fn main() {
                         ImageAction::Kept => kp += 1,
                         ImageAction::Skipped => sk += 1,
                         ImageAction::Preserved => pv += 1,
+                        // `ImageAction` es `#[non_exhaustive]`.
+                        _ => {}
                     }
                 }
                 let orig = r.original_size;
@@ -91,6 +94,11 @@ fn main() {
                 a_kept += kp;
                 a_skip += sk;
                 a_preserved += pv;
+                for summary in &r.image_skip_summary {
+                    let entry = skip_totals.entry(summary.reason).or_insert((0, 0));
+                    entry.0 += summary.images;
+                    entry.1 = entry.1.saturating_add(summary.original_bytes);
+                }
                 println!(
                     "{safe},ok,{},{},{},{},{:.1},{},{},{},{},{},{},{}",
                     r.pages,
@@ -142,4 +150,13 @@ fn main() {
     eprintln!("kept (sin gano): {a_kept}");
     eprintln!("skipped:         {a_skip}");
     eprintln!("preservadas:     {a_preserved}   <-- firmas/sellos preservados byte-idénticos");
+    eprintln!("--- oportunidades omitidas por motivo ---");
+    for (reason, (images, bytes)) in skip_totals {
+        eprintln!(
+            "{:<28} {:>6} imágenes  {:>12} bytes",
+            reason.as_str(),
+            images,
+            bytes
+        );
+    }
 }

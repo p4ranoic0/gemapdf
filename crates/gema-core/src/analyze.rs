@@ -52,6 +52,11 @@ fn acroform_has_sigflags(doc: &Document) -> bool {
         .is_ok_and(|v| v != 0)
 }
 
+/// Inspecciona un PDF sin modificarlo: páginas, tamaño, firma criptográfica y
+/// la estimación conservadora de [`Report::has_scanned_pages`].
+///
+/// El reporte no trae `output_size` ni `ratio` (no hay salida) ni estadísticas
+/// por imagen: para eso está [`compress`](crate::compress).
 pub fn analyze(input: &[u8]) -> Result<Report, GemaError> {
     let doc = Document::load_mem(input).map_err(|e| GemaError::Parse(e.to_string()))?;
     if doc.is_encrypted() {
@@ -64,6 +69,17 @@ pub fn analyze(input: &[u8]) -> Result<Report, GemaError> {
 /// páginas, detección de firma, tamaño original). Permite reutilizar un único
 /// parseo entre `analyze()` y `compress()` (evita un doble `load_mem`).
 pub(crate) fn report_from_doc(doc: &Document, original_size: u64) -> Report {
+    let has_scanned_pages = crate::geometry::has_scanned_pages(doc);
+    report_from_doc_with_scan(doc, original_size, has_scanned_pages)
+}
+
+/// Variante usada por el pipeline cuando ya obtuvo la evidencia de escaneo al
+/// calcular DPI, para no decodificar los content streams una segunda vez.
+pub(crate) fn report_from_doc_with_scan(
+    doc: &Document,
+    original_size: u64,
+    has_scanned_pages: bool,
+) -> Report {
     let pages = doc.get_pages().len();
     let is_signed = detect_signed(doc);
 
@@ -71,6 +87,7 @@ pub(crate) fn report_from_doc(doc: &Document, original_size: u64) -> Report {
         pages,
         original_size,
         is_signed,
+        has_scanned_pages,
         ..Default::default()
     };
     if is_signed {
@@ -117,6 +134,44 @@ mod tests {
         assert_eq!(report.pages, 1);
         assert_eq!(report.original_size, bytes.len() as u64);
         assert!(!report.is_signed);
+        assert!(!report.has_scanned_pages);
+    }
+
+    #[test]
+    fn reports_conservative_scanned_page_evidence() {
+        use lopdf::{dictionary, Document, Object, Stream};
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let image_id = doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Image",
+                "Width" => 1000, "Height" => 1000,
+                "BitsPerComponent" => 8, "ColorSpace" => "DeviceRGB",
+                "Filter" => "DCTDecode",
+            },
+            vec![0; 16],
+        ));
+        let content_id = doc.add_object(Stream::new(
+            dictionary! {},
+            b"q 600 0 0 600 0 0 cm /Scan Do Q".to_vec(),
+        ));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages_id, "Contents" => content_id,
+            "Resources" => dictionary! { "XObject" => dictionary! { "Scan" => image_id } },
+            "MediaBox" => vec![0.into(), 0.into(), 600.into(), 600.into()],
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
+            }),
+        );
+        let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", catalog);
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).unwrap();
+
+        assert!(analyze(&bytes).unwrap().has_scanned_pages);
     }
 
     #[test]

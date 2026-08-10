@@ -2,12 +2,50 @@ use crate::error::GemaError;
 use crate::image_opt::process::{commit_prepared, prepare_image, ImageParams};
 use crate::options::{CompressOptions, SignaturePolicy};
 use crate::progress::Phase;
-use crate::report::{ImageAction, Report, Warning};
+use crate::report::{ImageAction, ImageSkipSummary, Report, Warning};
 use lopdf::Document;
 
+/// PDF comprimido junto con el reporte de lo que se hizo.
 pub struct CompressResult {
+    /// Bytes del PDF de salida.
     pub output: Vec<u8>,
+    /// Qué se hizo con el documento y sus imágenes.
     pub report: Report,
+}
+
+/// Parte una secuencia ordenada de estimaciones en lotes que respetan el
+/// presupuesto y el máximo de elementos. Una imagen mayor que el presupuesto
+/// corre sola: `max_image_bytes` es el mecanismo para rechazarla por completo.
+fn image_batch_ranges(
+    estimates: &[u64],
+    max_memory_bytes: Option<u64>,
+    max_parallel_images: Option<usize>,
+) -> Vec<std::ops::Range<usize>> {
+    if estimates.is_empty() {
+        return Vec::new();
+    }
+    let budget = max_memory_bytes.unwrap_or(u64::MAX).max(1);
+    let max_images = max_parallel_images.unwrap_or(usize::MAX).max(1);
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    while start < estimates.len() {
+        let mut end = start;
+        let mut bytes = 0u64;
+        while end < estimates.len() && end - start < max_images {
+            let next = estimates[end].max(1);
+            if end > start && bytes.saturating_add(next) > budget {
+                break;
+            }
+            bytes = bytes.saturating_add(next);
+            end += 1;
+            if bytes >= budget {
+                break;
+            }
+        }
+        ranges.push(start..end);
+        start = end;
+    }
+    ranges
 }
 
 /// Comprime un PDF sin reportar progreso. Envoltorio fino sobre
@@ -34,7 +72,11 @@ pub fn compress_with_progress(
     if doc.is_encrypted() {
         return Err(GemaError::Encrypted);
     }
-    let report0 = crate::analyze::report_from_doc(&doc, input.len() as u64);
+    // DPI y evidencia de escaneo comparten el mismo recorrido de content
+    // streams, evitando duplicar el costo durante la compresión.
+    let (dpi_map, has_scanned_pages) = crate::geometry::document_geometry(&doc);
+    let report0 =
+        crate::analyze::report_from_doc_with_scan(&doc, input.len() as u64, has_scanned_pages);
 
     // política de firma
     if report0.is_signed && opts.signatures == SignaturePolicy::Strict {
@@ -73,8 +115,6 @@ pub fn compress_with_progress(
     // P2: DPI efectivo real de cada imagen a partir del CTM del content stream.
     // Se calcula una vez, antes del bucle de imágenes. Las imágenes ausentes del
     // mapa (nunca pintadas / CTM degenerado) no se downsamplean (fallback v1).
-    let dpi_map = crate::geometry::effective_dpi_map(&doc);
-
     // recolectar ids de imágenes (XObject /Subtype /Image)
     let image_ids: Vec<lopdf::ObjectId> = doc
         .objects
@@ -105,6 +145,7 @@ pub fn compress_with_progress(
         target_dpi: params.image_dpi,
         transcode_dpi: opts.transcode_dpi,
         transcode_quality: opts.transcode_quality,
+        max_image_bytes: opts.max_image_bytes,
         downsample: opts.downsample,
         effective_dpi: dpi_map.get(&id).copied(),
         preserve: preserve.contains(&id),
@@ -117,20 +158,61 @@ pub fn compress_with_progress(
     // recomputa el mismo resultado determinista, así que el output es idéntico
     // con o sin hit.
     #[cfg(feature = "perceptual")]
-    let perceptual_cache = crate::image_opt::perceptual::SearchCache::new();
+    let perceptual_cache = {
+        const DEFAULT_CACHE_BYTES: u64 = crate::image_opt::perceptual::CACHE_MAX_BYTES;
+        let cache_bytes = opts
+            .max_memory_bytes
+            .map(|budget| (budget / 4).min(DEFAULT_CACHE_BYTES))
+            .unwrap_or(DEFAULT_CACHE_BYTES);
+        crate::image_opt::perceptual::SearchCache::with_max_bytes(cache_bytes)
+    };
+
+    let work_estimates: Vec<u64> = image_ids
+        .iter()
+        .map(|&id| {
+            crate::image_opt::process::estimated_working_bytes(
+                &doc,
+                id,
+                opts.quality_target.is_some(),
+            )
+        })
+        .collect();
+    let batches = image_batch_ranges(
+        &work_estimates,
+        opts.max_memory_bytes,
+        opts.max_parallel_images,
+    );
 
     // §1.4 — El cómputo pesado por-imagen (decode + búsqueda + encode) es
     // read-only sobre el doc: en NATIVO corre en paralelo con rayon; sólo la
     // reescritura (`commit_prepared`) muta el doc y va en SERIE, en orden de
     // `image_ids`. El resultado es byte-idéntico al serial — cada imagen se
     // procesa de forma independiente sobre el doc original y las escrituras van a
-    // objetos disjuntos. El wasm/Beta es single-thread → se queda serial y no
-    // arrastra rayon (dep sólo bajo `cfg(not(wasm32))`).
-    #[cfg(not(target_arch = "wasm32"))]
-    let prepared: Vec<_> = {
-        use rayon::prelude::*;
-        image_ids
-            .par_iter()
+    // objetos disjuntos. El wasm/Beta es single-thread → nuestro bucle se queda
+    // serial y la dependencia directa sólo existe bajo `cfg(not(wasm32))`.
+    let mut done = 0;
+    for range in batches {
+        // Sólo este lote conserva raster/encoded bytes en RAM. Al terminar se
+        // confirma en orden y se libera antes de preparar el siguiente.
+        #[cfg(not(target_arch = "wasm32"))]
+        let prepared: Vec<_> = {
+            use rayon::prelude::*;
+            image_ids[range.clone()]
+                .par_iter()
+                .map(|&id| {
+                    prepare_image(
+                        &doc,
+                        id,
+                        &mk_params(id),
+                        #[cfg(feature = "perceptual")]
+                        &perceptual_cache,
+                    )
+                })
+                .collect()
+        };
+        #[cfg(target_arch = "wasm32")]
+        let prepared: Vec<_> = image_ids[range]
+            .iter()
             .map(|&id| {
                 prepare_image(
                     &doc,
@@ -140,31 +222,18 @@ pub fn compress_with_progress(
                     &perceptual_cache,
                 )
             })
-            .collect()
-    };
-    #[cfg(target_arch = "wasm32")]
-    let prepared: Vec<_> = image_ids
-        .iter()
-        .map(|&id| {
-            prepare_image(
-                &doc,
-                id,
-                &mk_params(id),
-                #[cfg(feature = "perceptual")]
-                &perceptual_cache,
-            )
-        })
-        .collect();
+            .collect();
 
-    // Fase serial: aplicar las escrituras en orden de `image_ids` y emitir
-    // progreso (mismos eventos OptimizingImages{done,total} que el bucle previo).
-    for (i, prep) in prepared.into_iter().enumerate() {
-        // las imágenes no soportadas (no-Image) simplemente no generan stat
-        if let Some(outcome) = commit_prepared(&mut doc, prep) {
-            stats.push(outcome.stat);
-            img_warnings.extend(outcome.warnings);
+        // Fase serial: aplicar las escrituras en el orden original y emitir los
+        // mismos eventos de progreso que antes del presupuesto.
+        for prep in prepared {
+            if let Some(outcome) = commit_prepared(&mut doc, prep) {
+                stats.push(outcome.stat);
+                img_warnings.extend(outcome.warnings);
+            }
+            done += 1;
+            on_phase(Phase::OptimizingImages { done, total });
         }
-        on_phase(Phase::OptimizingImages { done: i + 1, total });
     }
 
     on_phase(Phase::Rewriting);
@@ -172,6 +241,11 @@ pub fn compress_with_progress(
     if opts.remove_metadata {
         crate::rewrite::strip_metadata(&mut doc);
     }
+    let dedupe_stats = if opts.dedupe_images {
+        crate::rewrite::dedupe_images(&mut doc, &preserve, &smask_ids)
+    } else {
+        crate::rewrite::ImageDedupeStats::default()
+    };
     crate::rewrite::cleanup_and_compress(&mut doc, opts.recompress_streams);
     // Tras comprimir (para que el XMP no se recomprima): estampa la marca gemaPDF.
     crate::rewrite::brand_metadata(&mut doc);
@@ -182,6 +256,22 @@ pub fn compress_with_progress(
     let mut report = report0;
     report.warnings.extend(img_warnings);
     report.images = stats;
+    let mut skip_totals = std::collections::BTreeMap::new();
+    for stat in &report.images {
+        if let Some(reason) = stat.skip_reason {
+            let entry = skip_totals.entry(reason).or_insert((0usize, 0u64));
+            entry.0 += 1;
+            entry.1 = entry.1.saturating_add(stat.original_bytes);
+        }
+    }
+    report.image_skip_summary = skip_totals
+        .into_iter()
+        .map(|(reason, (images, original_bytes))| ImageSkipSummary {
+            reason,
+            images,
+            original_bytes,
+        })
+        .collect();
 
     // Firmas/sellos preservados: contamos los stats con acción Preserved y, si
     // hubo alguno, emitimos UN solo warning de resumen (no uno por imagen, para
@@ -193,6 +283,8 @@ pub fn compress_with_progress(
         .count();
     report.preserved_images = preserved_count;
     report.flattened_signatures = flattened;
+    report.deduplicated_images = dedupe_stats.images_removed;
+    report.deduplicated_image_bytes = dedupe_stats.stream_bytes_removed;
     if preserved_count > 0 {
         report.warnings.push(Warning::Other(format!(
             "{preserved_count} firma(s)/sello(s) preservados sin recomprimir"
@@ -214,6 +306,10 @@ pub fn compress_with_progress(
     // en Acrobat. Sin firmas (flattened == 0) la política es irrelevante y el
     // piso sigue aplicando.
     let result = if output.len() > input.len() && flattened == 0 {
+        // La salida efectiva es el original, así que no reportamos objetos que
+        // sólo se eliminaron en un candidato descartado.
+        report.deduplicated_images = 0;
+        report.deduplicated_image_bytes = 0;
         report.output_size = Some(input.len() as u64);
         report.warnings.push(Warning::Other(
             "sin mejora: se conservó el documento original".into(),
@@ -238,6 +334,7 @@ pub fn compress_with_progress(
 mod tests {
     use super::*;
     use crate::options::CompressOptions;
+    use crate::report::ImageSkipReason;
     use lopdf::Object;
 
     // PDF con `n` imágenes JPEG embebidas grandes, todas pintadas en la página.
@@ -289,6 +386,91 @@ mod tests {
         let mut buf = Vec::new();
         doc.save_to(&mut buf).unwrap();
         buf
+    }
+
+    /// Dos XObjects grandes no decodificables con bytes idénticos y sólo un
+    /// `/Name` distinto. El pipeline de imagen los conserva; únicamente la
+    /// deduplicación opt-in debe colapsarlos.
+    fn pdf_with_duplicate_unsupported_images() -> Vec<u8> {
+        use lopdf::{dictionary, Document, Object, Stream};
+
+        let mut encoded = Vec::with_capacity(128 * 1024);
+        let mut state = 0x1234_5678u32;
+        for _ in 0..128 * 1024 {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            encoded.push(state as u8);
+        }
+
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let image = |name: &str| {
+            Stream::new(
+                dictionary! {
+                    "Type" => "XObject", "Subtype" => "Image", "Name" => name,
+                    "Width" => 100, "Height" => 100,
+                    "BitsPerComponent" => 8, "ColorSpace" => "DeviceRGB",
+                    "Filter" => "JPXDecode",
+                },
+                encoded.clone(),
+            )
+        };
+        let a = doc.add_object(image("ImA"));
+        let b = doc.add_object(image("ImB"));
+        let content_id = doc.add_object(Stream::new(
+            dictionary! {},
+            b"q 100 0 0 100 0 0 cm /ImA Do Q q 100 0 0 100 100 0 cm /ImB Do Q".to_vec(),
+        ));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages_id, "Contents" => content_id,
+            "Resources" => dictionary! { "XObject" => dictionary! { "ImA" => a, "ImB" => b } },
+            "MediaBox" => vec![0.into(), 0.into(), 200.into(), 100.into()],
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
+            }),
+        );
+        let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", catalog);
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn image_deduplication_is_opt_in_and_reported() {
+        let input = pdf_with_duplicate_unsupported_images();
+        let base = CompressOptions {
+            downsample: false,
+            recompress_streams: false,
+            remove_metadata: false,
+            ..Default::default()
+        };
+        let without = compress(&input, &base).unwrap();
+        assert_eq!(without.report.deduplicated_images, 0);
+        assert_eq!(without.report.deduplicated_image_bytes, 0);
+        assert_eq!(without.report.image_skip_summary.len(), 1);
+        assert_eq!(
+            without.report.image_skip_summary[0].reason,
+            ImageSkipReason::Jpx
+        );
+        assert_eq!(without.report.image_skip_summary[0].images, 2);
+
+        let with = compress(
+            &input,
+            &CompressOptions {
+                dedupe_images: true,
+                ..base
+            },
+        )
+        .unwrap();
+        assert_eq!(with.report.deduplicated_images, 1);
+        assert_eq!(with.report.deduplicated_image_bytes, 128 * 1024);
+        assert!(with.output.len() < without.output.len());
+        assert!(Document::load_mem(&with.output).is_ok());
     }
 
     // PDF con una imagen JPEG embebida grande.
@@ -343,6 +525,112 @@ mod tests {
             a.output, b.output,
             "el pipeline debe ser determinista corrida a corrida"
         );
+    }
+
+    #[test]
+    fn memory_batch_planner_respects_budget_and_parallel_limit() {
+        assert_eq!(image_batch_ranges(&[], Some(10), Some(2)), Vec::new());
+        assert_eq!(
+            image_batch_ranges(&[4, 4, 4, 20, 1], Some(10), Some(2)),
+            vec![0..2, 2..3, 3..4, 4..5]
+        );
+        assert_eq!(
+            image_batch_ranges(&[1, 1, 1], None, Some(2)),
+            vec![0..2, 2..3]
+        );
+        assert_eq!(
+            image_batch_ranges(&[1, 1], Some(0), Some(0)),
+            vec![0..1, 1..2]
+        );
+    }
+
+    #[test]
+    fn bounded_batches_are_byte_identical_to_unbounded_pipeline() {
+        let input = pdf_with_jpegs(6);
+        let common = CompressOptions {
+            profile: crate::options::Profile::Screen,
+            ..Default::default()
+        };
+        let unbounded = compress(
+            &input,
+            &CompressOptions {
+                max_memory_bytes: None,
+                max_parallel_images: None,
+                ..common.clone()
+            },
+        )
+        .unwrap();
+        let one_at_a_time = compress(
+            &input,
+            &CompressOptions {
+                max_memory_bytes: Some(1),
+                max_parallel_images: Some(1),
+                ..common
+            },
+        )
+        .unwrap();
+        assert_eq!(unbounded.output, one_at_a_time.output);
+        assert_eq!(
+            unbounded.report.images.len(),
+            one_at_a_time.report.images.len()
+        );
+    }
+
+    #[test]
+    fn per_image_memory_limit_skips_without_corrupting() {
+        let input = pdf_with_jpeg();
+        let res = compress(
+            &input,
+            &CompressOptions {
+                profile: crate::options::Profile::Screen,
+                max_image_bytes: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(Document::load_mem(&res.output).is_ok());
+        assert!(res
+            .report
+            .images
+            .iter()
+            .any(|s| s.action == ImageAction::Skipped));
+        assert!(res
+            .report
+            .warnings
+            .iter()
+            .any(|w| matches!(w, Warning::Other(m) if m.contains("omitida por memoria"))));
+    }
+
+    #[test]
+    fn per_image_limit_checks_encoded_header_not_only_pdf_dimensions() {
+        let mut doc = Document::load_mem(&pdf_with_jpeg()).unwrap();
+        for obj in doc.objects.values_mut() {
+            if let Ok(stream) = obj.as_stream_mut() {
+                if stream.dict.get(b"Subtype").and_then(|o| o.as_name()).ok()
+                    == Some(b"Image".as_slice())
+                {
+                    // El JPEG real es 800x800; el dict hostil pretende 1x1.
+                    stream.dict.set("Width", 1);
+                    stream.dict.set("Height", 1);
+                }
+            }
+        }
+        let mut input = Vec::new();
+        doc.save_to(&mut input).unwrap();
+
+        let res = compress(
+            &input,
+            &CompressOptions {
+                max_image_bytes: Some(1024 * 1024),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(res
+            .report
+            .warnings
+            .iter()
+            .any(|w| matches!(w, Warning::Other(m) if m.contains("omitida por memoria"))));
     }
 
     /// PDF con una imagen JPEG que referencia un /SMask (XObject de máscara).
@@ -476,6 +764,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn smask_none_is_treated_as_no_soft_mask() {
+        let (input, orig_content, img_id) = pdf_with_smask_image();
+        let mut doc = Document::load_mem(&input).unwrap();
+        doc.get_object_mut((img_id, 0))
+            .unwrap()
+            .as_stream_mut()
+            .unwrap()
+            .dict
+            .set("SMask", Object::Name(b"None".to_vec()));
+        let mut input_with_none = Vec::new();
+        doc.save_to(&mut input_with_none).unwrap();
+
+        let result = compress(
+            &input_with_none,
+            &CompressOptions {
+                profile: crate::options::Profile::Screen,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let output = Document::load_mem(&result.output).unwrap();
+        let image = output.get_object((img_id, 0)).unwrap().as_stream().unwrap();
+        assert!(image.content.len() < orig_content.len());
+        let stat = result
+            .report
+            .images
+            .iter()
+            .find(|stat| stat.object_id == img_id)
+            .unwrap();
+        assert!(matches!(
+            stat.action,
+            ImageAction::Recompressed | ImageAction::Downsampled
+        ));
+        assert_eq!(stat.skip_reason, None);
+    }
+
     /// Como `pdf_with_smask_image` pero la máscara lleva /Matte (color
     /// premultiplicado): la base debe preservarse entera.
     fn pdf_with_matte_smask() -> (Vec<u8>, Vec<u8>, u32) {
@@ -561,6 +886,10 @@ mod tests {
             .find(|s| s.object_id == img_id)
             .unwrap();
         assert_eq!(stat.action, ImageAction::Skipped);
+        assert_eq!(stat.skip_reason, Some(ImageSkipReason::SoftMaskMatte));
+        assert!(res.report.image_skip_summary.iter().any(|summary| {
+            summary.reason == ImageSkipReason::SoftMaskMatte && summary.images == 1
+        }));
     }
 
     /// Máscara que el decoder NO soporta (bpc=1): queda intacta, pero la base
@@ -741,9 +1070,9 @@ mod tests {
         );
     }
 
-    /// PDF cuyo XObject de imagen declara una dimensión malformada (Width => -5).
+    /// PDF cuyo XObject de imagen declara dimensiones configurables.
     /// Devuelve (bytes, contenido original del stream de la imagen, img_id).
-    fn pdf_with_malformed_dimensions() -> (Vec<u8>, Vec<u8>, u32) {
+    fn pdf_with_malformed_dimensions(width: i64, height: i64) -> (Vec<u8>, Vec<u8>, u32) {
         use image::codecs::jpeg::JpegEncoder;
         use image::{ImageEncoder, RgbImage};
         use lopdf::{dictionary, Document, Object, Stream};
@@ -760,11 +1089,10 @@ mod tests {
         let mut doc = Document::with_version("1.5");
         let pages_id = doc.new_object_id();
         let img_content = jpeg.clone();
-        // Width negativo: con `as u32` se envolvería silenciosamente a un valor enorme.
         let img_stream = Stream::new(
             dictionary! {
                 "Type" => "XObject", "Subtype" => "Image",
-                "Width" => -5, "Height" => 400,
+                "Width" => width, "Height" => height,
                 "BitsPerComponent" => 8, "ColorSpace" => "DeviceRGB",
                 "Filter" => "DCTDecode",
             },
@@ -797,46 +1125,48 @@ mod tests {
 
     #[test]
     fn malformed_dimensions_are_skipped() {
-        let (input, orig_content, img_id) = pdf_with_malformed_dimensions();
-        let opts = CompressOptions {
-            profile: crate::options::Profile::Screen,
-            ..Default::default()
-        };
-        let res = compress(&input, &opts).unwrap();
+        for (width, height) in [(-5, 400), (400, -5), (0, 400), (400, 0), (400, 100_001)] {
+            let (input, orig_content, img_id) = pdf_with_malformed_dimensions(width, height);
+            let opts = CompressOptions {
+                profile: crate::options::Profile::Screen,
+                ..Default::default()
+            };
+            let res = compress(&input, &opts).unwrap();
 
-        // el output debe re-parsear
-        let out_doc = Document::load_mem(&res.output).expect("el output debe re-parsear");
+            let out_doc = Document::load_mem(&res.output).expect("el output debe re-parsear");
+            let out_stream = out_doc
+                .get_object((img_id, 0))
+                .unwrap()
+                .as_stream()
+                .unwrap();
+            assert_eq!(
+                out_stream.content, orig_content,
+                "la imagen {width}x{height} no debe recomprimirse"
+            );
 
-        // el stream de la imagen debe quedar byte-idéntico (no recomprimido)
-        let out_stream = out_doc
-            .get_object((img_id, 0))
-            .unwrap()
-            .as_stream()
-            .unwrap();
-        assert_eq!(
-            out_stream.content, orig_content,
-            "la imagen con dimensiones malformadas no debe recomprimirse"
-        );
-
-        // el stat debe marcarla Skipped (original == output)
-        let stat = res
-            .report
-            .images
-            .iter()
-            .find(|s| s.object_id == img_id)
-            .expect("stat de la imagen");
-        assert_eq!(stat.action, ImageAction::Skipped);
-        assert_eq!(stat.original_bytes, stat.output_bytes);
-
-        // debe haber un warning ImageSkipped para esta imagen
-        assert!(
-            res.report
-                .warnings
+            let stat = res
+                .report
+                .images
                 .iter()
-                .any(|w| matches!(w, Warning::ImageSkipped(o) if *o == img_id)),
-            "debe haber un Warning::ImageSkipped, warnings={:?}",
-            res.report.warnings
-        );
+                .find(|s| s.object_id == img_id)
+                .expect("stat de la imagen");
+            assert_eq!(stat.action, ImageAction::Skipped);
+            assert_eq!(stat.skip_reason, Some(ImageSkipReason::InvalidDimensions));
+            assert_eq!(stat.original_bytes, stat.output_bytes);
+            assert!(
+                res.report
+                    .warnings
+                    .iter()
+                    .any(|w| matches!(w, Warning::ImageSkipped(o) if *o == img_id)),
+                "debe haber un Warning::ImageSkipped, warnings={:?}",
+                res.report.warnings
+            );
+            assert_eq!(res.report.image_skip_summary.len(), 1);
+            assert_eq!(
+                res.report.image_skip_summary[0].reason,
+                ImageSkipReason::InvalidDimensions
+            );
+        }
     }
 
     #[test]
@@ -915,10 +1245,10 @@ mod tests {
         use crate::progress::Phase;
 
         let input = signed_pdf();
-        // Strict ya no es el default (ahora es Flatten); lo pedimos explícito
-        // para ejercitar el retorno temprano byte-idéntico.
+        // Strict es opt-in: ejercita el retorno temprano byte-idéntico sin
+        // cambiar el default de producto, que preserva la apariencia visual.
         let opts = CompressOptions {
-            signatures: crate::options::SignaturePolicy::Strict,
+            signatures: SignaturePolicy::Strict,
             ..Default::default()
         };
 
@@ -1109,7 +1439,13 @@ mod tests {
     #[test]
     fn signature_appearance_image_is_preserved_end_to_end() {
         let (input, orig_content, img_id) = pdf_with_signature_appearance();
-        let res = compress(&input, &CompressOptions::default()).unwrap();
+        let opts = CompressOptions {
+            // Prueba la preservación de la imagen durante una transformación;
+            // Strict retornaría antes de entrar al pipeline de imágenes.
+            signatures: SignaturePolicy::Ignore,
+            ..Default::default()
+        };
+        let res = compress(&input, &opts).unwrap();
 
         let out_doc = Document::load_mem(&res.output).expect("el output debe re-parsear");
         let out_stream = out_doc
@@ -1137,9 +1473,8 @@ mod tests {
     }
 
     #[test]
-    fn flatten_policy_bakes_signature_and_drops_form() {
+    fn default_flatten_policy_bakes_signature_and_drops_form() {
         let (input, _orig, img_id) = pdf_with_signature_appearance();
-        // Flatten es el default
         let res = compress(&input, &CompressOptions::default()).unwrap();
 
         assert!(

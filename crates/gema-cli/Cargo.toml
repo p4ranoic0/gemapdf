@@ -3,8 +3,10 @@ name = "gema-cli"
 description = "CLI for GemaPDF: pure-Rust portable PDF compression, no AGPL"
 edition.workspace = true
 version.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "../../README.md"
 keywords = ["pdf", "compression", "cli"]
 categories = ["command-line-utilities", "compression"]
 
@@ -13,5 +15,8 @@ name = "gema"
 path = "src/main.rs"
 
 [dependencies]
-gema-core = { path = "../gema-core", features = ["perceptual"] }
+gema-core = { workspace = true, features = ["perceptual"] }
 clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+lopdf.workspace = true

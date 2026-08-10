@@ -9,8 +9,7 @@
 //! Cuando v2 implemente decodificación no-DCT y DPI real (ver TODO-v2), estos
 //! tests deberán actualizarse: son el ancla de regresión de la limitación actual.
 
-use gema_core::report::ImageAction;
-use gema_core::{compress, CompressOptions, Profile, Warning};
+use gema_core::{compress, CompressOptions, ImageAction, Profile, Warning};
 use image::codecs::jpeg::JpegEncoder;
 use image::{ImageEncoder, RgbImage};
 use lopdf::{dictionary, Document, Object, Stream};

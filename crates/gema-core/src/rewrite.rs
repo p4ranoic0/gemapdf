@@ -1,6 +1,6 @@
 use crate::error::GemaError;
 use lopdf::{dictionary, Document, Object, ObjectId, Stream, StringFormat};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Quita /Metadata del catálogo y /Info del trailer si `remove_metadata`.
 pub fn strip_metadata(doc: &mut Document) {
@@ -136,6 +136,127 @@ pub fn dedupe_streams(doc: &mut Document) {
     for (_, v) in doc.trailer.iter_mut() {
         remap_refs(v, &remap);
     }
+}
+
+/// Resultado incremental de la deduplicación opt-in de XObjects de imagen.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ImageDedupeStats {
+    /// Objetos de imagen repuntados a un objeto canónico.
+    pub images_removed: usize,
+    /// Suma de los bytes codificados de los streams que quedaron huérfanos.
+    pub stream_bytes_removed: u64,
+}
+
+/// Deduplica XObjects de imagen con contenido codificado byte-idéntico y
+/// semántica de render equivalente que el cleanup genérico no uniría por sí
+/// solo. Sólo ignora claves de bookkeeping que no afectan la apariencia;
+/// cualquier diferencia restante (ColorSpace, Filter, DecodeParms, Decode,
+/// Interpolate, OC, etc.) conserva objetos separados. Los streams cuyo
+/// diccionario completo ya es idéntico se dejan al [`dedupe_streams`] habitual
+/// y no inflan estas estadísticas incrementales.
+///
+/// Por seguridad se excluyen imágenes preservadas de firmas/sellos, imágenes
+/// con `/SMask` y objetos usados como `/SMask`. Los duplicados quedan huérfanos
+/// y los elimina el `prune_objects` de [`cleanup_and_compress`].
+pub fn dedupe_images(
+    doc: &mut Document,
+    preserved_ids: &HashSet<ObjectId>,
+    smask_ids: &HashSet<ObjectId>,
+) -> ImageDedupeStats {
+    fn render_dict(stream: &Stream) -> lopdf::Dictionary {
+        let mut dict = stream.dict.clone();
+        // /Length describe el almacenamiento del stream. Las demás son
+        // metainformación de aplicación/documento, no parámetros de pintura.
+        for key in [
+            b"Length".as_slice(),
+            b"Name",
+            b"Metadata",
+            b"PieceInfo",
+            b"LastModified",
+        ] {
+            dict.remove(key);
+        }
+        dict
+    }
+
+    fn eligible(
+        id: ObjectId,
+        stream: &Stream,
+        preserved_ids: &HashSet<ObjectId>,
+        smask_ids: &HashSet<ObjectId>,
+    ) -> bool {
+        stream
+            .dict
+            .get(b"Subtype")
+            .and_then(Object::as_name)
+            .is_ok_and(|name| name == b"Image")
+            && !preserved_ids.contains(&id)
+            && !smask_ids.contains(&id)
+            && match stream.dict.get(b"SMask") {
+                Err(_) => true,
+                Ok(Object::Name(name)) => name == b"None",
+                Ok(_) => false,
+            }
+    }
+
+    let mut by_content: HashMap<&[u8], Vec<ObjectId>> = HashMap::new();
+    for (&id, obj) in &doc.objects {
+        let Object::Stream(stream) = obj else {
+            continue;
+        };
+        if eligible(id, stream, preserved_ids, smask_ids) {
+            by_content
+                .entry(stream.content.as_slice())
+                .or_default()
+                .push(id);
+        }
+    }
+
+    let mut remap = HashMap::new();
+    let mut stats = ImageDedupeStats::default();
+    for ids in by_content.values() {
+        if ids.len() < 2 {
+            continue;
+        }
+        let mut canonical: Vec<(ObjectId, lopdf::Dictionary)> = Vec::new();
+        for &id in ids {
+            let Some(Object::Stream(stream)) = doc.objects.get(&id) else {
+                continue;
+            };
+            let dict = render_dict(stream);
+            if let Some(canonical_id) = canonical
+                .iter()
+                .find(|(_, candidate)| *candidate == dict)
+                .map(|(id, _)| *id)
+            {
+                let already_handled_generically = doc
+                    .objects
+                    .get(&canonical_id)
+                    .and_then(|obj| obj.as_stream().ok())
+                    .is_some_and(|canonical_stream| canonical_stream.dict == stream.dict);
+                if already_handled_generically {
+                    continue;
+                }
+                remap.insert(id, canonical_id);
+                stats.images_removed += 1;
+                stats.stream_bytes_removed = stats
+                    .stream_bytes_removed
+                    .saturating_add(stream.content.len() as u64);
+            } else {
+                canonical.push((id, dict));
+            }
+        }
+    }
+
+    if !remap.is_empty() {
+        for obj in doc.objects.values_mut() {
+            remap_refs(obj, &remap);
+        }
+        for (_, value) in doc.trailer.iter_mut() {
+            remap_refs(value, &remap);
+        }
+    }
+    stats
 }
 
 /// Piso de tamaño (bytes comprimidos) para re-Flatear: por debajo el ahorro no
@@ -328,6 +449,115 @@ mod tests {
             doc.objects.contains_key(&a) && doc.objects.contains_key(&b),
             "dicts distintos no deben deduplicarse"
         );
+    }
+
+    fn image_stream(extra: lopdf::Dictionary, content: &[u8]) -> Stream {
+        let mut dict = dictionary! {
+            "Type" => "XObject", "Subtype" => "Image",
+            "Width" => 2, "Height" => 2,
+            "BitsPerComponent" => 8, "ColorSpace" => "DeviceRGB",
+            "Filter" => "DCTDecode",
+        };
+        for (key, value) in extra.iter() {
+            dict.set(key.clone(), value.clone());
+        }
+        Stream::new(dict, content.to_vec())
+    }
+
+    #[test]
+    fn image_dedupe_ignores_non_render_bookkeeping() {
+        let mut doc = Document::with_version("1.5");
+        let metadata_a = doc.add_object(Stream::new(dictionary! {}, b"meta a".to_vec()));
+        let metadata_b = doc.add_object(Stream::new(dictionary! {}, b"meta b".to_vec()));
+        let bytes = b"identical encoded image";
+        let a = doc.add_object(image_stream(
+            dictionary! { "Name" => "ImA", "Metadata" => metadata_a },
+            bytes,
+        ));
+        let b = doc.add_object(image_stream(
+            dictionary! { "Name" => "ImB", "Metadata" => metadata_b },
+            bytes,
+        ));
+        let root = doc.add_object(dictionary! { "Type" => "Catalog", "A" => a, "B" => b });
+        doc.trailer.set("Root", root);
+
+        let stats = dedupe_images(&mut doc, &HashSet::new(), &HashSet::new());
+        assert_eq!(stats.images_removed, 1);
+        assert_eq!(stats.stream_bytes_removed, bytes.len() as u64);
+        let catalog = doc.get_object(root).unwrap().as_dict().unwrap();
+        assert_eq!(catalog.get(b"A").unwrap(), catalog.get(b"B").unwrap());
+
+        doc.prune_objects();
+        assert_eq!(
+            [a, b]
+                .iter()
+                .filter(|id| doc.objects.contains_key(id))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn image_dedupe_keeps_different_render_semantics() {
+        let mut doc = Document::with_version("1.5");
+        let bytes = b"same bytes";
+        let rgb = doc.add_object(image_stream(dictionary! {}, bytes));
+        let gray = doc.add_object(image_stream(
+            dictionary! { "ColorSpace" => "DeviceGray" },
+            bytes,
+        ));
+        let root = doc.add_object(dictionary! { "Type" => "Catalog", "A" => rgb, "B" => gray });
+        doc.trailer.set("Root", root);
+
+        let stats = dedupe_images(&mut doc, &HashSet::new(), &HashSet::new());
+        assert_eq!(stats, ImageDedupeStats::default());
+        let catalog = doc.get_object(root).unwrap().as_dict().unwrap();
+        assert_ne!(catalog.get(b"A").unwrap(), catalog.get(b"B").unwrap());
+    }
+
+    #[test]
+    fn image_dedupe_does_not_report_exact_streams_handled_by_generic_cleanup() {
+        let mut doc = Document::with_version("1.5");
+        let bytes = b"same bytes";
+        let a = doc.add_object(image_stream(dictionary! {}, bytes));
+        let b = doc.add_object(image_stream(dictionary! {}, bytes));
+        let root = doc.add_object(dictionary! { "Type" => "Catalog", "A" => a, "B" => b });
+        doc.trailer.set("Root", root);
+
+        let stats = dedupe_images(&mut doc, &HashSet::new(), &HashSet::new());
+        assert_eq!(stats, ImageDedupeStats::default());
+        let catalog = doc.get_object(root).unwrap().as_dict().unwrap();
+        assert_ne!(catalog.get(b"A").unwrap(), catalog.get(b"B").unwrap());
+
+        dedupe_streams(&mut doc);
+        let catalog = doc.get_object(root).unwrap().as_dict().unwrap();
+        assert_eq!(catalog.get(b"A").unwrap(), catalog.get(b"B").unwrap());
+    }
+
+    #[test]
+    fn image_dedupe_excludes_preserved_and_transparency_images() {
+        let mut doc = Document::with_version("1.5");
+        let bytes = b"same bytes";
+        let preserved_a = doc.add_object(image_stream(dictionary! {}, bytes));
+        let preserved_b = doc.add_object(image_stream(dictionary! {}, bytes));
+        let mask_a = doc.add_object(image_stream(dictionary! { "ImageMask" => true }, bytes));
+        let mask_b = doc.add_object(image_stream(dictionary! { "ImageMask" => true }, bytes));
+        let base_a = doc.add_object(image_stream(dictionary! { "SMask" => mask_a }, bytes));
+        let base_b = doc.add_object(image_stream(dictionary! { "SMask" => mask_a }, bytes));
+        let root = doc.add_object(dictionary! {
+            "Type" => "Catalog", "P1" => preserved_a, "P2" => preserved_b,
+            "M1" => mask_a, "M2" => mask_b, "B1" => base_a, "B2" => base_b,
+        });
+        doc.trailer.set("Root", root);
+        let preserved = HashSet::from([preserved_a, preserved_b]);
+        let masks = HashSet::from([mask_a, mask_b]);
+
+        let stats = dedupe_images(&mut doc, &preserved, &masks);
+        assert_eq!(stats, ImageDedupeStats::default());
+        let catalog = doc.get_object(root).unwrap().as_dict().unwrap();
+        for (left, right) in [(b"P1", b"P2"), (b"M1", b"M2"), (b"B1", b"B2")] {
+            assert_ne!(catalog.get(left).unwrap(), catalog.get(right).unwrap());
+        }
     }
 
     #[test]

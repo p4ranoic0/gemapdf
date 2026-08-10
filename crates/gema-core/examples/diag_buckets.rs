@@ -110,6 +110,8 @@ fn main() {
                 ImageAction::Kept => "kept",
                 ImageAction::Skipped => "skipped",
                 ImageAction::Preserved => "preserved",
+                // `ImageAction` es `#[non_exhaustive]`.
+                _ => "other",
             };
             let e = buck.entry(key).or_default();
             e.0 += 1;

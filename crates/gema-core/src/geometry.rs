@@ -6,10 +6,17 @@
 //! `dpi = px / (pt / 72)`. Este módulo interpreta el content stream de cada
 //! página (operadores `q`/`Q`/`cm`/`Do`) manteniendo una pila de CTM y acumula,
 //! por imagen, el **DPI máximo** entre todos sus usos en el documento.
+//!
+//! El recorrido entra también en los Form XObjects (`/Subtype /Form`): un `Do`
+//! sobre un form compone su `/Matrix` con el CTM del llamador y sigue con los
+//! `/Resources` del form (o, si no los declara, con los del contexto que lo
+//! pinta, según PDF 32000 §8.10.1). Sin esa recursión las imágenes anidadas en
+//! forms quedaban con DPI desconocido y nunca se reducían.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use lopdf::{Document, Object, ObjectId};
+use lopdf::content::Content;
+use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
 
 /// Matriz de transformación PDF `[a b c d e f]`, que representa
 /// ```text
@@ -86,127 +93,348 @@ fn image_px_dims(doc: &Document, id: ObjectId) -> Option<(u32, u32)> {
     Some((w as u32, h as u32))
 }
 
-/// Construye el mapa nombre-de-recurso → ObjectId de las imágenes XObject
-/// visibles desde una página (incluye los `/Resources` heredados del árbol de
-/// páginas). Sólo incluye XObjects `/Subtype /Image`.
-fn page_image_names(doc: &Document, page_id: ObjectId) -> HashMap<Vec<u8>, ObjectId> {
-    let mut map = HashMap::new();
+/// Qué clase de XObject es un nombre de recurso. Los demás subtipos (grupos de
+/// PostScript, por ejemplo) no participan del recorrido.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum XObjectKind {
+    Image,
+    Form,
+}
+
+/// Nombre de recurso → XObject al que apunta.
+type XObjectNames = HashMap<Vec<u8>, (ObjectId, XObjectKind)>;
+
+/// Agrega a `map` los XObjects declarados por un diccionario `/Resources`.
+/// El primer nombre gana, que es el orden de precedencia con que se consultan
+/// los recursos propios antes que los heredados.
+fn collect_xobjects(doc: &Document, resources: &Dictionary, map: &mut XObjectNames) {
+    let Ok(xobjects) = resources.get(b"XObject") else {
+        return;
+    };
+    let xobj_dict = match xobjects {
+        Object::Reference(id) => doc.get_object(*id).and_then(Object::as_dict).ok(),
+        Object::Dictionary(d) => Some(d),
+        _ => None,
+    };
+    let Some(xobj_dict) = xobj_dict else {
+        return;
+    };
+    for (name, value) in xobj_dict.iter() {
+        let Ok(obj_id) = value.as_reference() else {
+            continue;
+        };
+        let subtype = doc
+            .get_object(obj_id)
+            .and_then(Object::as_stream)
+            .ok()
+            .and_then(|s| s.dict.get(b"Subtype").and_then(|o| o.as_name()).ok());
+        let kind = match subtype {
+            Some(st) if st == b"Image" => XObjectKind::Image,
+            Some(st) if st == b"Form" => XObjectKind::Form,
+            _ => continue,
+        };
+        map.entry(name.clone()).or_insert((obj_id, kind));
+    }
+}
+
+/// XObjects visibles desde una página, incluidos los `/Resources` heredados del
+/// árbol de páginas.
+fn page_xobject_names(doc: &Document, page_id: ObjectId) -> XObjectNames {
+    let mut map = XObjectNames::new();
     let Ok((inline_dict, resource_ids)) = doc.get_page_resources(page_id) else {
         return map;
     };
-
-    let mut collect = |resources: &lopdf::Dictionary| {
-        let Ok(xobjects) = resources.get(b"XObject") else {
-            return;
-        };
-        let xobj_dict = match xobjects {
-            Object::Reference(id) => doc.get_object(*id).and_then(Object::as_dict).ok(),
-            Object::Dictionary(d) => Some(d),
-            _ => None,
-        };
-        if let Some(xobj_dict) = xobj_dict {
-            for (name, value) in xobj_dict.iter() {
-                if let Ok(obj_id) = value.as_reference() {
-                    // sólo imágenes (evita Form XObjects, etc.)
-                    let is_image = doc
-                        .get_object(obj_id)
-                        .and_then(Object::as_stream)
-                        .ok()
-                        .and_then(|s| s.dict.get(b"Subtype").and_then(|o| o.as_name()).ok())
-                        .map(|st| st == b"Image")
-                        .unwrap_or(false);
-                    if is_image {
-                        map.entry(name.clone()).or_insert(obj_id);
-                    }
-                }
-            }
-        }
-    };
-
     if let Some(inline) = inline_dict {
-        collect(inline);
+        collect_xobjects(doc, inline, &mut map);
     }
     for rid in resource_ids {
         if let Ok(resources) = doc.get_dictionary(rid) {
-            collect(resources);
+            collect_xobjects(doc, resources, &mut map);
         }
     }
     map
 }
 
-/// Recorre el content stream de una página manteniendo la pila de CTM y, en
-/// cada `Do` de una imagen conocida, acumula el DPI efectivo máximo por imagen.
-fn accumulate_page(doc: &Document, page_id: ObjectId, out: &mut HashMap<ObjectId, f32>) {
-    let names = page_image_names(doc, page_id);
-    if names.is_empty() {
-        return;
-    }
-    let Ok(content) = doc.get_and_decode_page_content(page_id) else {
-        return;
+/// XObjects declarados por el `/Resources` propio de un form. `None` cuando el
+/// form no declara recursos: en ese caso hereda los del contexto que lo pinta.
+fn form_xobject_names(doc: &Document, form: &Stream) -> Option<XObjectNames> {
+    let resources = form.dict.get(b"Resources").ok()?;
+    let (_, resolved) = doc.dereference(resources).ok()?;
+    let dict = resolved.as_dict().ok()?;
+    let mut map = XObjectNames::new();
+    collect_xobjects(doc, dict, &mut map);
+    Some(map)
+}
+
+/// Bytes ya desfiltrados del content stream de un form.
+fn stream_content_bytes(form: &Stream) -> Vec<u8> {
+    form.decompressed_content()
+        .unwrap_or_else(|_| form.content.clone())
+}
+
+/// `/Matrix` del form; identidad si falta o está malformada.
+fn form_matrix(doc: &Document, form: &Stream) -> Matrix {
+    let Ok(value) = form.dict.get(b"Matrix") else {
+        return Matrix::IDENTITY;
     };
+    let Ok((_, resolved)) = doc.dereference(value) else {
+        return Matrix::IDENTITY;
+    };
+    let Ok(arr) = resolved.as_array() else {
+        return Matrix::IDENTITY;
+    };
+    if arr.len() < 6 {
+        return Matrix::IDENTITY;
+    }
+    let vals: Option<Vec<f32>> = arr[..6].iter().map(|o| o.as_float().ok()).collect();
+    match vals {
+        Some(v) => Matrix {
+            a: v[0],
+            b: v[1],
+            c: v[2],
+            d: v[3],
+            e: v[4],
+            f: v[5],
+        },
+        None => Matrix::IDENTITY,
+    }
+}
 
-    let mut ctm = Matrix::IDENTITY;
-    let mut stack: Vec<Matrix> = Vec::new();
+/// Anidado máximo de Form XObjects que se recorre. Los PDFs reales rara vez
+/// pasan de dos o tres niveles; el tope evita gastar tiempo en documentos
+/// patológicos.
+const MAX_FORM_DEPTH: usize = 8;
 
-    for op in &content.operations {
-        match op.operator.as_str() {
-            "q" => stack.push(ctm),
-            "Q" => {
-                if let Some(prev) = stack.pop() {
-                    ctm = prev;
-                }
+/// Techo de operadores interpretados por página, contando los de los forms
+/// anidados. Un form pintado muchas veces se recorre una vez por `Do` (cada uso
+/// tiene su propio CTM), así que el producto puede crecer rápido; el
+/// presupuesto lo acota sin cambiar el resultado en documentos normales.
+const MAX_OPS_PER_PAGE: u32 = 200_000;
+
+const MIN_SCAN_COVERAGE: f32 = 0.80;
+const MIN_SCAN_RASTER_SIDE: u32 = 400;
+const MAX_SCAN_TEXT_BYTES: usize = 32;
+
+/// Estado compartido por el recorrido de una página y de los forms que anida.
+struct GeometryWalk<'a> {
+    doc: &'a Document,
+    dpi: &'a mut HashMap<ObjectId, f32>,
+    max_raster_area: f32,
+    text_bytes: usize,
+    ops_left: u32,
+}
+
+impl GeometryWalk<'_> {
+    /// Interpreta una secuencia de operadores con `ctm` como CTM inicial.
+    /// `names` son los XObjects visibles en este contexto y `active` los forms
+    /// que están en la pila de recursión (corta ciclos `/Resources`).
+    fn walk(
+        &mut self,
+        content: &Content,
+        names: &XObjectNames,
+        ctm: Matrix,
+        depth: usize,
+        active: &mut Vec<ObjectId>,
+    ) {
+        let mut ctm = ctm;
+        let mut stack: Vec<Matrix> = Vec::new();
+
+        for op in &content.operations {
+            if self.ops_left == 0 {
+                return;
             }
-            "cm" => {
-                if op.operands.len() >= 6 {
-                    let vals: Option<Vec<f32>> =
-                        op.operands[..6].iter().map(|o| o.as_float().ok()).collect();
-                    if let Some(v) = vals {
-                        let cm = Matrix {
-                            a: v[0],
-                            b: v[1],
-                            c: v[2],
-                            d: v[3],
-                            e: v[4],
-                            f: v[5],
-                        };
-                        // cm pre-multiplica: nuevo = cm × ctm
-                        ctm = cm.mul(&ctm);
+            self.ops_left -= 1;
+
+            match op.operator.as_str() {
+                "q" => stack.push(ctm),
+                "Q" => {
+                    if let Some(prev) = stack.pop() {
+                        ctm = prev;
                     }
                 }
-            }
-            "Do" => {
-                if let Some(name) = op.operands.first().and_then(|o| o.as_name().ok()) {
-                    if let Some(&img_id) = names.get(name) {
-                        if let Some((px_w, px_h)) = image_px_dims(doc, img_id) {
-                            if let Some(dpi) = effective_dpi(&ctm, px_w, px_h) {
-                                let entry = out.entry(img_id).or_insert(0.0);
-                                if dpi > *entry {
-                                    *entry = dpi;
-                                }
+                "cm" => {
+                    if op.operands.len() >= 6 {
+                        let vals: Option<Vec<f32>> =
+                            op.operands[..6].iter().map(|o| o.as_float().ok()).collect();
+                        if let Some(v) = vals {
+                            let cm = Matrix {
+                                a: v[0],
+                                b: v[1],
+                                c: v[2],
+                                d: v[3],
+                                e: v[4],
+                                f: v[5],
+                            };
+                            // cm pre-multiplica: nuevo = cm × ctm
+                            ctm = cm.mul(&ctm);
+                        }
+                    }
+                }
+                "Do" => {
+                    let Some(name) = op.operands.first().and_then(|o| o.as_name().ok()) else {
+                        continue;
+                    };
+                    match names.get(name) {
+                        Some(&(img_id, XObjectKind::Image)) => self.paint_image(img_id, &ctm),
+                        Some(&(form_id, XObjectKind::Form)) => {
+                            self.enter_form(form_id, names, &ctm, depth, active)
+                        }
+                        None => {}
+                    }
+                }
+                "Tj" | "'" | "\"" => {
+                    if let Some(Object::String(bytes, _)) = op.operands.last() {
+                        self.text_bytes = self.text_bytes.saturating_add(bytes.len());
+                    }
+                }
+                "TJ" => {
+                    if let Some(Object::Array(items)) = op.operands.first() {
+                        for item in items {
+                            if let Object::String(bytes, _) = item {
+                                self.text_bytes = self.text_bytes.saturating_add(bytes.len());
                             }
                         }
                     }
                 }
+                _ => {}
             }
-            _ => {}
         }
     }
+
+    /// Registra un uso de imagen: DPI efectivo máximo y evidencia de escaneo.
+    fn paint_image(&mut self, img_id: ObjectId, ctm: &Matrix) {
+        let Some((px_w, px_h)) = image_px_dims(self.doc, img_id) else {
+            return;
+        };
+        if let Some(dpi) = effective_dpi(ctm, px_w, px_h) {
+            let entry = self.dpi.entry(img_id).or_insert(0.0);
+            if dpi > *entry {
+                *entry = dpi;
+            }
+        }
+        if px_w >= MIN_SCAN_RASTER_SIDE && px_h >= MIN_SCAN_RASTER_SIDE {
+            let painted_area = (ctm.a * ctm.d - ctm.b * ctm.c).abs();
+            if painted_area.is_finite() {
+                self.max_raster_area = self.max_raster_area.max(painted_area);
+            }
+        }
+    }
+
+    /// Recorre el contenido de un Form XObject con el CTM del `Do` compuesto
+    /// con su `/Matrix`. Si el form no declara `/Resources`, hereda los del
+    /// contexto que lo pinta.
+    fn enter_form(
+        &mut self,
+        form_id: ObjectId,
+        outer_names: &XObjectNames,
+        ctm: &Matrix,
+        depth: usize,
+        active: &mut Vec<ObjectId>,
+    ) {
+        if depth >= MAX_FORM_DEPTH || active.contains(&form_id) {
+            return;
+        }
+        let Ok(form) = self.doc.get_object(form_id).and_then(Object::as_stream) else {
+            return;
+        };
+        let Ok(content) = Content::decode(&stream_content_bytes(form)) else {
+            return;
+        };
+        let inner_ctm = form_matrix(self.doc, form).mul(ctm);
+        let own_names = form_xobject_names(self.doc, form);
+        let names = own_names.as_ref().unwrap_or(outer_names);
+
+        active.push(form_id);
+        self.walk(&content, names, inner_ctm, depth + 1, active);
+        active.pop();
+    }
+}
+
+/// Recorre el content stream de una página manteniendo la pila de CTM y, en
+/// cada `Do` de una imagen conocida, acumula el DPI efectivo máximo por imagen.
+/// Devuelve si la página aporta evidencia conservadora de escaneo.
+fn accumulate_page(doc: &Document, page_id: ObjectId, out: &mut HashMap<ObjectId, f32>) -> bool {
+    let names = page_xobject_names(doc, page_id);
+    if names.is_empty() {
+        return false;
+    }
+    let Ok(content) = doc.get_and_decode_page_content(page_id) else {
+        return false;
+    };
+
+    let page_area = inherited_page_area(doc, page_id);
+    let mut walk = GeometryWalk {
+        doc,
+        dpi: out,
+        max_raster_area: 0.0,
+        text_bytes: 0,
+        ops_left: MAX_OPS_PER_PAGE,
+    };
+    walk.walk(&content, &names, Matrix::IDENTITY, 0, &mut Vec::new());
+
+    let (max_raster_area, text_bytes) = (walk.max_raster_area, walk.text_bytes);
+    page_area.is_some_and(|area| {
+        text_bytes <= MAX_SCAN_TEXT_BYTES && max_raster_area / area >= MIN_SCAN_COVERAGE
+    })
 }
 
 /// Calcula, para todo el documento, el DPI efectivo **máximo** de cada imagen
 /// XObject a partir del CTM de sus usos en los content streams de las páginas.
 /// Las imágenes que nunca se encuentran pintadas no aparecen en el mapa.
+#[cfg(test)]
 pub(crate) fn effective_dpi_map(doc: &Document) -> HashMap<ObjectId, f32> {
-    let mut out = HashMap::new();
-    for (_, page_id) in doc.get_pages() {
-        accumulate_page(doc, page_id, &mut out);
+    document_geometry(doc).0
+}
+
+/// Área de `/CropBox` o `/MediaBox`, buscando también en ancestros `/Pages`.
+fn inherited_page_area(doc: &Document, page_id: ObjectId) -> Option<f32> {
+    for key in [b"CropBox".as_slice(), b"MediaBox"] {
+        let mut current = page_id;
+        let mut seen = HashSet::new();
+        while seen.insert(current) {
+            let dict = doc.get_dictionary(current).ok()?;
+            if let Ok(value) = dict.get(key) {
+                let (_, resolved) = doc.dereference(value).ok()?;
+                let values = resolved.as_array().ok()?;
+                if values.len() < 4 {
+                    return None;
+                }
+                let coords: Option<Vec<f32>> =
+                    values[..4].iter().map(|o| o.as_float().ok()).collect();
+                let coords = coords?;
+                let area = ((coords[2] - coords[0]) * (coords[3] - coords[1])).abs();
+                return (area.is_finite() && area > 0.0).then_some(area);
+            }
+            let Ok(parent) = dict.get(b"Parent").and_then(Object::as_reference) else {
+                break;
+            };
+            current = parent;
+        }
     }
-    out
+    None
+}
+
+/// `true` si al menos una página aporta evidencia conservadora de escaneo.
+pub(crate) fn has_scanned_pages(doc: &Document) -> bool {
+    document_geometry(doc).1
+}
+
+/// Calcula DPI efectivo y evidencia de escaneo en una sola lectura de cada
+/// content stream. El pipeline consume ambos resultados; `analyze()` usa el
+/// segundo y descarta el mapa.
+pub(crate) fn document_geometry(doc: &Document) -> (HashMap<ObjectId, f32>, bool) {
+    let mut dpi = HashMap::new();
+    let mut has_scans = false;
+    for page_id in doc.get_pages().values() {
+        has_scans |= accumulate_page(doc, *page_id, &mut dpi);
+    }
+    (dpi, has_scans)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lopdf::dictionary;
 
     #[test]
     fn identity_mul_is_noop() {
@@ -391,6 +619,24 @@ mod tests {
     }
 
     #[test]
+    fn contents_array_preserves_ctm_across_split_streams() {
+        use lopdf::{dictionary, Stream};
+        let (mut doc, image_id) = doc_with_image(200, b"", 200);
+        let page_id = doc.get_pages()[&1];
+        let first = doc.add_object(Stream::new(
+            dictionary! {},
+            b"q 100 0 0 100 0 0 cm".to_vec(),
+        ));
+        let second = doc.add_object(Stream::new(dictionary! {}, b"/Im0 Do Q".to_vec()));
+        doc.get_dictionary_mut(page_id)
+            .unwrap()
+            .set("Contents", vec![first.into(), second.into()]);
+
+        let dpi = effective_dpi_map(&doc);
+        assert!((dpi[&image_id] - 144.0).abs() < 0.01);
+    }
+
+    #[test]
     fn map_respects_q_q_nesting() {
         // el `cm` dentro de q/Q no debe filtrarse al Do posterior fuera del bloque.
         // Bloque 1: escala 50 (288 DPI para 200px) dentro de q/Q.
@@ -400,5 +646,194 @@ mod tests {
         let map = effective_dpi_map(&doc);
         let dpi = *map.get(&img_id).unwrap();
         assert!((dpi - 144.0).abs() < 0.01, "dpi={dpi}");
+    }
+
+    /// Añade un Form XObject y lo declara como `/Fm0` en los `/Resources` de la
+    /// primera página. `extra` permite fijar `/Matrix` o `/Resources` propios.
+    fn add_form(doc: &mut Document, content: &[u8], extra: lopdf::Dictionary) -> ObjectId {
+        use lopdf::{dictionary, Stream};
+        let mut dict = dictionary! {
+            "Type" => "XObject", "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 1000.into(), 1000.into()],
+        };
+        for (key, value) in extra.iter() {
+            dict.set(key.clone(), value.clone());
+        }
+        let form_id = doc.add_object(Stream::new(dict, content.to_vec()));
+
+        let page_id = doc.get_pages()[&1];
+        let resources_id = doc
+            .get_dictionary(page_id)
+            .unwrap()
+            .get(b"Resources")
+            .unwrap()
+            .as_reference()
+            .unwrap();
+        let resources = doc.get_dictionary_mut(resources_id).unwrap();
+        let xobjects = resources
+            .get_mut(b"XObject")
+            .unwrap()
+            .as_dict_mut()
+            .unwrap();
+        xobjects.set("Fm0", form_id);
+        form_id
+    }
+
+    #[test]
+    fn image_inside_a_form_gets_its_dpi_derived() {
+        // La imagen se pinta DENTRO del form; sin recursión quedaba sin DPI y
+        // por lo tanto nunca se reducía (TODO-v2 #15).
+        let (mut doc, image_id) = doc_with_image(200, b"q /Fm0 Do Q", 200);
+        add_form(
+            &mut doc,
+            b"q 100 0 0 100 0 0 cm /Im0 Do Q",
+            dictionary! {
+                "Resources" => dictionary! {
+                    "XObject" => dictionary! { "Im0" => image_id },
+                },
+            },
+        );
+
+        let map = effective_dpi_map(&doc);
+        let dpi = *map
+            .get(&image_id)
+            .expect("la imagen anidada debe tener DPI");
+        assert!((dpi - 144.0).abs() < 0.01, "dpi={dpi}");
+    }
+
+    #[test]
+    fn form_matrix_composes_with_the_outer_ctm() {
+        // /Matrix escala 0.5 y el `cm` interno escala 100 ⇒ caja de 50pt.
+        // 200px en 50pt = 288 DPI. Si el /Matrix se ignorara darían 144.
+        let (mut doc, image_id) = doc_with_image(200, b"q /Fm0 Do Q", 200);
+        add_form(
+            &mut doc,
+            b"q 100 0 0 100 0 0 cm /Im0 Do Q",
+            dictionary! {
+                "Matrix" => vec![0.5.into(), 0.into(), 0.into(), 0.5.into(), 0.into(), 0.into()],
+                "Resources" => dictionary! {
+                    "XObject" => dictionary! { "Im0" => image_id },
+                },
+            },
+        );
+
+        let map = effective_dpi_map(&doc);
+        let dpi = *map.get(&image_id).unwrap();
+        assert!((dpi - 288.0).abs() < 0.01, "dpi={dpi}");
+    }
+
+    #[test]
+    fn outer_cm_scales_the_form_content() {
+        // El `cm` de la página multiplica lo que pinta el form: cm 2 fuera y
+        // cm 100 dentro ⇒ caja de 200pt ⇒ 72 DPI para 200px.
+        let (mut doc, image_id) = doc_with_image(200, b"q 2 0 0 2 0 0 cm /Fm0 Do Q", 400);
+        add_form(
+            &mut doc,
+            b"q 100 0 0 100 0 0 cm /Im0 Do Q",
+            dictionary! {
+                "Resources" => dictionary! {
+                    "XObject" => dictionary! { "Im0" => image_id },
+                },
+            },
+        );
+
+        let map = effective_dpi_map(&doc);
+        let dpi = *map.get(&image_id).unwrap();
+        assert!((dpi - 72.0).abs() < 0.01, "dpi={dpi}");
+    }
+
+    #[test]
+    fn form_without_resources_inherits_them_from_the_page() {
+        // PDF 32000 §8.10.1: sin /Resources propios, el form ve los del
+        // contexto que lo pinta — ahí sigue estando /Im0.
+        let (mut doc, image_id) = doc_with_image(200, b"q /Fm0 Do Q", 200);
+        add_form(
+            &mut doc,
+            b"q 100 0 0 100 0 0 cm /Im0 Do Q",
+            lopdf::Dictionary::new(),
+        );
+
+        let map = effective_dpi_map(&doc);
+        let dpi = *map.get(&image_id).expect("debe heredar /Im0 de la página");
+        assert!((dpi - 144.0).abs() < 0.01, "dpi={dpi}");
+    }
+
+    #[test]
+    fn self_referencing_form_terminates() {
+        // Un form que se pinta a sí mismo no debe colgar el recorrido; el guard
+        // de ciclo lo corta y la imagen igual se registra.
+        let (mut doc, image_id) = doc_with_image(200, b"q /Fm0 Do Q", 200);
+        let form_id = add_form(
+            &mut doc,
+            b"q 100 0 0 100 0 0 cm /Im0 Do /Fm0 Do Q",
+            dictionary! {
+                "Resources" => dictionary! {
+                    "XObject" => dictionary! { "Im0" => image_id },
+                },
+            },
+        );
+        // el form se declara a sí mismo dentro de sus propios recursos
+        let resources_id = doc
+            .get_object(form_id)
+            .unwrap()
+            .as_stream()
+            .unwrap()
+            .dict
+            .get(b"Resources")
+            .unwrap()
+            .clone();
+        let mut resources = resources_id.as_dict().unwrap().clone();
+        resources
+            .get_mut(b"XObject")
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .set("Fm0", form_id);
+        doc.get_object_mut(form_id)
+            .unwrap()
+            .as_stream_mut()
+            .unwrap()
+            .dict
+            .set("Resources", resources);
+
+        let map = effective_dpi_map(&doc);
+        assert!((map[&image_id] - 144.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn full_page_raster_painted_through_a_form_looks_scanned() {
+        // La evidencia de escaneo también tiene que ver a través del form.
+        let (mut doc, image_id) = doc_with_image(1000, b"q /Fm0 Do Q", 600);
+        add_form(
+            &mut doc,
+            b"q 600 0 0 600 0 0 cm /Im0 Do Q",
+            dictionary! {
+                "Resources" => dictionary! {
+                    "XObject" => dictionary! { "Im0" => image_id },
+                },
+            },
+        );
+        assert!(has_scanned_pages(&doc));
+    }
+
+    #[test]
+    fn full_page_raster_with_little_text_looks_scanned() {
+        let content = b"q 600 0 0 600 0 0 cm /Im0 Do Q BT (page 1) Tj ET";
+        let (doc, _) = doc_with_image(1000, content, 600);
+        assert!(has_scanned_pages(&doc));
+    }
+
+    #[test]
+    fn full_page_raster_with_substantial_text_is_not_classified_as_scan() {
+        let content = b"q 600 0 0 600 0 0 cm /Im0 Do Q BT (This page has substantial born-digital text over its background image.) Tj ET";
+        let (doc, _) = doc_with_image(1000, content, 600);
+        assert!(!has_scanned_pages(&doc));
+    }
+
+    #[test]
+    fn small_raster_does_not_look_scanned() {
+        let content = b"q 300 0 0 300 0 0 cm /Im0 Do Q";
+        let (doc, _) = doc_with_image(1000, content, 600);
+        assert!(!has_scanned_pages(&doc));
     }
 }

@@ -3,8 +3,22 @@ name = "gema-core"
 description = "Pure-Rust portable PDF compression engine (WASM + native), no AGPL"
 edition.workspace = true
 version.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "../../README.md"
+# Los arneses de investigación permanecen en el repositorio, pero no forman
+# parte del crate distribuido. `usage_report` sí se conserva como ejemplo útil.
+exclude = [
+    "examples/dedup_probe.rs",
+    "examples/diag_buckets.rs",
+    "examples/diag_gray.rs",
+    "examples/edu_loss.rs",
+    "examples/enc_compare.rs",
+    "examples/enc_mozjpeg.rs",
+    "examples/mrc_spike.rs",
+    "examples/ssim2_cmp.rs",
+]
 keywords = ["pdf", "compression", "wasm"]
 categories = ["compression", "parser-implementations"]
 
@@ -30,7 +44,8 @@ ssimulacra2 = { version = "0.5", optional = true }
 mozjpeg-rs = { version = "0.9.2", optional = true }
 
 # §1.4: paralelización del bucle de imágenes (decode+búsqueda+encode) en nativo.
-# Target-specific para que el wasm/Beta (single-thread) NUNCA lo arrastre.
+# La dependencia directa es target-specific: el wasm/Beta mantiene nuestro
+# bucle serial. Dependencias upstream pueden incluir Rayon transitivamente.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = "1"
 

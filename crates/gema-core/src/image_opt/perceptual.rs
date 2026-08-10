@@ -13,7 +13,7 @@ use crate::image_opt::{Encoded, RawImage, Recompressor};
 use ssimulacra2::{compute_frame_ssimulacra2, ColorPrimaries, Rgb, TransferCharacteristic};
 
 const Q_MIN: u8 = 20;
-const Q_MAX: u8 = 90;
+pub(crate) const Q_MAX: u8 = 90;
 /// §1.3: 0.25 MPx (antes 1 MPx). SSIM2 escala con los píxeles del proxy, así
 /// que esto abarata ~4× el scoring de cada probe — el único lever de CPU que
 /// también sirve al Beta wasm (single-thread). Validado sobre el corpus contra
@@ -236,7 +236,7 @@ pub(crate) struct SearchCache {
 /// Tope de memoria del cache (§1): pasado esto no se insertan entradas nuevas.
 /// Generoso — cubre el corpus real (el doc más pesado, 88 MB, guardó ~90 MB de
 /// únicos y ganó); solo frena docs patológicos todo-únicos de cientos de MB.
-const CACHE_MAX_BYTES: u64 = 128 * 1024 * 1024;
+pub(crate) const CACHE_MAX_BYTES: u64 = 128 * 1024 * 1024;
 
 /// Identidad de la FUENTE de una imagen elegible para el cache: los bytes
 /// crudos del stream, su `/Filter` (la cadena determina cómo se des-encadena
@@ -265,11 +265,12 @@ struct CacheEntry {
 }
 
 impl SearchCache {
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self::with_max_bytes(CACHE_MAX_BYTES)
     }
 
-    fn with_max_bytes(max_bytes: u64) -> Self {
+    pub(crate) fn with_max_bytes(max_bytes: u64) -> Self {
         Self {
             entries: std::sync::Mutex::new(Vec::new()),
             stored_bytes: std::sync::atomic::AtomicU64::new(0),

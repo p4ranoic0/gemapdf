@@ -42,7 +42,9 @@ pub fn analyze(input: &[u8]) -> Result<JsValue, JsError> {
 ///
 /// - `profile`: "screen" | "ebook" | "printer".
 /// - `options`: objeto `{ image_dpi?, jpeg_quality?, transcode_dpi?,
-///   transcode_quality?, signatures?: "strict"|"ignore"|"flatten" }`.
+///   transcode_quality?, max_memory_bytes?, max_parallel_images?,
+///   max_image_bytes?, dedupe_images?,
+///   signatures?: "strict"|"ignore"|"flatten" }`.
 ///   Las `transcode_*` sólo afectan a escaneos que llegan sin pérdida y salen
 ///   como JPEG (ver ROADMAP §2.b).
 ///   o undefined/null para usar los defaults del perfil. Claves desconocidas se
@@ -121,17 +123,24 @@ struct JsReport {
     output_size: Option<u64>,
     ratio: Option<f32>,
     is_signed: bool,
+    /// Heurística conservadora: al menos una página parece escaneada.
+    has_scanned_pages: bool,
     images_total: usize,
     images_recompressed: usize,
     images_downsampled: usize,
     images_kept: usize,
     images_skipped: usize,
+    image_skip_summary: Vec<JsImageSkipSummary>,
     /// Firmas/sellos preservados byte-idénticos (no recomprimidos).
     images_preserved: usize,
     /// Firmas/sellos aplanados al contenido de página (política flatten).
     flattened_signatures: usize,
+    /// Imágenes redundantes adicionales eliminadas por el modo opt-in.
+    deduplicated_images: usize,
+    /// Bytes codificados adicionales de streams redundantes eliminados.
+    deduplicated_image_bytes: u64,
     /// Política aplicada por la operación. Ausente en `analyze`, que no modifica.
-    signature_policy: Option<&'static str>,
+    signature_policy: Option<String>,
     /// `true` cuando Flatten integró la apariencia al contenido de página.
     visual_appearance_preserved: bool,
     /// Sólo es `true` para un PDF firmado si Strict dejó el archivo intacto.
@@ -143,12 +152,11 @@ struct JsReport {
     warnings: Vec<String>,
 }
 
-fn signature_policy_name(policy: SignaturePolicy) -> &'static str {
-    match policy {
-        SignaturePolicy::Strict => "strict",
-        SignaturePolicy::Ignore => "ignore",
-        SignaturePolicy::Flatten => "flatten",
-    }
+#[derive(Debug, serde::Serialize)]
+struct JsImageSkipSummary {
+    reason: &'static str,
+    images: usize,
+    original_bytes: u64,
 }
 
 fn to_js_report(r: &Report, policy: Option<SignaturePolicy>) -> JsReport {
@@ -164,6 +172,10 @@ fn to_js_report(r: &Report, policy: Option<SignaturePolicy>) -> JsReport {
             ImageAction::Kept => kept += 1,
             ImageAction::Skipped => skipped += 1,
             ImageAction::Preserved => preserved += 1,
+            // `ImageAction` es `#[non_exhaustive]`. Una acción nueva no entra
+            // en ningún contador; `images_total` sigue siendo el número
+            // autoritativo y los contadores no tienen por qué sumarlo.
+            _ => {}
         }
     }
     let strict_blocked = r.is_signed && policy == Some(SignaturePolicy::Strict);
@@ -174,14 +186,26 @@ fn to_js_report(r: &Report, policy: Option<SignaturePolicy>) -> JsReport {
         output_size: r.output_size,
         ratio: r.ratio,
         is_signed: r.is_signed,
+        has_scanned_pages: r.has_scanned_pages,
         images_total: r.images.len(),
         images_recompressed: recompressed,
         images_downsampled: downsampled,
         images_kept: kept,
         images_skipped: skipped,
+        image_skip_summary: r
+            .image_skip_summary
+            .iter()
+            .map(|summary| JsImageSkipSummary {
+                reason: summary.reason.as_str(),
+                images: summary.images,
+                original_bytes: summary.original_bytes,
+            })
+            .collect(),
         images_preserved: preserved,
         flattened_signatures: r.flattened_signatures,
-        signature_policy: policy.map(signature_policy_name),
+        deduplicated_images: r.deduplicated_images,
+        deduplicated_image_bytes: r.deduplicated_image_bytes,
+        signature_policy: policy.map(|p| p.to_string()),
         visual_appearance_preserved: !r.is_signed || flattened || strict_blocked,
         cryptographic_validity_preserved: !r.is_signed || strict_blocked,
         operation_blocked: strict_blocked,
@@ -201,39 +225,40 @@ struct JsOptions {
     /// y `printer` no aplican — ver ROADMAP §2.b.
     transcode_dpi: Option<u32>,
     transcode_quality: Option<u8>,
+    max_memory_bytes: Option<u64>,
+    max_parallel_images: Option<usize>,
+    max_image_bytes: Option<u64>,
+    dedupe_images: Option<bool>,
     /// "strict" | "ignore" | "flatten" (default: flatten)
     signatures: Option<String>,
-}
-
-fn parse_profile(profile: &str) -> Result<Profile, String> {
-    match profile {
-        "screen" => Ok(Profile::Screen),
-        "ebook" => Ok(Profile::Ebook),
-        "printer" => Ok(Profile::Printer),
-        other => Err(format!(
-            "perfil desconocido: {other} (usa screen|ebook|printer)"
-        )),
-    }
 }
 
 /// Mapea perfil + `JsOptions` a las `CompressOptions` de core. Los overrides
 /// numéricos ganan al perfil (misma semántica que `CompressOptions::resolved`).
 fn to_compress_options(profile: &str, o: &JsOptions) -> Result<CompressOptions, String> {
-    let profile = parse_profile(profile)?;
+    // Nombres y mensajes de error los define core (`FromStr`); acá sólo se
+    // decide qué significa la ausencia de la clave.
+    let profile: Profile = profile.parse()?;
     let signatures = match o.signatures.as_deref() {
-        Some("strict") => SignaturePolicy::Strict,
-        Some("ignore") => SignaturePolicy::Ignore,
-        Some("flatten") | None => SignaturePolicy::Flatten,
-        Some(other) => return Err(format!("signatures desconocido: {other}")),
+        Some(name) => name.parse()?,
+        None => SignaturePolicy::Flatten,
     };
+    let defaults = CompressOptions::default();
     Ok(CompressOptions {
         profile,
         image_dpi: o.image_dpi,
         jpeg_quality: o.jpeg_quality,
         transcode_dpi: o.transcode_dpi,
         transcode_quality: o.transcode_quality,
+        // WASM es serial, pero preparar todos los outputs antes de confirmarlos
+        // retenía el documento completo recomprimido. Un default de 256 MiB
+        // forma lotes sin sacrificar paralelismo (no hay threads en el Beta).
+        max_memory_bytes: Some(o.max_memory_bytes.unwrap_or(256 * 1024 * 1024)),
+        max_parallel_images: o.max_parallel_images,
+        max_image_bytes: o.max_image_bytes,
+        dedupe_images: o.dedupe_images.unwrap_or(defaults.dedupe_images),
         signatures,
-        ..Default::default()
+        ..defaults
     })
 }
 
@@ -244,6 +269,10 @@ fn phase_name(p: Phase) -> &'static str {
         Phase::OptimizingImages { .. } => "optimizing",
         Phase::Rewriting => "rewriting",
         Phase::Done => "done",
+        // `Phase` es `#[non_exhaustive]`: una fase nueva llega como "unknown"
+        // en vez de romper el build del binding. El worker ignora lo que no
+        // reconoce, así que degrada a no mostrar progreso de esa etapa.
+        _ => "unknown",
     }
 }
 
@@ -282,15 +311,25 @@ fn phase_to_js(p: Phase) -> JsValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gema_core::{ImageAction, ImageStat, Phase, Report, SignaturePolicy, Warning};
+    use gema_core::{
+        ImageAction, ImageSkipReason, ImageSkipSummary, ImageStat, Phase, Report, SignaturePolicy,
+        Warning,
+    };
 
+    /// El binding no reimplementa el mapeo (vive en core), pero sí tiene que
+    /// seguir aceptando los mismos nombres y rechazando lo desconocido en vez
+    /// de caer a un default silencioso.
     #[test]
     fn maps_profile_strings() {
-        assert_eq!(parse_profile("screen"), Ok(Profile::Screen));
-        assert_eq!(parse_profile("ebook"), Ok(Profile::Ebook));
-        assert_eq!(parse_profile("printer"), Ok(Profile::Printer));
-        // valor desconocido es un error explícito (no cae en un default)
-        assert!(parse_profile("otro").is_err());
+        for (name, expected) in [
+            ("screen", Profile::Screen),
+            ("ebook", Profile::Ebook),
+            ("printer", Profile::Printer),
+        ] {
+            let opts = to_compress_options(name, &JsOptions::default()).unwrap();
+            assert_eq!(opts.profile, expected);
+        }
+        assert!(to_compress_options("otro", &JsOptions::default()).is_err());
     }
 
     #[test]
@@ -299,6 +338,7 @@ mod tests {
         assert_eq!(opts.profile, Profile::Ebook);
         assert_eq!(opts.image_dpi, None);
         assert_eq!(opts.jpeg_quality, None);
+        assert_eq!(opts.max_memory_bytes, Some(256 * 1024 * 1024));
         assert_eq!(opts.signatures, SignaturePolicy::Flatten);
         // el resto de flags conserva los defaults de core
         assert!(opts.downsample && opts.recompress_streams && opts.remove_metadata);
@@ -318,6 +358,29 @@ mod tests {
         let opts = to_compress_options("ebook", &o).unwrap();
         assert_eq!(opts.transcode_dpi, Some(110));
         assert_eq!(opts.transcode_quality, Some(30));
+    }
+
+    #[test]
+    fn options_mapper_carries_memory_limits() {
+        let o = JsOptions {
+            max_memory_bytes: Some(256 * 1024 * 1024),
+            max_parallel_images: Some(2),
+            max_image_bytes: Some(128 * 1024 * 1024),
+            ..Default::default()
+        };
+        let opts = to_compress_options("ebook", &o).unwrap();
+        assert_eq!(opts.max_memory_bytes, Some(256 * 1024 * 1024));
+        assert_eq!(opts.max_parallel_images, Some(2));
+        assert_eq!(opts.max_image_bytes, Some(128 * 1024 * 1024));
+    }
+
+    #[test]
+    fn options_mapper_carries_image_deduplication() {
+        let o = JsOptions {
+            dedupe_images: Some(true),
+            ..Default::default()
+        };
+        assert!(to_compress_options("ebook", &o).unwrap().dedupe_images);
     }
 
     #[test]
@@ -354,7 +417,8 @@ mod tests {
             ..Default::default()
         };
         let err = to_compress_options("ebook", &bad).unwrap_err();
-        assert!(err.contains("signatures desconocido"), "err={err}");
+        assert!(err.contains("aggressive"), "err={err}");
+        assert!(err.contains("strict|ignore|flatten"), "err={err}");
     }
 
     #[test]
@@ -364,6 +428,7 @@ mod tests {
             original_bytes: 10,
             output_bytes: 5,
             action,
+            skip_reason: None,
         };
         let r = Report {
             pages: 3,
@@ -383,6 +448,13 @@ mod tests {
                 Warning::ImageSkipped(9),
                 Warning::Other("x".into()),
             ],
+            deduplicated_images: 2,
+            deduplicated_image_bytes: 512,
+            image_skip_summary: vec![ImageSkipSummary {
+                reason: ImageSkipReason::Jpx,
+                images: 1,
+                original_bytes: 10,
+            }],
             ..Default::default()
         };
         let js = to_js_report(&r, Some(SignaturePolicy::Flatten));
@@ -391,13 +463,18 @@ mod tests {
         assert_eq!(js.output_size, Some(400));
         assert_eq!(js.ratio, Some(0.4));
         assert!(js.is_signed);
+        assert!(!js.has_scanned_pages);
         assert_eq!(js.images_total, 5);
         assert_eq!(js.images_recompressed, 2);
         assert_eq!(js.images_downsampled, 1);
         assert_eq!(js.images_kept, 1);
         assert_eq!(js.images_skipped, 1);
         assert_eq!(js.flattened_signatures, 0);
-        assert_eq!(js.signature_policy, Some("flatten"));
+        assert_eq!(js.deduplicated_images, 2);
+        assert_eq!(js.deduplicated_image_bytes, 512);
+        assert_eq!(js.image_skip_summary.len(), 1);
+        assert_eq!(js.image_skip_summary[0].reason, "jpx");
+        assert_eq!(js.signature_policy.as_deref(), Some("flatten"));
         assert!(js.visual_appearance_preserved);
         assert!(!js.cryptographic_validity_preserved);
         assert!(!js.operation_blocked);
@@ -417,7 +494,7 @@ mod tests {
             ..Default::default()
         };
         let js = to_js_report(&r, Some(SignaturePolicy::Strict));
-        assert_eq!(js.signature_policy, Some("strict"));
+        assert_eq!(js.signature_policy.as_deref(), Some("strict"));
         assert!(js.visual_appearance_preserved);
         assert!(js.cryptographic_validity_preserved);
         assert!(js.operation_blocked);
