@@ -6,3 +6,4 @@ pkg
 # artefactos de desarrollo internos — nunca publicar (specs/planes/handoff)
 docs/superpowers/
 HANDOFF.md
+docs/HANDOFF-*.md

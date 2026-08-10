@@ -34,6 +34,22 @@ Las tres acciones más importantes son:
 3. Convertir la restricción de licencias sin AGPL en una verificación automática
    de CI.
 
+## Estado de implementación
+
+Las recomendaciones de contrato, empaquetado, licencias, reproducibilidad,
+pruebas de frontera, API pública, limpieza del paquete y base de fuzzing fueron
+implementadas el 2026-08-01. Los apartados siguientes se conservan como registro
+del diagnóstico original y de sus criterios de aceptación.
+
+La decisión de producto confirmada es usar `SignaturePolicy::Flatten` por
+defecto: la apariencia de firmas y sellos debe sobrevivir en el PDF comprimido,
+aunque la validez criptográfica se pierda. `Strict` queda disponible de forma
+explícita para devolver documentos firmados sin modificarlos.
+
+Permanecen como trabajo de diseño futuro los presupuestos configurables de
+memoria/trabajo y el control de concurrencia basado en memoria estimada; no se
+introdujeron límites arbitrarios sin medirlos contra el corpus real.
+
 ## Estructura actual
 
 ```text
@@ -79,53 +95,43 @@ gemapdf/
 
 ### Situación
 
-El README afirma que `SignaturePolicy::Strict` es el valor predeterminado:
-
-- `README.md`, alrededor de las líneas 72–76.
-- `README.md`, alrededor de las líneas 129–132.
-
-Sin embargo, `CompressOptions::default()` usa actualmente:
+Durante el análisis se detectó que la documentación y el comportamiento no
+expresaban un contrato único. La política de producto fue aclarada posteriormente:
 
 ```rust
 signatures: SignaturePolicy::Flatten,
 ```
 
-La capa WASM también interpreta la ausencia de una opción como `Flatten`.
-La CLI hereda el valor predeterminado del core mediante
-`..Default::default()`.
+Core, CLI y WASM usan ahora `Flatten` cuando no se proporciona una política.
 
 ### Riesgo
 
-La diferencia no es puramente documental. `Strict` conserva intacto un PDF
-firmado, mientras que `Flatten` modifica el documento y sacrifica la validez de
-la firma criptográfica. Un consumidor que confíe en el README podría obtener un
-resultado diferente al esperado.
+`Flatten` modifica el documento y sacrifica la validez criptográfica, pero
+conserva la apariencia visible como contenido de página. Esto debe permanecer
+explícito para que ningún consumidor confunda preservación visual con validez
+criptográfica.
 
-### Decisión necesaria
+### Decisión adoptada
 
-Debe elegirse un único contrato predeterminado:
+- **Default:** `Flatten`, porque el requisito principal es que firmas y sellos
+  continúen visibles en el resultado comprimido.
+- **Opt-in:** `Strict`, cuando conservar la validez criptográfica sea prioritario;
+  en ese caso no se modifica ni comprime el PDF firmado.
+- **Avanzado:** `Ignore`, que permite modificar el documento sin aplanar los
+  widgets y no garantiza su apariencia en todos los visores.
 
-- **Opción conservadora:** hacer que el core, CLI y WASM usen `Strict` por
-  defecto. Es la alternativa menos sorprendente para una librería genérica.
-- **Opción orientada al producto:** mantener `Flatten`, pero documentar de forma
-  explícita que la compresión predeterminada invalida firmas criptográficas y
-  preserva solamente su representación visual.
-- **Contrato por capa:** core en `Strict` y una aplicación concreta en `Flatten`.
-  Si se elige esto, la divergencia debe ser deliberada, visible y probada.
+### Implementación realizada
 
-### Implementación sugerida
-
-1. Definir la semántica deseada en `CompressOptions::default()`.
-2. Alinear `to_compress_options` en `gema-wasm`.
-3. Exponer una opción CLI explícita, por ejemplo:
+1. `CompressOptions::default()` usa `Flatten`.
+2. La ausencia de `signatures` en WASM se traduce a `Flatten`.
+3. La CLI expone:
 
    ```text
    --signatures strict|ignore|flatten
    ```
 
-4. Actualizar README, ejemplos y documentos de medición que describan el
-   comportamiento actual.
-5. Añadir pruebas de regresión para el default de cada capa.
+4. README y changelog distinguen preservación visual de validez criptográfica.
+5. Las pruebas fijan el default y mantienen cobertura explícita de `Strict`.
 
 ### Criterios de aceptación
 
@@ -547,22 +553,23 @@ A esto se sumarían el build WASM y su smoke test de JavaScript.
 
 ## Checklist de seguimiento
 
-- [ ] Decidir y documentar el default de firmas.
-- [ ] Exponer la política de firmas en CLI.
-- [ ] Añadir tests del default en core, CLI y WASM.
-- [ ] Añadir versión a dependencias internas por `path`.
-- [ ] Conseguir que `cargo package` pase para todos los crates publicables.
-- [ ] Crear `deny.toml` e integrar `cargo-deny`.
-- [ ] Crear `rust-toolchain.toml`.
-- [ ] Declarar `rust-version`.
-- [ ] Fijar la versión de `wasm-pack`.
-- [ ] Actualizar README, TODO y roadmap.
-- [ ] Incorporar `CHANGELOG.md` si se publicarán versiones.
-- [ ] Revisar y reducir la API pública de `gema-core`.
-- [ ] Añadir tests de integración del CLI.
-- [ ] Ejecutar la API WASM en un runtime real dentro de CI.
-- [ ] Separar ejemplos públicos de herramientas experimentales.
-- [ ] Diseñar targets de fuzzing.
+- [x] Decidir y documentar el default de firmas.
+- [x] Exponer la política de firmas en CLI.
+- [x] Añadir tests del default en core, CLI y WASM.
+- [x] Añadir versión a dependencias internas por `path`.
+- [x] Conseguir que `cargo package` pase para `gema-core` y validar los
+  manifests de sus consumidores antes de publicar el core en el registry.
+- [x] Crear `deny.toml` e integrar `cargo-deny`.
+- [x] Crear `rust-toolchain.toml`.
+- [x] Declarar `rust-version`.
+- [x] Fijar la versión de `wasm-pack`.
+- [x] Actualizar README, TODO y roadmap.
+- [x] Incorporar `CHANGELOG.md`.
+- [x] Revisar y reducir la API pública de `gema-core`.
+- [x] Añadir tests de integración del CLI.
+- [x] Ejecutar la API WASM en un runtime real dentro de CI.
+- [x] Excluir herramientas experimentales del paquete publicado.
+- [x] Diseñar targets iniciales de fuzzing.
 - [ ] Definir presupuestos de memoria y concurrencia.
 
 ## Comandos de verificación final

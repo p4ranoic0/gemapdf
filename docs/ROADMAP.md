@@ -90,7 +90,7 @@ por imagen de búsqueda, dominado por ~7 pasos de encode+SSIM2).
    cómputo pesado corre en paralelo sobre `&Document`. **Byte-idéntico** al
    serial (verificado en corpus). Medido en 12 cores: **doc-F 4.5×**
    (5.21→1.17s), **doc-A 6.7×** (61.82→9.26s) — más imágenes, más ganancia.
-   rayon es dep `cfg(not wasm32)`: el Beta wasm (single-thread) se queda serial
+   rayon es dep directa `cfg(not wasm32)`: el Beta wasm (single-thread) se queda serial
    y no lo arrastra (wasm 1.30 MB, sin cambios). El Beta NO se beneficia — su
    CPU por-imagen sigue igual; para el Beta el lever pendiente es §1.3 (proxy).
    Corpus verificado byte-idéntico: 11 docs reales (15–88 MB). Revisión
@@ -113,6 +113,51 @@ El único bloqueador de la promoción universal es el costo serial en docs muy
 image-heavy tipo doc-A (~14× vs fija en el Beta wasm single-thread) — eso solo
 lo mueve un cambio de códec (§2 bake-off). MRC (§3) queda MATADO por medición
 (no aplica a la resolución del corpus, ver §3).
+
+### Presupuesto de memoria (2026-08-07)
+
+El pipeline prepara imágenes en lotes ordenados usando una estimación
+conservadora del working set. `max_memory_bytes`, `max_parallel_images` y
+`max_image_bytes` están disponibles en core, CLI y WASM. El límite total sólo
+cambia scheduling; se verificó output byte-idéntico 11/11 contra el pipeline
+sin límite. El límite por imagen preserva el XObject y emite warning.
+
+Calibración real sobre `doc-C`: 512 MiB redujo RSS máximo de
+~1.98 GB a ~804 MB, con costo de wall-clock 1.37→4.20 s. Por ese tradeoff,
+core/CLI quedan opt-in. WASM usa 256 MiB por default: allí el loop ya es serial,
+así que los lotes reducen retención sin quitar paralelismo.
+
+### Deduplicación conservadora de imágenes (2026-08-07)
+
+`dedupe_images` ya es una opción real en core, CLI y WASM. Colapsa XObjects de
+imagen con bytes codificados idénticos y diccionarios de render equivalentes,
+permitiendo diferencias sólo en bookkeeping (`/Name`, `/Metadata`,
+`/PieceInfo`, `/LastModified`, `/Length`). Excluye firmas/sellos preservados,
+bases con `/SMask` y objetos usados como máscara. El reporte expone objetos y
+bytes de stream eliminados; continúa desactivada por default hasta medir el
+beneficio marginal sobre el corpus (sin contar duplicados exactos que el
+cleanup genérico ya elimina por default).
+
+### Detección conservadora de páginas escaneadas (2026-08-07)
+
+`Report::has_scanned_pages` dejó de ser un `false` fijo. La heurística exige un
+raster de al menos 400×400 px que cubra ≥80% de la CropBox/MediaBox y no más de
+32 bytes de texto pintado. El sesgo es hacia evitar falsos positivos: OCR
+invisible e imágenes dentro de Form XObjects quedan fuera por ahora. Core, CLI
+y WASM lo exponen explícitamente como estimación. En compresión comparte la
+misma pasada de content streams usada para calcular DPI efectivo.
+
+Medición sobre el corpus actual: 10/11 documentos dieron `true`; el único
+`false` fue `archivo muy grande de comprimir`, el caso predominantemente
+vectorial. Esto caracteriza la heurística, no sustituye una etiqueta humana
+por página.
+
+**Actualización 2026-08-10:** la salvedad de "imágenes dentro de Form XObjects
+quedan fuera" ya no aplica. El recorrido de content streams entra en los forms
+(`/Matrix` compuesto con el CTM del `Do`, `/Resources` heredados si el form no
+los declara, guard de ciclo + tope de profundidad 8 + presupuesto de 200k
+operadores por página). Sirve a los dos consumidores del recorrido: DPI efectivo
+y evidencia de escaneo. El OCR invisible sigue fuera.
 
 **Lección de medición (NO repetir):** jamás medir calidad con SSIM2 sobre
 renders de página — el resampleo desplaza la rejilla sub-píxel y páginas
@@ -319,21 +364,48 @@ ecosistema antes de invertir; va DETRÁS de MRC en prioridad.
 ## 5. Subsetting de fuentes
 
 Medido 2026-07-06: payoff ~1.5 MB en docs merge extremos (OS2736), factible con
-el crate `subsetter`, pero riesgo VISUAL (glifo perdido → blanco). **Bloqueado
-por:** arnés render-compare que aún no existe. Opt-in "máxima" cuando exista.
+el crate `subsetter`, pero riesgo VISUAL (glifo perdido → blanco). El arnés
+render-compare ya existe (`scripts/compare-visuals.py`, 2026-08-07); antes de
+retomar fuentes falta fijar un baseline completo y umbrales de aceptación para
+texto pequeño. Mantener opt-in "máxima" hasta entonces.
 
 ## 6. Coberturas menores (horas, no semanas)
 
-- `/SMask /None` (Name): hoy preserva la base innecesariamente — soportarlo.
+- `/SMask /None` (Name): **hecho**; se trata como ausencia de máscara.
 - ExtGState luminosity softmasks (`/SMask <</G form>>`): fuera del alcance del
   lever C; las imágenes dentro del grupo /G hoy se recomprimen lossy.
-- Test de dims oversized cubre solo width (falta height/cero).
-- Warning "mejor esfuerzo a q=90" hardcodea el valor de Q_MAX (acople latente).
-- Warning `matte_or_unknown` conflata /Matte y máscara no-inspeccionable.
+- Dimensiones adversariales: **hecho** para width/height negativos, cero y
+  altura sobre el máximo.
+- Warning perceptual: **hecho**; usa `Q_MAX` en vez de hardcodear 90.
+- `/Matte` vs máscara no-inspeccionable: **hecho**; motivos separados.
+- `/Contents` como arreglo de streams: **cubierto** por regresión de CTM/DPI.
+
+### Telemetría de oportunidades (2026-08-09)
+
+`ImageStat::skip_reason` y `Report::image_skip_summary` exponen causas estables,
+conteos y bytes. CLI, WASM y `usage_report` las publican sin analizar textos de
+warnings. Medición sobre 11 PDFs, con output default byte-idéntico 11/11:
+
+- `unsupported_bit_depth`: 10 imágenes / 89,360 bytes;
+- `decode_failed`: 1 / 10,948 bytes;
+- `soft_mask_matte`: 3 / 14,118 bytes;
+- `unsupported_color_space`: 3 / 4,659 bytes;
+- `ccitt`: 5 / 4,223 bytes;
+- `indexed_sub_byte`: 1 / 1,664 bytes.
+
+Conclusión: Indexed sub-byte y CCITT no justifican desarrollo para este corpus.
+El mayor grupo pendiente completo suma menos de 0.1 MB y tampoco es una palanca
+de compresión relevante.
 
 ## 7. Publicación del repo (contexto para todo lo anterior)
 
 Plan declarado: publicar la librería en un repo aparte. Checklist:
+- Superficie pública endurecida (2026-08-10): `Display`/`FromStr` en `Profile` y
+  `SignaturePolicy` (los bindings ya no duplican el mapeo de nombres),
+  `#[non_exhaustive]` en los enums que el pipeline hace crecer
+  (`ImageSkipReason`, `Warning`, `GemaError`, `Phase`, `ImageAction`) y
+  `#![warn(missing_docs)]` con toda la API documentada. Esto se hace ANTES de
+  publicar: después, cada uno de esos cambios sería incompatible.
 - Licencias del árbol: todas permisivas (MIT/Apache/BSD) — verificado; el modo
   perceptual añade ssimulacra2 (BSD-2) solo bajo feature.
 - Al crear el remote: **empujar también las ramas ancla** (`v2.0-levers`,

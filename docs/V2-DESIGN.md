@@ -61,7 +61,8 @@ Segmentación por capas (estilo DjVu / "alta compresión" de Adobe/iLovePDF):
 Multiplicadores para documentos administrativos repetitivos (los "OS …" del corpus):
 - **Diccionario de símbolos JBIG2 a nivel documento** (no por página): glifo/logo/sello se guardan
   una vez para todo el PDF; N páginas los referencian.
-- **Dedup de imágenes idénticas** (implementar el `dedupe_images` hoy no-op): membrete repetido → 1 objeto.
+- **Dedup de imágenes idénticas** (`dedupe_images`, implementado como opt-in):
+  membrete repetido → 1 objeto cuando los bytes y la semántica de render son equivalentes.
 
 **Portabilidad/licencia:** pesado (segmentación + rasterización + JBIG2) → **solo-nativo**
 (desktop/servidor). La web se queda en Niveles 1–2. Verificar licencia del encoder JBIG2 elegido

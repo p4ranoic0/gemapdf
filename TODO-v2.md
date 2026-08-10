@@ -55,21 +55,59 @@ do not delete them, they document what shipped and when.
    forwards it to an optional JS function.
    _Files: `crates/gema-core/src/progress.rs`, `crates/gema-core/src/pipeline.rs`, `crates/gema-wasm/src/lib.rs`._
 
+7. **~~JND-based perceptual quality selection.~~ DONE (experimental).**
+   The optional native-only `perceptual` feature implements per-image quality
+   search with SSIMULACRA2 and an encoder bake-off. The CLI exposes it through
+   `--quality-target`; it remains intentionally outside the WASM dependency
+   graph because of CPU and bundle-cost constraints.
+   _Files: `crates/gema-core/src/image_opt/perceptual.rs`, `crates/gema-core/src/image_opt/process.rs`, `crates/gema-cli/src/main.rs`._
+
+8. **~~Rayon-based parallelism for image processing.~~ DONE.**
+   Native builds prepare images in parallel and commit mutations serially in a
+   deterministic order. GemaPDF's direct Rayon dependency and parallel code
+   are native-only; WASM keeps the image loop serial (some upstream crates may
+   still carry Rayon transitively).
+   _Files: `crates/gema-core/src/pipeline.rs`, `crates/gema-core/src/image_opt/process.rs`._
+
+9. **~~Memory-aware image scheduling.~~ DONE (configurable).**
+   Image preparation runs in ordered batches sized from a conservative working-
+   set estimate. Core/CLI expose opt-in total, concurrency and per-image limits;
+   WASM uses a 256 MiB scheduling budget by default. The per-image limit skips
+   oversized rasters conservatively and reports the decision.
+   _Files: `crates/gema-core/src/options.rs`, `crates/gema-core/src/pipeline.rs`, `crates/gema-core/src/image_opt/process.rs`._
+
+10. **~~Automated visual validation.~~ DONE (initial gate).**
+    `compare-visuals.py` compares the current output against either the original
+    PDF or a baseline revision. Auto mode selects uniform, raster-heavy and
+    signature-widget pages and emits pixel metrics, PSNR, heatmaps and review
+    sheets outside the repository.
+    _Files: `scripts/compare-visuals.py`, `scripts/tests/test_compare_visuals.py`._
+
+11. **~~Implement `dedupe_images`.~~ DONE (conservative, opt-in).**
+    Byte-identical image XObjects now collapse when every rendering key is
+    equivalent. Non-render bookkeeping may differ; preserved signature/seal
+    images and transparency masks are excluded. Core, CLI and WASM expose the
+    opt-in flag and report marginal objects/bytes beyond the exact generic
+    stream deduplication that already runs by default.
+    _Files: `crates/gema-core/src/rewrite.rs`, `crates/gema-core/src/pipeline.rs`._
+
+12. **~~Compute `has_scanned_pages`.~~ DONE (conservative heuristic).**
+    A page is classified only when a raster of at least 400×400 pixels covers
+    80% of its inherited CropBox/MediaBox and the page paints at most 32 bytes
+    of text. DPI and scan evidence share one content-stream pass in compression.
+    The result is exposed by core, CLI and WASM as an estimate.
+    _Files: `crates/gema-core/src/geometry.rs`, `crates/gema-core/src/analyze.rs`._
+
+13. **~~Compatibility and skip telemetry sprint.~~ DONE.**
+    Reports now expose stable per-image skip reasons and document-level counts
+    plus input bytes. `/SMask /None`, split `/Contents`, negative/zero/oversized
+    dimensions, `/Matte` vs uninspectable masks and perceptual Q_MAX warnings
+    have dedicated behavior/tests. Corpus output remained byte-identical 11/11.
+    _Files: `crates/gema-core/src/report.rs`, `crates/gema-core/src/image_opt/process.rs`, `crates/gema-core/src/geometry.rs`._
+
 ## Remaining
 
-7. **`dedupe_images` is a no-op.**
-   The option exists (default now `false`, see Milestone MB hygiene pass — it
-   was dishonest to default `true` for an unimplemented feature) but does
-   nothing. v2.x should implement content-hash dedup of identical image
-   XObjects (the repeated-letterhead/stamp case in administrative-document
-   corpora).
-   _Files: `crates/gema-core/src/pipeline.rs`, `crates/gema-core/src/options.rs`._
-
-8. **`has_scanned_pages` never computed.**
-   The `Report` field is always `false`; it will be set by the v2 OCR module.
-   _Files: `crates/gema-core/src/analyze.rs`, `crates/gema-core/src/report.rs`._
-
-9. **CCITT / JBIG2 / MRC native-only image pipeline (v2.1 "high compression" mode).**
+14. **CCITT / JBIG2 / MRC native-only image pipeline (v2.1 "high compression" mode).**
    The big lever for administrative scans (10-20x): layered segmentation
    (mask/foreground/background, DjVu/MRC-style), JBIG2 bilevel mask with a
    document-level symbol dictionary (repeated glyphs/logos/stamps stored once),
@@ -79,49 +117,33 @@ do not delete them, they document what shipped and when.
    _New module(s) under `crates/gema-core/src/image_opt/`, gated behind a
    `native` feature per the reserved features list in `gema-core/Cargo.toml`._
 
-10. **JND-based perceptual quality (just-noticeable-difference) instead of a flat JPEG quality knob.**
-    Pick quality per-image (or per-region) based on a perceptual model instead
-    of one fixed `jpeg_quality` for the whole document.
-    _File: `crates/gema-core/src/image_opt/jpeg.rs` (or a new perceptual module)._
-
-11. **Rayon-based parallelism for image processing.**
-    `process_image` is currently sequential per XObject; a multi-image PDF
-    could recompress images in parallel on native builds. WASM has no threads
-    by default, so this should be native-only (behind a feature), same
-    constraint as item 9.
-    _File: `crates/gema-core/src/pipeline.rs`._
-
-12. **Recurse into Form XObjects for DPI — real gap, measured as LOW priority.**
-    `effective_dpi_map` only walks the page content streams and their direct
-    image XObjects. Images drawn *inside* a Form XObject (`/Subtype /Form` with
-    its own content + `/Resources`) are never reached, so their effective DPI is
-    unknown and they are not downsampled (conservative fallback). The fix is to
-    recurse, composing the form's `/Matrix` with the `cm` from the outer `Do`.
-    **Measured 2026-07-27:** this gap does *not* explain any observed symptom in
-    the current corpus. `doc-B2` has 6 Form XObjects against 97
-    images, all painted straight from the page content (`q 515.231 0 0 792 … cm
-    /Im15 Do Q` ⇒ 150.4 dpi, derived fine), and 67 of 97 XObjects — carrying
-    49.11 of the 49.12 MB of image weight — do get downsampled. Do NOT reach for
-    this expecting a compression win; only do it for correctness on documents
-    that actually nest images in forms. See ROADMAP §2.b "Falsos leads".
+15. **~~Recurse into Form XObjects for DPI.~~ DONE (2026-08-10).**
+    The content-stream walk now enters `/Subtype /Form` XObjects: a `Do` on a
+    form composes the form's `/Matrix` with the caller's CTM and continues with
+    the form's own `/Resources`, falling back to the painting context's when the
+    form declares none (PDF 32000 §8.10.1). Cycles are cut by an active-form
+    set, nesting is capped at 8 levels and each page has a 200k-operator budget.
+    Both consumers of the walk benefit: images nested in forms now get an
+    effective DPI (so they can be downsampled) and `has_scanned_pages` sees
+    rasters painted through a form.
+    **Behavior note:** documents that nest images in forms now produce different
+    output than before. The 2026-07-27 measurement still stands — this is a
+    correctness fix, not a compression lever: in the current corpus
+    `doc-B2` paints all 97 images straight from page content, so
+    no corpus-wide size change is expected from it.
     _File: `crates/gema-core/src/geometry.rs`._
 
-13. **Inline images (`BI`/`ID`/`EI`) are ignored.**
+16. **Inline images (`BI`/`ID`/`EI`) are ignored.**
     Images embedded inline in a content stream are not XObjects and never enter
     the image pipeline, so they are neither DPI-analyzed nor recompressed.
     Uncommon in real corpora and acceptable to skip for now.
     _Files: `crates/gema-core/src/geometry.rs`, `crates/gema-core/src/pipeline.rs`._
 
-14. **Sub-byte Indexed colorspace (1/2/4 bpc).**
+17. **Sub-byte Indexed colorspace (1/2/4 bpc) — measured LOW priority.**
     `interpret_color_space` only supports 8-bpc Indexed. Sub-byte packed
     indices (common in small palette images, e.g. 1-bpc bilevel or 4-bpc
     16-color) would need bit-unpacking before palette lookup. Currently SKIP
     (safe, no corruption, just no recompression gain for these images).
+    The 2026-08-09 telemetry run found only 1 such image / 1,664 encoded bytes
+    in the 11-document corpus, so implementation is deferred.
     _File: `crates/gema-core/src/image_opt/colorspace.rs`._
-
-15. **Regression test for `/Contents` as an array of streams.**
-    A page's `/Contents` may be an array of stream references (a single logical
-    content stream split across objects). `get_and_decode_page_content` handles
-    this, but there is no test pinning that DPI accumulation works across a split
-    content array. Add one.
-    _File: `crates/gema-core/src/geometry.rs` (tests)._
