@@ -117,20 +117,24 @@ do not delete them, they document what shipped and when.
    _New module(s) under `crates/gema-core/src/image_opt/`, gated behind a
    `native` feature per the reserved features list in `gema-core/Cargo.toml`._
 
-15. **~~Recurse into Form XObjects for DPI.~~ DONE (2026-08-10).**
-    The content-stream walk now enters `/Subtype /Form` XObjects: a `Do` on a
-    form composes the form's `/Matrix` with the caller's CTM and continues with
-    the form's own `/Resources`, falling back to the painting context's when the
-    form declares none (PDF 32000 §8.10.1). Cycles are cut by an active-form
-    set, nesting is capped at 8 levels and each page has a 200k-operator budget.
-    Both consumers of the walk benefit: images nested in forms now get an
-    effective DPI (so they can be downsampled) and `has_scanned_pages` sees
-    rasters painted through a form.
-    **Behavior note:** documents that nest images in forms now produce different
-    output than before. The 2026-07-27 measurement still stands — this is a
-    correctness fix, not a compression lever: in the current corpus
-    `doc-B2` paints all 97 images straight from page content, so
-    no corpus-wide size change is expected from it.
+15. **Recurse into Form XObjects for DPI — IMPLEMENTED, MEASURED, REVERTED.**
+    `effective_dpi_map` only walks the page content streams and their direct
+    image XObjects. Images drawn *inside* a Form XObject (`/Subtype /Form` with
+    its own content + `/Resources`) are never reached, so their effective DPI is
+    unknown and they are not downsampled (conservative fallback).
+    **Measured 2026-08-10 — the definitive number.** The recursion was built for
+    real (form `/Matrix` composed with the caller's CTM, `/Resources` inherited
+    per PDF 32000 §8.10.1, cycle guard, depth cap 8, 200k-operator budget per
+    page) and run against the full corpus with `scripts/compare-revisions.sh`:
+    **0 bytes of difference, 11/11 outputs byte-identical**, 0 validation
+    failures, over 537 MB of input. It clears none of the acceptance thresholds
+    in §3 of the incremental-evolution spec, so per §7 the productive code was
+    reverted and only the conclusion and a characterization test were kept
+    (`geometry::tests::image_only_reachable_inside_a_form_is_not_measured`).
+    Do NOT rebuild it speculatively. It becomes worth doing only if Slice D
+    telemetry finds a corpus where images live inside forms, or if a real
+    correctness bug (not a latent gap) is reported.
+    Run: `gemapdf-internal-docs/benchmarks/20260810T142628Z-2e11e619/`.
     _File: `crates/gema-core/src/geometry.rs`._
 
 16. **Inline images (`BI`/`ID`/`EI`) are ignored.**

@@ -7,12 +7,6 @@ All notable changes to GemaPDF are documented in this file. The project follows
 
 ### Changed
 
-- El DPI efectivo y la detección de páginas escaneadas ahora recorren también
-  los Form XObjects, componiendo su `/Matrix` con el CTM del `Do` exterior y
-  heredando `/Resources` cuando el form no los declara. Las imágenes anidadas
-  en forms ya no quedan sin DPI conocido, así que **pueden reducirse**: en
-  documentos que anidan imágenes la salida cambia respecto de versiones
-  previas.
 - `Profile` y `SignaturePolicy` implementan `Display` y `FromStr`. La CLI y el
   binding WASM delegan en core en vez de repetir el mapeo de nombres; `custom`
   pasa a ser un perfil seleccionable por nombre en ambos.
@@ -23,6 +17,15 @@ All notable changes to GemaPDF are documented in this file. The project follows
   exhaustivas a propósito.
 - Toda la superficie pública de `gema-core` está documentada y el crate
   activa `#![warn(missing_docs)]`, que el clippy de CI convierte en error.
+
+### Medido y descartado
+
+- **Recursión en Form XObjects para DPI efectivo.** Se implementó completa y se
+  midió sobre el corpus real: **0 bytes de diferencia y 11/11 salidas
+  byte-idénticas** sobre 537 MB de entrada, sin fallos de validación. No alcanza
+  ningún umbral de aceptación, así que el código productivo se revirtió y quedó
+  la conclusión más un test que caracteriza el gap. El comportamiento por
+  defecto no cambia.
 
 - `SignaturePolicy::Flatten` is the documented product default in core, CLI and
   WASM, preserving visible signatures and seals in the compressed document.

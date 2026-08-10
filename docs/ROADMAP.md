@@ -152,12 +152,17 @@ Medición sobre el corpus actual: 10/11 documentos dieron `true`; el único
 vectorial. Esto caracteriza la heurística, no sustituye una etiqueta humana
 por página.
 
-**Actualización 2026-08-10:** la salvedad de "imágenes dentro de Form XObjects
-quedan fuera" ya no aplica. El recorrido de content streams entra en los forms
-(`/Matrix` compuesto con el CTM del `Do`, `/Resources` heredados si el form no
-los declara, guard de ciclo + tope de profundidad 8 + presupuesto de 200k
-operadores por página). Sirve a los dos consumidores del recorrido: DPI efectivo
-y evidencia de escaneo. El OCR invisible sigue fuera.
+**Actualización 2026-08-10 — la recursión en Form XObjects, cerrada por
+medición.** Se implementó de verdad (`/Matrix` compuesto con el CTM del `Do`,
+`/Resources` heredados si el form no los declara, guard de ciclo, tope de
+profundidad 8 y presupuesto de 200k operadores por página) y se midió sobre el
+corpus completo: **0 bytes de diferencia, 11/11 salidas byte-idénticas** sobre
+537 MB de entrada, 0 fallos de validación. No alcanza ninguno de los umbrales
+del §3 del spec de evolución incremental, así que el código productivo se
+revirtió (§7) y quedó sólo la conclusión más un test de caracterización que fija
+el gap. La salvedad original sigue vigente: imágenes dentro de Form XObjects y
+OCR invisible quedan fuera de la evidencia de escaneo.
+Corrida: `gemapdf-internal-docs/benchmarks/20260810T142628Z-2e11e619/`.
 
 **Lección de medición (NO repetir):** jamás medir calidad con SSIM2 sobre
 renders de página — el resampleo desplaza la rejilla sub-píxel y páginas
