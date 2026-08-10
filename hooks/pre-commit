@@ -1,26 +1,22 @@
 #!/usr/bin/env bash
-# Gate local automático: ESPEJA los jobs del CI (.github/workflows/ci.yml) para
-# que un commit verde acá no falle allá. Para saltarlo: git commit --no-verify
-#
-# Usa `+stable` explícito: el CI corre dtolnay/rust-toolchain@stable, y una
-# toolchain local vieja aplica lints/formato distintos (pasó: clippy 1.96 local
-# no tenía `for_kv_map` y rustfmt 1.96 formateaba distinto → CI rojo con local
-# verde). Si `stable` no está instalado, cae al default y avisa.
+# Gate local automático. Usa la versión fijada en `rust-toolchain.toml`; los
+# controles que necesitan Node/wasm-pack y el empaquetado completo quedan en CI.
+# Para saltarlo deliberadamente: git commit --no-verify
 set -euo pipefail
 source "$HOME/.cargo/env" 2>/dev/null || true
 
-TC="+stable"
-if ! cargo +stable --version >/dev/null 2>&1; then
-  TC=""
-  echo "⚠️  toolchain 'stable' no instalada (rustup toolchain install stable);"
-  echo "   usando el default — puede divergir del CI."
+echo "→ pre-commit: fmt + tests + clippy + dependencias…"
+cargo fmt --all --check
+cargo test -p gema-core --no-default-features --quiet 2>&1 | tail -1
+cargo test -p gema-core --features perceptual --quiet 2>&1 | tail -1
+cargo test -p gema-cli --quiet 2>&1 | tail -1
+cargo test -p gema-wasm --quiet 2>&1 | tail -1
+cargo clippy -p gema-core --all-targets --no-default-features -- -D warnings 2>&1 | tail -1
+cargo clippy -p gema-cli -p gema-wasm --all-targets -- -D warnings 2>&1 | tail -1
+cargo clippy -p gema-core --all-targets --features perceptual -- -D warnings 2>&1 | tail -1
+if command -v cargo-deny >/dev/null 2>&1; then
+  cargo deny check bans licenses sources
+else
+  echo "⚠️  cargo-deny no está instalado; CI ejecutará el control de licencias."
 fi
-
-echo "→ pre-commit: fmt + tests + clippy (espejo del CI)…"
-cargo $TC fmt --all --check
-cargo $TC test -p gema-core --quiet 2>&1 | tail -1
-# clippy como el CI: workspace completo (cubre examples y los otros crates) y la
-# variante con el feature perceptual.
-cargo $TC clippy --workspace --all-targets -- -D warnings 2>&1 | tail -1
-cargo $TC clippy -p gema-core --all-targets --features perceptual -- -D warnings 2>&1 | tail -1
 echo "✓ gates OK"
