@@ -17,6 +17,11 @@ All notable changes to GemaPDF are documented in this file. The project follows
   exhaustivas a propósito.
 - Toda la superficie pública de `gema-core` está documentada y el crate
   activa `#![warn(missing_docs)]`, que el clippy de CI convierte en error.
+- Los tests de `pipeline.rs` se reorganizaron por dominio bajo `pipeline/tests/`
+  (`compression`, `masks`, `memory`, `progress`, `signatures` y los `fixtures`
+  compartidos). Refactor mecánico: el código productivo quedó byte-idéntico —
+  el diff de `pipeline.rs` es una sola línea — y la salida sobre el corpus sigue
+  byte-idéntica 11/11.
 
 ### Medido y descartado
 
