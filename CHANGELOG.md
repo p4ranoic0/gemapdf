@@ -5,6 +5,13 @@ All notable changes to GemaPDF are documented in this file. The project follows
 
 ## Unreleased
 
+### Removed
+
+- `GemaError::SignedDocument`, que la librería nunca construía. La política
+  `Strict` no falla: devuelve el documento intacto, y eso se observa con
+  `Report::is_signed` más una salida idéntica a la entrada. Publicar un error
+  imposible obligaría a los consumidores a manejarlo para siempre.
+
 ### Changed
 
 - `Profile` y `SignaturePolicy` implementan `Display` y `FromStr`. La CLI y el
