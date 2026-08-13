@@ -21,12 +21,23 @@
 //! ## Estabilidad de la API
 //!
 //! La superficie soportada es lo que se re-exporta acá; los módulos de
-//! implementación son privados. [`CompressOptions`] es exhaustiva porque la
-//! arma el llamador. Los enums que el pipeline hace crecer —
-//! [`ImageSkipReason`], [`Warning`], [`GemaError`], [`Phase`],
-//! [`ImageAction`] — son `#[non_exhaustive]`: hay que dejarles un brazo `_` al
-//! hacer `match`. [`Profile`] y [`SignaturePolicy`] sí son cerrados a
-//! propósito: son conceptos de producto y conviene que el compilador avise.
+//! implementación son privados.
+//!
+//! **Enums `#[non_exhaustive]`** — el pipeline los hace crecer, así que agregar
+//! una variante es aditivo y los consumidores deben dejar un brazo `_`:
+//! [`ImageSkipReason`], [`Warning`], [`GemaError`], [`Phase`], [`ImageAction`].
+//!
+//! **Enums exhaustivos a propósito** — son conceptos de producto con un set
+//! cerrado, y conviene que el compilador avise al consumidor si cambian:
+//! [`Profile`] y [`SignaturePolicy`].
+//!
+//! **Structs exhaustivas** — [`CompressOptions`] la arma el llamador con
+//! literal de struct, y los tipos de reporte se construyen como fixtures en los
+//! tests de los consumidores. `#[non_exhaustive]` en una struct prohíbe el
+//! literal desde otro crate *incluso con* `..Default::default()`, así que no se
+//! usa. Agregar un campo a [`CompressOptions`], [`Report`], [`ImageStat`],
+//! [`ImageSkipSummary`] o [`ProfileParams`] es un cambio incompatible y se
+//! versiona como tal.
 #![warn(missing_docs)]
 
 mod error;

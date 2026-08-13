@@ -222,6 +222,24 @@ bytes, no report/options/progress — kept for a simpler v1-style call) and
 `analyze(input)` (inspects a PDF without compressing it, e.g. to show page
 count and signature status before the user commits to compressing).
 
+### API stability
+
+The supported surface is what `gema-core` re-exports; implementation modules are
+private.
+
+- Enums the pipeline grows are `#[non_exhaustive]` — `ImageSkipReason`,
+  `Warning`, `GemaError`, `Phase`, `ImageAction`. Match them with a `_` arm.
+- `Profile` and `SignaturePolicy` are deliberately exhaustive: closed product
+  concepts, and you want the compiler to tell you when they change.
+- Structs are exhaustive because callers build `CompressOptions` and tests build
+  report fixtures with struct literals. `#[non_exhaustive]` on a struct forbids
+  the literal from another crate *even with* `..Default::default()`, so it is not
+  used. Adding a field is a breaking change.
+
+There is no error variant for "this document is signed": `SignaturePolicy::Strict`
+does not fail, it returns the document untouched. Observe it through
+`Report::is_signed` plus an output identical to the input.
+
 ## Regression benchmarking
 
 To compare the current working tree with a Git revision over the private
