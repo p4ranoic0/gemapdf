@@ -17,8 +17,9 @@ pub enum Profile {
 }
 
 impl std::fmt::Display for Profile {
-    /// Nombre canónico del perfil; es la entrada que acepta
-    /// [`Profile::from_str`], de modo que `parse` y `to_string` son inversos.
+    /// Nombre canónico del perfil; es la entrada que acepta su impl de
+    /// [`FromStr`](std::str::FromStr), de modo que `parse` y `to_string` son
+    /// inversos.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Profile::Screen => "screen",
@@ -64,8 +65,8 @@ pub enum SignaturePolicy {
 }
 
 impl std::fmt::Display for SignaturePolicy {
-    /// Nombre canónico de la política; inverso de
-    /// [`SignaturePolicy::from_str`].
+    /// Nombre canónico de la política; inverso de su impl de
+    /// [`FromStr`](std::str::FromStr).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             SignaturePolicy::Strict => "strict",
