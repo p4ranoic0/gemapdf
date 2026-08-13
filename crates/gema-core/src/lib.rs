@@ -38,6 +38,9 @@
 //! usa. Agregar un campo a [`CompressOptions`], [`Report`], [`ImageStat`],
 //! [`ImageSkipSummary`] o [`ProfileParams`] es un cambio incompatible y se
 //! versiona como tal.
+//!
+//! **El JSON tiene su propio versionado**, independiente del de Rust: ver
+//! [`ReportJson`] y [`REPORT_SCHEMA_VERSION`].
 #![warn(missing_docs)]
 
 mod error;
@@ -45,6 +48,12 @@ pub use error::GemaError;
 
 mod report;
 pub use report::{ImageAction, ImageSkipReason, ImageSkipSummary, ImageStat, Report, Warning};
+
+mod report_json;
+pub use report_json::{
+    ByActionJson, DocumentJson, ImageStatJson, ImagesJson, InputJson, OutputJson, ReportJson,
+    SkipSummaryJson, WarningJson, REPORT_SCHEMA_VERSION,
+};
 
 mod options;
 pub use options::{CompressOptions, Profile, ProfileParams, SignaturePolicy};
