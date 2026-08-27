@@ -238,30 +238,43 @@ opt-in because `object_id` refers to the *input* document.
     "bytes": 7917380,
     "pages": 113
   },
+  "output": {
+    "bytes": 7872133,
+    "ratio": 0.9942851
+  },
   "document": {
     "is_signed": false,
     "has_scanned_pages": true,
+    "signature_policy": "flatten",
     "visual_appearance_preserved": true,
     "cryptographic_validity_preserved": true,
     "operation_blocked": false,
     "document_modified": false
   },
   "images": {
-    "total": 0,
+    "total": 162,
     "by_action": {
-      "recompressed": 0,
+      "recompressed": 3,
       "downsampled": 0,
-      "kept": 0,
+      "kept": 74,
       "skipped": 0,
-      "preserved": 0
+      "preserved": 85
     },
     "deduplicated": 0,
     "deduplicated_bytes": 0,
     "skipped_by_reason": []
   },
-  "warnings": []
+  "warnings": [
+    {
+      "kind": "other",
+      "message": "85 firma(s)/sello(s) preservados sin recomprimir"
+    }
+  ]
 }
 ```
+
+`analyze --json` emits the same shape, but without the `output` key or per-image
+statistics, because it does not compress anything.
 
 `report_schema_version` only increases when the JSON stops being backward
 compatible — a key renamed, removed, or retyped. **Adding** a key or an enum
