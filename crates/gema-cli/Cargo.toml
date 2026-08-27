@@ -15,8 +15,9 @@ name = "gema"
 path = "src/main.rs"
 
 [dependencies]
-gema-core = { workspace = true, features = ["perceptual"] }
+gema-core = { workspace = true, features = ["perceptual", "serde"] }
 clap = { version = "4", features = ["derive"] }
+serde_json = "1"
 
 [dev-dependencies]
 lopdf.workspace = true

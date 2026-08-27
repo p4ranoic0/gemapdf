@@ -545,6 +545,7 @@ dependencies = [
  "clap",
  "gema-core",
  "lopdf",
+ "serde_json",
 ]
 
 [[package]]

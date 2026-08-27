@@ -51,9 +51,20 @@ enum Cmd {
         /// `flatten` preserva la apariencia visual pero invalida la firma.
         #[arg(long, default_value = "flatten", value_parser = ["strict", "ignore", "flatten"])]
         signatures: String,
+        /// Emite el reporte como JSON en stdout en vez de texto legible.
+        #[arg(long)]
+        json: bool,
+        /// Con `--json`, incluye una entrada por imagen. Implica `--json`.
+        #[arg(long)]
+        json_images: bool,
     },
     /// Analiza un PDF y muestra el reporte.
-    Analyze { input: String },
+    Analyze {
+        input: String,
+        /// Emite el reporte como JSON en stdout en vez de texto legible.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -83,6 +94,8 @@ fn run(cli: Cli) -> Result<(), String> {
             max_image_mib,
             dedupe_images,
             signatures,
+            json,
+            json_images,
         } => {
             let bytes = fs::read(&input).map_err(|e| e.to_string())?;
             // El mapeo nombre → enum vive en core (`FromStr`), así que la CLI y
@@ -112,6 +125,19 @@ fn run(cli: Cli) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
             fs::write(&output, &res.output).map_err(|e| e.to_string())?;
             let r = res.report;
+            if json || json_images {
+                // stdout es JSON puro: cualquier aviso va a stderr.
+                let view = if json_images {
+                    gema_core::ReportJson::from_report_with_images(&r, Some(signatures))
+                } else {
+                    gema_core::ReportJson::from_report(&r, Some(signatures))
+                };
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&view).map_err(|e| e.to_string())?
+                );
+                return Ok(());
+            }
             // ratio = output/input → "% del original" (más bajo = más comprimido).
             println!(
                 "{} → {}  ({:.1}% del original, {} imágenes)",
@@ -150,9 +176,18 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             Ok(())
         }
-        Cmd::Analyze { input } => {
+        Cmd::Analyze { input, json } => {
             let bytes = fs::read(&input).map_err(|e| e.to_string())?;
             let r = analyze(&bytes).map_err(|e| e.to_string())?;
+            if json {
+                // `analyze` no aplica política de firmas: el campo va ausente.
+                let view = gema_core::ReportJson::from_report(&r, None);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&view).map_err(|e| e.to_string())?
+                );
+                return Ok(());
+            }
             println!(
                 "páginas: {}\nfirmado: {}\npáginas escaneadas (estimación): {}\ntamaño: {} bytes",
                 r.pages, r.is_signed, r.has_scanned_pages, r.original_size
