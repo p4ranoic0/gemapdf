@@ -25,6 +25,7 @@ jobs:
       - run: cargo clippy -p gema-cli -p gema-wasm --all-targets -- -D warnings
       # variante con el modo perceptual (feature opcional, spec 2026-07-11)
       - run: cargo clippy -p gema-core --all-targets --features perceptual -- -D warnings
+      - run: cargo clippy -p gema-core --all-targets --features serde -- -D warnings
   test:
     runs-on: ubuntu-latest
     steps:
@@ -33,6 +34,8 @@ jobs:
       - run: cargo test -p gema-core --no-default-features
       # variante con el modo perceptual (feature opcional, spec 2026-07-11)
       - run: cargo test -p gema-core --features perceptual
+      # esquema JSON del reporte (feature opcional)
+      - run: cargo test -p gema-core --features serde
       - run: cargo test -p gema-cli
       - run: cargo test -p gema-wasm
   wasm:

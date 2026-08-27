@@ -24,6 +24,9 @@ categories = ["compression", "parser-implementations"]
 
 [features]
 default = []
+# Deriva `Serialize` en el esquema JSON del reporte. Apagado por default para
+# que el core sin features no arrastre serde.
+serde = ["dep:serde"]
 # reservados para v2 (no implementados en v1):
 # native = []  ; mozjpeg = []  ; webp = []  ; ghostscript = []  ; ocr = []
 # Modo de calidad perceptual (spec 2026-07-11): búsqueda de q por imagen
@@ -42,6 +45,7 @@ ssimulacra2 = { version = "0.5", optional = true }
 # §2: bake-off de encoder por imagen dentro del modo perceptual (BaselineBalanced,
 # Rust puro BSD-3). Opcional bajo `perceptual` → fuera del árbol wasm.
 mozjpeg-rs = { version = "0.9.2", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
 
 # §1.4: paralelización del bucle de imágenes (decode+búsqueda+encode) en nativo.
 # La dependencia directa es target-specific: el wasm/Beta mantiene nuestro
@@ -52,4 +56,5 @@ rayon = "1"
 [dev-dependencies]
 fax = "0.3.0"
 mozjpeg-rs = "0.9.2"
+serde_json = "1"
 ssimulacra2 = "0.5.1"

@@ -17,12 +17,14 @@ pub const REPORT_SCHEMA_VERSION: u32 = 1;
 
 /// Reporte en la forma que se serializa a JSON.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct ReportJson {
     /// Ver [`REPORT_SCHEMA_VERSION`].
     pub report_schema_version: u32,
     /// Datos del PDF de entrada.
     pub input: InputJson,
     /// Datos de la salida; `None` en `analyze`, que no produce ninguna.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub output: Option<OutputJson>,
     /// Propiedades del documento y efecto de la política de firmas.
     pub document: DocumentJson,
@@ -34,6 +36,7 @@ pub struct ReportJson {
 
 /// Datos del PDF de entrada.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct InputJson {
     /// Bytes del archivo de entrada.
     pub bytes: u64,
@@ -43,6 +46,7 @@ pub struct InputJson {
 
 /// Datos del PDF de salida.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct OutputJson {
     /// Bytes del archivo de salida.
     pub bytes: u64,
@@ -52,12 +56,14 @@ pub struct OutputJson {
 
 /// Propiedades del documento y efecto de la política de firmas aplicada.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct DocumentJson {
     /// El documento trae una firma criptográfica.
     pub is_signed: bool,
     /// Estimación conservadora de páginas escaneadas.
     pub has_scanned_pages: bool,
     /// Política aplicada; `None` en `analyze`, que no aplica ninguna.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub signature_policy: Option<String>,
     /// La apariencia visible de firmas y sellos se conserva.
     pub visual_appearance_preserved: bool,
@@ -71,6 +77,7 @@ pub struct DocumentJson {
 
 /// Agregados por imagen.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct ImagesJson {
     /// Imágenes procesadas.
     pub total: usize,
@@ -83,12 +90,14 @@ pub struct ImagesJson {
     /// Oportunidades no procesadas, agrupadas por motivo estable.
     pub skipped_by_reason: Vec<SkipSummaryJson>,
     /// Detalle por imagen; presente sólo si se pidió explícitamente.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub detail: Option<Vec<ImageStatJson>>,
 }
 
 /// Contadores por acción. Una acción nueva agrega una clave acá, en vez de un
 /// campo nuevo en la raíz del documento.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct ByActionJson {
     /// Recomprimidas a la misma resolución.
     pub recompressed: usize,
@@ -104,6 +113,7 @@ pub struct ByActionJson {
 
 /// Un grupo de imágenes omitidas por el mismo motivo.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct SkipSummaryJson {
     /// Identificador estable del motivo.
     pub reason: &'static str,
@@ -115,6 +125,7 @@ pub struct SkipSummaryJson {
 
 /// Detalle de una imagen. Sólo aparece si el llamador lo pide.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct ImageStatJson {
     /// Número de objeto en el PDF de **entrada**.
     pub object_id: u32,
@@ -125,15 +136,18 @@ pub struct ImageStatJson {
     /// Acción aplicada, en `snake_case`.
     pub action: &'static str,
     /// Motivo estable cuando `action == "skipped"`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub skip_reason: Option<&'static str>,
 }
 
 /// Aviso no fatal con discriminante estable.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct WarningJson {
     /// Discriminante estable: `signed_document`, `image_skipped` u `other`.
     pub kind: &'static str,
     /// Objeto afectado, cuando el aviso es sobre una imagen.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub object_id: Option<u32>,
     /// Texto legible. **No es superficie estable**: puede cambiar de redacción.
     pub message: String,
@@ -349,5 +363,42 @@ mod tests {
         assert!(j.output.is_none());
         assert!(j.document.signature_policy.is_none());
         assert_eq!(j.report_schema_version, REPORT_SCHEMA_VERSION);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serializes_with_the_documented_shape() {
+        let j = ReportJson::from_report(&sample_report(), Some(SignaturePolicy::Flatten));
+        let v: serde_json::Value = serde_json::to_value(&j).unwrap();
+
+        assert_eq!(v["report_schema_version"], 1);
+        assert_eq!(v["input"]["bytes"], 1000);
+        assert_eq!(v["output"]["bytes"], 400);
+        assert_eq!(v["document"]["signature_policy"], "flatten");
+        assert_eq!(v["images"]["by_action"]["recompressed"], 1);
+        assert_eq!(v["images"]["skipped_by_reason"][0]["reason"], "ccitt");
+        assert_eq!(v["warnings"][0]["kind"], "image_skipped");
+        // las claves ausentes NO se serializan como null
+        assert!(v["images"].get("detail").is_none());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serialization_is_deterministic() {
+        let j = ReportJson::from_report(&sample_report(), None);
+        let a = serde_json::to_string(&j).unwrap();
+        let b = serde_json::to_string(&j).unwrap();
+        assert_eq!(a, b, "el mismo reporte debe dar los mismos bytes");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn analyze_omits_output_instead_of_emitting_null() {
+        let mut r = sample_report();
+        r.output_size = None;
+        r.ratio = None;
+        let v = serde_json::to_value(ReportJson::from_report(&r, None)).unwrap();
+        assert!(v.get("output").is_none(), "`output` debe estar ausente");
+        assert!(v["document"].get("signature_policy").is_none());
     }
 }

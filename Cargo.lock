@@ -559,6 +559,8 @@ dependencies = [
  "lopdf",
  "mozjpeg-rs",
  "rayon",
+ "serde",
+ "serde_json",
  "ssimulacra2",
  "thiserror",
 ]
