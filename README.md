@@ -222,6 +222,52 @@ bytes, no report/options/progress — kept for a simpler v1-style call) and
 `analyze(input)` (inspects a PDF without compressing it, e.g. to show page
 count and signature status before the user commits to compressing).
 
+### JSON report
+
+`gema compress --json` and `gema analyze --json` print the report to stdout as
+JSON. The WASM binding currently emits its own report shape and will be aligned
+with this schema. Human output stays the default.
+
+Add `--json-images` to `compress` for a per-image `images.detail` array. It is
+opt-in because `object_id` refers to the *input* document.
+
+```json
+{
+  "report_schema_version": 1,
+  "input": {
+    "bytes": 7917380,
+    "pages": 113
+  },
+  "document": {
+    "is_signed": false,
+    "has_scanned_pages": true,
+    "visual_appearance_preserved": true,
+    "cryptographic_validity_preserved": true,
+    "operation_blocked": false,
+    "document_modified": false
+  },
+  "images": {
+    "total": 0,
+    "by_action": {
+      "recompressed": 0,
+      "downsampled": 0,
+      "kept": 0,
+      "skipped": 0,
+      "preserved": 0
+    },
+    "deduplicated": 0,
+    "deduplicated_bytes": 0,
+    "skipped_by_reason": []
+  },
+  "warnings": []
+}
+```
+
+`report_schema_version` only increases when the JSON stops being backward
+compatible — a key renamed, removed, or retyped. **Adding** a key or an enum
+variant does not bump it, so consumers must ignore unknown keys. `warnings[].kind`
+is the stable discriminant; `warnings[].message` is prose and may be reworded.
+
 ### API stability
 
 The supported surface is what `gema-core` re-exports; implementation modules are

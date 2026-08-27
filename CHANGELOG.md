@@ -5,6 +5,13 @@ All notable changes to GemaPDF are documented in this file. The project follows
 
 ## Unreleased
 
+### Added
+
+- Esquema JSON versionado del reporte (`report_schema_version`), disponible en
+  la CLI mediante `--json` y `--json-images`.
+- El binding WASM todavía emite su propio formato de reporte y se alineará con
+  este esquema.
+
 ### Removed
 
 - `GemaError::SignedDocument`, que la librería nunca construía. La política
