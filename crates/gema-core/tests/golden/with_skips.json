@@ -1,0 +1,55 @@
+{
+  "report_schema_version": 1,
+  "input": {
+    "bytes": 2048,
+    "pages": 3
+  },
+  "output": {
+    "bytes": 2000,
+    "ratio": 0.976
+  },
+  "document": {
+    "is_signed": false,
+    "has_scanned_pages": false,
+    "signature_policy": "flatten",
+    "visual_appearance_preserved": true,
+    "cryptographic_validity_preserved": true,
+    "operation_blocked": false,
+    "document_modified": false
+  },
+  "images": {
+    "total": 1,
+    "by_action": {
+      "recompressed": 0,
+      "downsampled": 0,
+      "kept": 0,
+      "skipped": 1,
+      "preserved": 0
+    },
+    "deduplicated": 0,
+    "deduplicated_bytes": 0,
+    "skipped_by_reason": [
+      {
+        "reason": "jpx",
+        "images": 1,
+        "input_bytes": 500
+      }
+    ],
+    "detail": [
+      {
+        "object_id": 11,
+        "input_bytes": 500,
+        "output_bytes": 500,
+        "action": "skipped",
+        "skip_reason": "jpx"
+      }
+    ]
+  },
+  "warnings": [
+    {
+      "kind": "image_skipped",
+      "object_id": 11,
+      "message": "imagen omitida (object 11)"
+    }
+  ]
+}

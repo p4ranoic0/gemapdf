@@ -1,0 +1,29 @@
+{
+  "report_schema_version": 1,
+  "input": {
+    "bytes": 2048,
+    "pages": 3
+  },
+  "document": {
+    "is_signed": false,
+    "has_scanned_pages": false,
+    "visual_appearance_preserved": true,
+    "cryptographic_validity_preserved": true,
+    "operation_blocked": false,
+    "document_modified": false
+  },
+  "images": {
+    "total": 0,
+    "by_action": {
+      "recompressed": 0,
+      "downsampled": 0,
+      "kept": 0,
+      "skipped": 0,
+      "preserved": 0
+    },
+    "deduplicated": 0,
+    "deduplicated_bytes": 0,
+    "skipped_by_reason": []
+  },
+  "warnings": []
+}

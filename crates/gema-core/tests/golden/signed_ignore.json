@@ -1,0 +1,39 @@
+{
+  "report_schema_version": 1,
+  "input": {
+    "bytes": 2048,
+    "pages": 3
+  },
+  "output": {
+    "bytes": 2048,
+    "ratio": 1.0
+  },
+  "document": {
+    "is_signed": true,
+    "has_scanned_pages": false,
+    "signature_policy": "ignore",
+    "visual_appearance_preserved": false,
+    "cryptographic_validity_preserved": false,
+    "operation_blocked": false,
+    "document_modified": true
+  },
+  "images": {
+    "total": 0,
+    "by_action": {
+      "recompressed": 0,
+      "downsampled": 0,
+      "kept": 0,
+      "skipped": 0,
+      "preserved": 0
+    },
+    "deduplicated": 0,
+    "deduplicated_bytes": 0,
+    "skipped_by_reason": []
+  },
+  "warnings": [
+    {
+      "kind": "signed_document",
+      "message": "documento firmado criptográficamente"
+    }
+  ]
+}
