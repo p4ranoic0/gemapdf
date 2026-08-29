@@ -12,6 +12,7 @@
     "is_signed": true,
     "has_scanned_pages": false,
     "signature_policy": "ignore",
+    "flattened_signatures": 0,
     "visual_appearance_preserved": false,
     "cryptographic_validity_preserved": false,
     "operation_blocked": false,

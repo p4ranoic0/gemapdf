@@ -246,6 +246,7 @@ opt-in because `object_id` refers to the *input* document.
     "is_signed": false,
     "has_scanned_pages": true,
     "signature_policy": "flatten",
+    "flattened_signatures": 0,
     "visual_appearance_preserved": true,
     "cryptographic_validity_preserved": true,
     "operation_blocked": false,

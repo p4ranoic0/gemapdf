@@ -65,6 +65,9 @@ pub struct DocumentJson {
     /// Política aplicada; `None` en `analyze`, que no aplica ninguna.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub signature_policy: Option<String>,
+    /// Firmas o sellos aplanados al contenido de página por la política
+    /// `Flatten`. Cero con cualquier otra política.
+    pub flattened_signatures: usize,
     /// La apariencia visible de firmas y sellos se conserva.
     pub visual_appearance_preserved: bool,
     /// La validez criptográfica se conserva; sólo si Strict no tocó nada.
@@ -210,6 +213,11 @@ impl ReportJson {
                 is_signed: report.is_signed,
                 has_scanned_pages: report.has_scanned_pages,
                 signature_policy: policy.map(|p| p.to_string()),
+                flattened_signatures: if flattened {
+                    report.flattened_signatures
+                } else {
+                    0
+                },
                 visual_appearance_preserved: !report.is_signed || flattened || strict_blocked,
                 cryptographic_validity_preserved: !report.is_signed || strict_blocked,
                 operation_blocked: strict_blocked,
@@ -343,12 +351,14 @@ mod tests {
     fn signature_flags_match_the_policy_applied() {
         let r = sample_report();
         let flatten = ReportJson::from_report(&r, Some(SignaturePolicy::Flatten));
+        assert_eq!(flatten.document.flattened_signatures, 1);
         assert!(flatten.document.visual_appearance_preserved);
         assert!(!flatten.document.cryptographic_validity_preserved);
         assert!(!flatten.document.operation_blocked);
         assert!(flatten.document.document_modified);
 
         let strict = ReportJson::from_report(&r, Some(SignaturePolicy::Strict));
+        assert_eq!(strict.document.flattened_signatures, 0);
         assert!(strict.document.operation_blocked);
         assert!(strict.document.cryptographic_validity_preserved);
         assert!(!strict.document.document_modified);
@@ -375,11 +385,16 @@ mod tests {
         assert_eq!(v["input"]["bytes"], 1000);
         assert_eq!(v["output"]["bytes"], 400);
         assert_eq!(v["document"]["signature_policy"], "flatten");
+        assert_eq!(v["document"]["flattened_signatures"], 1);
         assert_eq!(v["images"]["by_action"]["recompressed"], 1);
         assert_eq!(v["images"]["skipped_by_reason"][0]["reason"], "ccitt");
         assert_eq!(v["warnings"][0]["kind"], "image_skipped");
         // las claves ausentes NO se serializan como null
         assert!(v["images"].get("detail").is_none());
+
+        let strict = ReportJson::from_report(&sample_report(), Some(SignaturePolicy::Strict));
+        let strict_value = serde_json::to_value(strict).unwrap();
+        assert_eq!(strict_value["document"]["flattened_signatures"], 0);
     }
 
     #[cfg(feature = "serde")]

@@ -9,6 +9,8 @@ All notable changes to GemaPDF are documented in this file. The project follows
 
 - Esquema JSON versionado del reporte (`report_schema_version`), disponible en
   la CLI mediante `--json` y `--json-images`.
+- `document.flattened_signatures` en el esquema JSON: firmas o sellos aplanados
+  al contenido de página. Aditivo — `report_schema_version` sigue en 1.
 - El binding WASM todavía emite su propio formato de reporte y se alineará con
   este esquema.
 
