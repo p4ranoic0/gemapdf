@@ -21,7 +21,9 @@ export function compress(input: Uint8Array, profile: string): Uint8Array;
  *
  * - `profile`: "screen" | "ebook" | "printer".
  * - `options`: objeto `{ image_dpi?, jpeg_quality?, transcode_dpi?,
- *   transcode_quality?, signatures?: "strict"|"ignore"|"flatten" }`.
+ *   transcode_quality?, max_memory_bytes?, max_parallel_images?,
+ *   max_image_bytes?, dedupe_images?,
+ *   signatures?: "strict"|"ignore"|"flatten" }`.
  *   Las `transcode_*` sólo afectan a escaneos que llegan sin pérdida y salen
  *   como JPEG (ver ROADMAP §2.b).
  *   o undefined/null para usar los defaults del perfil. Claves desconocidas se

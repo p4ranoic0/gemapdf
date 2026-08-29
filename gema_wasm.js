@@ -45,7 +45,9 @@ export function compress(input, profile) {
  *
  * - `profile`: "screen" | "ebook" | "printer".
  * - `options`: objeto `{ image_dpi?, jpeg_quality?, transcode_dpi?,
- *   transcode_quality?, signatures?: "strict"|"ignore"|"flatten" }`.
+ *   transcode_quality?, max_memory_bytes?, max_parallel_images?,
+ *   max_image_bytes?, dedupe_images?,
+ *   signatures?: "strict"|"ignore"|"flatten" }`.
  *   Las `transcode_*` sólo afectan a escaneos que llegan sin pérdida y salen
  *   como JPEG (ver ROADMAP §2.b).
  *   o undefined/null para usar los defaults del perfil. Claves desconocidas se
@@ -92,6 +94,12 @@ function __wbg_get_imports() {
             getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
             getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
         },
+        __wbg___wbindgen_bigint_get_as_i64_d968e41184ae354f: function(arg0, arg1) {
+            const v = arg1;
+            const ret = typeof(v) === 'bigint' ? v : undefined;
+            getDataViewMemory0().setBigInt64(arg0 + 8 * 1, isLikeNone(ret) ? BigInt(0) : ret, true);
+            getDataViewMemory0().setInt32(arg0 + 4 * 0, !isLikeNone(ret), true);
+        },
         __wbg___wbindgen_boolean_get_fa956cfa2d1bd751: function(arg0) {
             const v = arg0;
             const ret = typeof(v) === 'boolean' ? v : undefined;
@@ -108,6 +116,10 @@ function __wbg_get_imports() {
             const ret = arg0 in arg1;
             return ret;
         },
+        __wbg___wbindgen_is_bigint_2f76dc55065b4273: function(arg0) {
+            const ret = typeof(arg0) === 'bigint';
+            return ret;
+        },
         __wbg___wbindgen_is_null_ea9085d691f535d3: function(arg0) {
             const ret = arg0 === null;
             return ret;
@@ -119,6 +131,10 @@ function __wbg_get_imports() {
         },
         __wbg___wbindgen_is_undefined_c05833b95a3cf397: function(arg0) {
             const ret = arg0 === undefined;
+            return ret;
+        },
+        __wbg___wbindgen_jsval_eq_e659fcf7b0e32763: function(arg0, arg1) {
+            const ret = arg0 === arg1;
             return ret;
         },
         __wbg___wbindgen_jsval_loose_eq_db4c3b15f63fc170: function(arg0, arg1) {
