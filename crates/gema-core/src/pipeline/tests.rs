@@ -6,6 +6,7 @@
 mod fixtures;
 
 mod compression;
+mod limits;
 mod masks;
 mod memory;
 mod progress;

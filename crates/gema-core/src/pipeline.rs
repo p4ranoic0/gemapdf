@@ -1,4 +1,4 @@
-use crate::error::GemaError;
+use crate::error::{GemaError, LimitKind};
 use crate::image_opt::process::{commit_prepared, prepare_image, ImageParams};
 use crate::options::{CompressOptions, SignaturePolicy};
 use crate::progress::Phase;
@@ -71,6 +71,28 @@ pub fn compress_with_progress(
     let mut doc = Document::load_mem(input).map_err(|e| GemaError::Parse(e.to_string()))?;
     if doc.is_encrypted() {
         return Err(GemaError::Encrypted);
+    }
+    if let Some(limit) = opts.max_pages {
+        // El reporte cuenta páginas con la misma expresión a propósito: ésta
+        // es la comprobación temprana, antes del recorrido caro de geometría.
+        let observed = doc.get_pages().len();
+        if observed > limit {
+            return Err(GemaError::LimitExceeded {
+                limit: LimitKind::Pages,
+                observed: observed as u64,
+                allowed: limit as u64,
+            });
+        }
+    }
+    if let Some(limit) = opts.max_objects {
+        let observed = doc.objects.len();
+        if observed > limit {
+            return Err(GemaError::LimitExceeded {
+                limit: LimitKind::Objects,
+                observed: observed as u64,
+                allowed: limit as u64,
+            });
+        }
     }
     // DPI y evidencia de escaneo comparten el mismo recorrido de content
     // streams, evitando duplicar el costo durante la compresión.
@@ -177,6 +199,16 @@ pub fn compress_with_progress(
             )
         })
         .collect();
+    if let Some(limit) = opts.max_total_work_bytes {
+        let observed = work_estimates.iter().sum();
+        if observed > limit {
+            return Err(GemaError::LimitExceeded {
+                limit: LimitKind::TotalWork,
+                observed,
+                allowed: limit,
+            });
+        }
+    }
     let batches = image_batch_ranges(
         &work_estimates,
         opts.max_memory_bytes,

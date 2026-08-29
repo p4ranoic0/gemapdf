@@ -153,6 +153,15 @@ pub struct CompressOptions {
     /// superan se preservan sin recomprimir y se reportan como omitidas.
     /// `None` conserva el límite interno histórico del decoder.
     pub max_image_bytes: Option<u64>,
+    /// Máximo de páginas permitido en el documento. Si se excede, se rechaza
+    /// el documento entero. `None` no impone este límite.
+    pub max_pages: Option<usize>,
+    /// Máximo de objetos permitido en el documento. Si se excede, se rechaza
+    /// el documento entero. `None` no impone este límite.
+    pub max_objects: Option<usize>,
+    /// Máximo trabajo total estimado, en bytes, para procesar las imágenes. Si
+    /// se excede, se rechaza el documento entero. `None` no impone este límite.
+    pub max_total_work_bytes: Option<u64>,
     /// Reduce la resolución de las imágenes cuyo DPI efectivo en página supera
     /// el objetivo del perfil.
     pub downsample: bool,
@@ -180,6 +189,9 @@ impl Default for CompressOptions {
             max_memory_bytes: None,
             max_parallel_images: None,
             max_image_bytes: None,
+            max_pages: None,
+            max_objects: None,
+            max_total_work_bytes: None,
             downsample: true,
             recompress_streams: true,
             remove_metadata: true,

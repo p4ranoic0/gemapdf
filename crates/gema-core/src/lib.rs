@@ -25,7 +25,8 @@
 //!
 //! **Enums `#[non_exhaustive]`** — el pipeline los hace crecer, así que agregar
 //! una variante es aditivo y los consumidores deben dejar un brazo `_`:
-//! [`ImageSkipReason`], [`Warning`], [`GemaError`], [`Phase`], [`ImageAction`].
+//! [`ImageSkipReason`], [`Warning`], [`GemaError`], [`LimitKind`], [`Phase`],
+//! [`ImageAction`].
 //!
 //! **Enums exhaustivos a propósito** — son conceptos de producto con un set
 //! cerrado, y conviene que el compilador avise al consumidor si cambian:
@@ -44,7 +45,7 @@
 #![warn(missing_docs)]
 
 mod error;
-pub use error::GemaError;
+pub use error::{GemaError, LimitKind};
 
 mod report;
 pub use report::{ImageAction, ImageSkipReason, ImageSkipSummary, ImageStat, Report, Warning};
