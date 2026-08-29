@@ -11,8 +11,6 @@ All notable changes to GemaPDF are documented in this file. The project follows
   la CLI mediante `--json` y `--json-images`.
 - `document.flattened_signatures` en el esquema JSON: firmas o sellos aplanados
   al contenido de página. Aditivo — `report_schema_version` sigue en 1.
-- El binding WASM todavía emite su propio formato de reporte y se alineará con
-  este esquema.
 
 ### Removed
 
@@ -23,6 +21,15 @@ All notable changes to GemaPDF are documented in this file. The project follows
 
 ### Changed
 
+- **Incompatible para consumidores del binding WASM:** el reporte pasa al
+  esquema versionado compartido con la CLI y desaparece `JsReport`. Los campos
+  planos se mueven así: `is_signed` → `document.is_signed`,
+  `images_preserved` → `images.by_action.preserved` y `flattened_signatures` →
+  `document.flattened_signatures`; los contadores por acción pasan a
+  `images.by_action.*`, y `warnings` deja de ser un array de strings para pasar
+  a objetos `{ kind, object_id?, message }`. `portfolio` necesita actualizar
+  `src/components/pdf-tools/compressJob.js` y `src/pages/pdf/Aplanar.jsx` antes
+  de tomar esta versión.
 - `Profile` y `SignaturePolicy` implementan `Display` y `FromStr`. La CLI y el
   binding WASM delegan en core en vez de repetir el mapeo de nombres; `custom`
   pasa a ser un perfil seleccionable por nombre en ambos.

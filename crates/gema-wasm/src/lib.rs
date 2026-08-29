@@ -1,6 +1,6 @@
 use gema_core::{
-    compress as core_compress, compress_with_progress, CompressOptions, ImageAction, Phase,
-    Profile, Report, SignaturePolicy,
+    compress as core_compress, compress_with_progress, CompressOptions, Phase, Profile, Report,
+    ReportJson, SignaturePolicy,
 };
 use serde_wasm_bindgen::Serializer;
 use wasm_bindgen::prelude::*;
@@ -113,105 +113,8 @@ pub fn compress_with_report(
     Ok(out.into())
 }
 
-/// Reporte plano serializable hacia JS. Espejo de `gema_core::Report` con las
-/// stats por-imagen agregadas en contadores por acción y las warnings rendidas
-/// como texto (su `Display`).
-#[derive(Debug, serde::Serialize)]
-struct JsReport {
-    pages: usize,
-    original_size: u64,
-    output_size: Option<u64>,
-    ratio: Option<f32>,
-    is_signed: bool,
-    /// Heurística conservadora: al menos una página parece escaneada.
-    has_scanned_pages: bool,
-    images_total: usize,
-    images_recompressed: usize,
-    images_downsampled: usize,
-    images_kept: usize,
-    images_skipped: usize,
-    image_skip_summary: Vec<JsImageSkipSummary>,
-    /// Firmas/sellos preservados byte-idénticos (no recomprimidos).
-    images_preserved: usize,
-    /// Firmas/sellos aplanados al contenido de página (política flatten).
-    flattened_signatures: usize,
-    /// Imágenes redundantes adicionales eliminadas por el modo opt-in.
-    deduplicated_images: usize,
-    /// Bytes codificados adicionales de streams redundantes eliminados.
-    deduplicated_image_bytes: u64,
-    /// Política aplicada por la operación. Ausente en `analyze`, que no modifica.
-    signature_policy: Option<String>,
-    /// `true` cuando Flatten integró la apariencia al contenido de página.
-    visual_appearance_preserved: bool,
-    /// Sólo es `true` para un PDF firmado si Strict dejó el archivo intacto.
-    cryptographic_validity_preserved: bool,
-    /// Indica que Strict impidió la transformación solicitada.
-    operation_blocked: bool,
-    /// Indica si una operación sobre un PDF firmado produjo contenido nuevo.
-    document_modified: bool,
-    warnings: Vec<String>,
-}
-
-#[derive(Debug, serde::Serialize)]
-struct JsImageSkipSummary {
-    reason: &'static str,
-    images: usize,
-    original_bytes: u64,
-}
-
-fn to_js_report(r: &Report, policy: Option<SignaturePolicy>) -> JsReport {
-    let mut recompressed = 0;
-    let mut downsampled = 0;
-    let mut kept = 0;
-    let mut skipped = 0;
-    let mut preserved = 0;
-    for s in &r.images {
-        match s.action {
-            ImageAction::Recompressed => recompressed += 1,
-            ImageAction::Downsampled => downsampled += 1,
-            ImageAction::Kept => kept += 1,
-            ImageAction::Skipped => skipped += 1,
-            ImageAction::Preserved => preserved += 1,
-            // `ImageAction` es `#[non_exhaustive]`. Una acción nueva no entra
-            // en ningún contador; `images_total` sigue siendo el número
-            // autoritativo y los contadores no tienen por qué sumarlo.
-            _ => {}
-        }
-    }
-    let strict_blocked = r.is_signed && policy == Some(SignaturePolicy::Strict);
-    let flattened = r.is_signed && policy == Some(SignaturePolicy::Flatten);
-    JsReport {
-        pages: r.pages,
-        original_size: r.original_size,
-        output_size: r.output_size,
-        ratio: r.ratio,
-        is_signed: r.is_signed,
-        has_scanned_pages: r.has_scanned_pages,
-        images_total: r.images.len(),
-        images_recompressed: recompressed,
-        images_downsampled: downsampled,
-        images_kept: kept,
-        images_skipped: skipped,
-        image_skip_summary: r
-            .image_skip_summary
-            .iter()
-            .map(|summary| JsImageSkipSummary {
-                reason: summary.reason.as_str(),
-                images: summary.images,
-                original_bytes: summary.original_bytes,
-            })
-            .collect(),
-        images_preserved: preserved,
-        flattened_signatures: r.flattened_signatures,
-        deduplicated_images: r.deduplicated_images,
-        deduplicated_image_bytes: r.deduplicated_image_bytes,
-        signature_policy: policy.map(|p| p.to_string()),
-        visual_appearance_preserved: !r.is_signed || flattened || strict_blocked,
-        cryptographic_validity_preserved: !r.is_signed || strict_blocked,
-        operation_blocked: strict_blocked,
-        document_modified: r.is_signed && policy.is_some() && !strict_blocked,
-        warnings: r.warnings.iter().map(|w| w.to_string()).collect(),
-    }
+fn to_js_report(r: &Report, policy: Option<SignaturePolicy>) -> ReportJson {
+    ReportJson::from_report(r, policy)
 }
 
 /// Opciones opcionales desde JS. Campos ausentes → defaults del perfil / de
@@ -458,31 +361,37 @@ mod tests {
             ..Default::default()
         };
         let js = to_js_report(&r, Some(SignaturePolicy::Flatten));
-        assert_eq!(js.pages, 3);
-        assert_eq!(js.original_size, 1000);
-        assert_eq!(js.output_size, Some(400));
-        assert_eq!(js.ratio, Some(0.4));
-        assert!(js.is_signed);
-        assert!(!js.has_scanned_pages);
-        assert_eq!(js.images_total, 5);
-        assert_eq!(js.images_recompressed, 2);
-        assert_eq!(js.images_downsampled, 1);
-        assert_eq!(js.images_kept, 1);
-        assert_eq!(js.images_skipped, 1);
-        assert_eq!(js.flattened_signatures, 0);
-        assert_eq!(js.deduplicated_images, 2);
-        assert_eq!(js.deduplicated_image_bytes, 512);
-        assert_eq!(js.image_skip_summary.len(), 1);
-        assert_eq!(js.image_skip_summary[0].reason, "jpx");
-        assert_eq!(js.signature_policy.as_deref(), Some("flatten"));
-        assert!(js.visual_appearance_preserved);
-        assert!(!js.cryptographic_validity_preserved);
-        assert!(!js.operation_blocked);
-        assert!(js.document_modified);
+        assert_eq!(js.input.pages, 3);
+        assert_eq!(js.input.bytes, 1000);
+        let output = js.output.as_ref().unwrap();
+        assert_eq!(output.bytes, 400);
+        assert_eq!(output.ratio, Some(0.4));
+        assert!(js.document.is_signed);
+        assert!(!js.document.has_scanned_pages);
+        assert_eq!(js.images.total, 5);
+        assert_eq!(js.images.by_action.recompressed, 2);
+        assert_eq!(js.images.by_action.downsampled, 1);
+        assert_eq!(js.images.by_action.kept, 1);
+        assert_eq!(js.images.by_action.skipped, 1);
+        assert_eq!(js.document.flattened_signatures, 0);
+        assert_eq!(js.images.deduplicated, 2);
+        assert_eq!(js.images.deduplicated_bytes, 512);
+        assert_eq!(js.images.skipped_by_reason.len(), 1);
+        assert_eq!(js.images.skipped_by_reason[0].reason, "jpx");
+        assert_eq!(js.document.signature_policy.as_deref(), Some("flatten"));
+        assert!(js.document.visual_appearance_preserved);
+        assert!(!js.document.cryptographic_validity_preserved);
+        assert!(!js.document.operation_blocked);
+        assert!(js.document.document_modified);
         assert_eq!(js.warnings.len(), 3);
-        assert!(js.warnings[0].contains("firmado"));
-        assert!(js.warnings[1].contains('9'));
-        assert_eq!(js.warnings[2], "x");
+        assert_eq!(js.warnings[0].kind, "signed_document");
+        assert_eq!(js.warnings[0].object_id, None);
+        assert!(js.warnings[0].message.contains("firmado"));
+        assert_eq!(js.warnings[1].kind, "image_skipped");
+        assert_eq!(js.warnings[1].object_id, Some(9));
+        assert!(js.warnings[1].message.contains('9'));
+        assert_eq!(js.warnings[2].kind, "other");
+        assert_eq!(js.warnings[2].message, "x");
     }
 
     #[test]
@@ -494,11 +403,11 @@ mod tests {
             ..Default::default()
         };
         let js = to_js_report(&r, Some(SignaturePolicy::Strict));
-        assert_eq!(js.signature_policy.as_deref(), Some("strict"));
-        assert!(js.visual_appearance_preserved);
-        assert!(js.cryptographic_validity_preserved);
-        assert!(js.operation_blocked);
-        assert!(!js.document_modified);
+        assert_eq!(js.document.signature_policy.as_deref(), Some("strict"));
+        assert!(js.document.visual_appearance_preserved);
+        assert!(js.document.cryptographic_validity_preserved);
+        assert!(js.document.operation_blocked);
+        assert!(!js.document.document_modified);
     }
 
     #[test]

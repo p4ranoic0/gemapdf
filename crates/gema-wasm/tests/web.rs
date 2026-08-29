@@ -32,9 +32,11 @@ fn minimal_pdf() -> Vec<u8> {
 #[wasm_bindgen_test]
 fn analyze_returns_a_plain_js_report() {
     let report = gema_wasm::analyze(&minimal_pdf()).unwrap();
-    let pages = js_sys::Reflect::get(&report, &"pages".into()).unwrap();
+    let input = js_sys::Reflect::get(&report, &"input".into()).unwrap();
+    let pages = js_sys::Reflect::get(&input, &"pages".into()).unwrap();
     assert_eq!(pages.as_f64(), Some(1.0));
-    let scanned = js_sys::Reflect::get(&report, &"has_scanned_pages".into()).unwrap();
+    let document = js_sys::Reflect::get(&report, &"document".into()).unwrap();
+    let scanned = js_sys::Reflect::get(&document, &"has_scanned_pages".into()).unwrap();
     assert_eq!(scanned.as_bool(), Some(false));
 }
 
@@ -78,6 +80,7 @@ fn compress_with_report_accepts_memory_limits() {
     let bytes = js_sys::Uint8Array::new(&output).to_vec();
     assert!(Document::load_mem(&bytes).is_ok());
     let report = js_sys::Reflect::get(&result, &"report".into()).unwrap();
-    let deduplicated = js_sys::Reflect::get(&report, &"deduplicated_images".into()).unwrap();
+    let images = js_sys::Reflect::get(&report, &"images".into()).unwrap();
+    let deduplicated = js_sys::Reflect::get(&images, &"deduplicated".into()).unwrap();
     assert_eq!(deduplicated.as_f64(), Some(0.0));
 }
