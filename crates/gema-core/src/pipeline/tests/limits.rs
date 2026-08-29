@@ -109,6 +109,66 @@ fn max_total_work_bytes_rejects_above_limit_with_exact_values() {
 }
 
 #[test]
+fn max_total_work_bytes_saturates_adversarial_image_estimates() {
+    use lopdf::{dictionary, Object, Stream};
+
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    let image = || {
+        Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Image",
+                "Width" => 4_294_967_295_i64, "Height" => 4_294_967_295_i64,
+                "BitsPerComponent" => 8, "ColorSpace" => "DeviceRGB",
+            },
+            vec![0],
+        )
+    };
+    let first_image_id = doc.add_object(image());
+    let second_image_id = doc.add_object(image());
+    let content_id = doc.add_object(Stream::new(dictionary! {}, Vec::new()));
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page", "Parent" => pages_id, "Contents" => content_id,
+        "Resources" => dictionary! {
+            "XObject" => dictionary! {
+                "Im0" => first_image_id,
+                "Im1" => second_image_id,
+            },
+        },
+        "MediaBox" => vec![0.into(), 0.into(), 1.into(), 1.into()],
+    });
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog_id);
+    let mut input = Vec::new();
+    doc.save_to(&mut input).unwrap();
+
+    let err = compress(
+        &input,
+        &CompressOptions {
+            max_total_work_bytes: Some(1),
+            ..Default::default()
+        },
+    )
+    .err()
+    .expect("las estimaciones saturadas deben exceder el límite");
+
+    assert!(matches!(
+        err,
+        GemaError::LimitExceeded {
+            limit: LimitKind::TotalWork,
+            observed: u64::MAX,
+            allowed: 1,
+        }
+    ));
+}
+
+#[test]
 fn unset_document_limits_match_default_output_byte_for_byte() {
     let input = pdf_with_jpeg();
     let default_output = compress(&input, &CompressOptions::default())

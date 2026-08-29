@@ -200,7 +200,9 @@ pub fn compress_with_progress(
         })
         .collect();
     if let Some(limit) = opts.max_total_work_bytes {
-        let observed = work_estimates.iter().sum();
+        let observed = work_estimates
+            .iter()
+            .fold(0u64, |total, estimate| total.saturating_add(*estimate));
         if observed > limit {
             return Err(GemaError::LimitExceeded {
                 limit: LimitKind::TotalWork,
