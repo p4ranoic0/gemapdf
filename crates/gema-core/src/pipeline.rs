@@ -1,7 +1,7 @@
 use crate::error::{GemaError, LimitKind};
 use crate::image_opt::process::{commit_prepared, prepare_image, ImageParams};
 use crate::options::{CompressOptions, SignaturePolicy};
-use crate::progress::Phase;
+use crate::progress::{CancelSignal, Phase};
 use crate::report::{ImageAction, ImageSkipSummary, Report, Warning};
 use lopdf::Document;
 
@@ -64,6 +64,25 @@ pub fn compress_with_progress(
     opts: &CompressOptions,
     on_phase: &mut dyn FnMut(Phase),
 ) -> Result<CompressResult, GemaError> {
+    struct NeverCancelled;
+
+    impl CancelSignal for NeverCancelled {
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+    }
+
+    compress_with_control(input, opts, on_phase, &NeverCancelled)
+}
+
+/// Igual que [`compress_with_progress`], con una señal cooperativa de
+/// cancelación consultada entre fases y entre lotes de imágenes.
+pub fn compress_with_control(
+    input: &[u8],
+    opts: &CompressOptions,
+    on_phase: &mut dyn FnMut(Phase),
+    cancel: &dyn CancelSignal,
+) -> Result<CompressResult, GemaError> {
     on_phase(Phase::Analyzing);
 
     // F4: parseamos el PDF una sola vez y derivamos el reporte base del mismo
@@ -93,6 +112,9 @@ pub fn compress_with_progress(
                 allowed: limit as u64,
             });
         }
+    }
+    if cancel.is_cancelled() {
+        return Err(GemaError::Cancelled);
     }
     // DPI y evidencia de escaneo comparten el mismo recorrido de content
     // streams, evitando duplicar el costo durante la compresión.
@@ -226,6 +248,9 @@ pub fn compress_with_progress(
     // serial y la dependencia directa sólo existe bajo `cfg(not(wasm32))`.
     let mut done = 0;
     for range in batches {
+        if cancel.is_cancelled() {
+            return Err(GemaError::Cancelled);
+        }
         // Sólo este lote conserva raster/encoded bytes en RAM. Al terminar se
         // confirma en orden y se libera antes de preparar el siguiente.
         #[cfg(not(target_arch = "wasm32"))]
@@ -270,6 +295,9 @@ pub fn compress_with_progress(
         }
     }
 
+    if cancel.is_cancelled() {
+        return Err(GemaError::Cancelled);
+    }
     on_phase(Phase::Rewriting);
 
     if opts.remove_metadata {

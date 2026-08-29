@@ -62,6 +62,9 @@ pub enum GemaError {
         /// Máximo permitido por las opciones.
         allowed: u64,
     },
+    /// El llamador canceló cooperativamente la compresión.
+    #[error("compresión cancelada")]
+    Cancelled,
 }
 
 #[cfg(test)]

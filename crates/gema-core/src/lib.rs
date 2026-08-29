@@ -1,7 +1,9 @@
 //! gema-core: compresión PDF portable (Rust puro → WASM + nativo).
 //!
-//! Dos entradas: [`analyze`] inspecciona un PDF sin tocarlo y [`compress`] (o
-//! [`compress_with_progress`]) produce el PDF comprimido más un [`Report`].
+//! [`analyze`] inspecciona un PDF sin tocarlo; [`compress`],
+//! [`compress_with_progress`] y [`compress_with_control`] producen el PDF
+//! comprimido más un [`Report`]. [`CancelSignal`] permite cancelar la variante
+//! con control de forma cooperativa.
 //!
 //! ```no_run
 //! use gema_core::{compress, CompressOptions, Profile};
@@ -72,10 +74,10 @@ pub(crate) mod signatures;
 mod rewrite;
 
 mod progress;
-pub use progress::Phase;
+pub use progress::{CancelSignal, Phase};
 
 mod pipeline;
-pub use pipeline::{compress, compress_with_progress, CompressResult};
+pub use pipeline::{compress, compress_with_control, compress_with_progress, CompressResult};
 
 #[cfg(test)]
 mod smoke {

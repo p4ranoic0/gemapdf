@@ -5,6 +5,7 @@
 
 mod fixtures;
 
+mod cancel;
 mod compression;
 mod limits;
 mod masks;

@@ -34,6 +34,15 @@ pub enum Phase {
     Done,
 }
 
+/// Señal cooperativa consultada entre fases y entre lotes de imágenes.
+///
+/// **Granularidad:** nunca se consulta en medio de la codificación de una
+/// imagen. Un lote en vuelo se termina antes de observar la cancelación.
+pub trait CancelSignal {
+    /// Indica si el llamador pidió cancelar la compresión.
+    fn is_cancelled(&self) -> bool;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
