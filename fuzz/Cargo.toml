@@ -24,3 +24,10 @@ path = "fuzz_targets/compress.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "compress_with_control"
+path = "fuzz_targets/compress_with_control.rs"
+test = false
+doc = false
+bench = false

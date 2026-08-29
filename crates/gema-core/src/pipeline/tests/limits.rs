@@ -205,3 +205,113 @@ fn limit_kind_and_limit_error_have_stable_display_text() {
         "límite excedido (trabajo total): 11 > 10"
     );
 }
+
+#[test]
+fn thousands_of_pages_are_rejected_by_limit_and_safe_without_it() {
+    use lopdf::{dictionary, Object, Stream};
+
+    const PAGE_COUNT: usize = 4_096;
+
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    let content_id = doc.add_object(Stream::new(dictionary! {}, Vec::new()));
+    let mut kids = Vec::with_capacity(PAGE_COUNT);
+    for _ in 0..PAGE_COUNT {
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages_id, "Contents" => content_id,
+            "Resources" => dictionary! {},
+            "MediaBox" => vec![0.into(), 0.into(), 1.into(), 1.into()],
+        });
+        kids.push(page_id.into());
+    }
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages", "Kids" => kids, "Count" => PAGE_COUNT as i64,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog_id);
+    let mut input = Vec::new();
+    doc.save_to(&mut input).unwrap();
+
+    let err = compress(
+        &input,
+        &CompressOptions {
+            max_pages: Some(PAGE_COUNT - 1),
+            ..Default::default()
+        },
+    )
+    .err()
+    .expect("el documento debe exceder max_pages");
+    assert!(matches!(
+        err,
+        GemaError::LimitExceeded {
+            limit: LimitKind::Pages,
+            observed,
+            allowed,
+        } if observed == PAGE_COUNT as u64 && allowed == (PAGE_COUNT - 1) as u64
+    ));
+
+    let output = compress(&input, &CompressOptions::default())
+        .expect("miles de páginas válidas no deben causar panic ni error")
+        .output;
+    let output_doc = Document::load_mem(&output).expect("la salida Ok debe ser un PDF completo");
+    assert_eq!(output_doc.get_pages().len(), PAGE_COUNT);
+}
+
+#[test]
+fn deeply_nested_objects_are_safe_with_and_without_limits() {
+    use lopdf::{dictionary, Object, Stream};
+
+    const NESTING_DEPTH: usize = 64;
+
+    let mut nested = Object::Null;
+    for _ in 0..NESTING_DEPTH {
+        nested = Object::Array(vec![nested]);
+    }
+
+    let mut resources = lopdf::Dictionary::new();
+    resources.set("Adversarial", nested);
+
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    let content_id = doc.add_object(Stream::new(dictionary! {}, Vec::new()));
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page", "Parent" => pages_id, "Contents" => content_id,
+        "Resources" => resources,
+        "MediaBox" => vec![0.into(), 0.into(), 1.into(), 1.into()],
+    });
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog_id);
+    let mut input = Vec::new();
+    doc.save_to(&mut input).unwrap();
+    let parsed = Document::load_mem(&input).unwrap();
+    assert_eq!(
+        parsed.get_pages().len(),
+        1,
+        "el fixture debe sobrevivir el round-trip de lopdf"
+    );
+
+    let bounded = CompressOptions {
+        max_pages: Some(1),
+        max_objects: Some(parsed.objects.len()),
+        max_stream_bytes: Some(1),
+        max_total_work_bytes: Some(0),
+        ..Default::default()
+    };
+    for opts in [&CompressOptions::default(), &bounded] {
+        let output = compress(&input, opts)
+            .expect("objetos profundamente anidados no deben causar panic ni error")
+            .output;
+        let output_doc =
+            Document::load_mem(&output).expect("la salida Ok debe ser un PDF completo");
+        assert_eq!(output_doc.get_pages().len(), 1);
+    }
+}

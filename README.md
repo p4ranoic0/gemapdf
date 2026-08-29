@@ -139,13 +139,23 @@ See
 defaults (Screen 72dpi/q40, Ebook 150dpi/q65, Printer 300dpi/q80).
 
 Native callers that process untrusted or very large PDFs can bound image work
-with `max_memory_bytes`, `max_parallel_images`, and `max_image_bytes`. These are
-opt-in in core/CLI to preserve native throughput. The WASM binding uses a
+with `max_memory_bytes`, `max_parallel_images`, and `max_image_bytes`, and can
+reject whole documents with `max_pages`, `max_objects`, or
+`max_total_work_bytes`. `max_stream_bytes` controls the per-stream inflation
+ceiling; streams above it are preserved and reported instead of rejecting the
+document. The document-wide limits and cancellation control are currently core
+API features; the CLI does not expose flags for them. The WASM binding uses a
 256 MiB scheduling budget by default because its image loop is serial.
 
 For progress reporting during a long compression, use
 `compress_with_progress(&input, &opts, &mut |phase| { .. })`, which calls
 back with `Phase::{Analyzing, OptimizingImages { done, total }, Rewriting, Done}`.
+
+Callers that also need cancellation can implement `CancelSignal` and pass it to
+`compress_with_control(&input, &opts, &mut |phase| { .. }, &cancel)`. The signal
+is checked cooperatively between phases and image batches, never midway through
+encoding an image. Cancellation returns `GemaError::Cancelled`; no partial
+output is returned as a successful result.
 
 ### CLI (`gema-cli`)
 
@@ -288,13 +298,18 @@ The supported surface is what `gema-core` re-exports; implementation modules are
 private.
 
 - Enums the pipeline grows are `#[non_exhaustive]` — `ImageSkipReason`,
-  `Warning`, `GemaError`, `Phase`, `ImageAction`. Match them with a `_` arm.
+  `Warning`, `GemaError`, `LimitKind`, `Phase`, `ImageAction`. Match them with a
+  `_` arm.
 - `Profile` and `SignaturePolicy` are deliberately exhaustive: closed product
   concepts, and you want the compiler to tell you when they change.
 - Structs are exhaustive because callers build `CompressOptions` and tests build
   report fixtures with struct literals. `#[non_exhaustive]` on a struct forbids
   the literal from another crate *even with* `..Default::default()`, so it is not
   used. Adding a field is a breaking change.
+
+Version 0.5.0 adds the exhaustive `CompressOptions` fields `max_pages`,
+`max_objects`, `max_stream_bytes`, and `max_total_work_bytes`; this is the
+release's incompatible Rust API change.
 
 There is no error variant for "this document is signed": `SignaturePolicy::Strict`
 does not fail, it returns the document untouched. Observe it through

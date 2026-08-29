@@ -3,7 +3,32 @@
 All notable changes to GemaPDF are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.5.0 — 2026-08-29
+
+### Added
+
+- Optional whole-document limits for page count, object count, and estimated
+  total image work, with typed `GemaError::LimitExceeded` failures and
+  `LimitKind` identifiers. A rejected document never returns partial output.
+- `compress_with_control` and the `CancelSignal` trait for cooperative
+  cancellation between phases and image batches. Cancellation returns the typed
+  `GemaError::Cancelled` error.
+- Adversarial coverage for huge page trees, deeply nested objects, absurd image
+  dimensions, and oversized inflated streams, plus a fuzz target combining all
+  limits with pseudo-random cancellation.
+
+### Changed
+
+- **Incompatible Rust API change:** exhaustive `CompressOptions` gains
+  `max_pages`, `max_objects`, `max_stream_bytes`, and `max_total_work_bytes`.
+  This requires the semver-0.x bump from 0.4.0 to 0.5.0.
+- The existing 256 MiB stream-inflation defense is configurable through
+  `max_stream_bytes`. Streams that exceed it remain intact and produce one
+  summary warning; `None` preserves the prior 256 MiB default.
+- With all new limits unset and no cancellation, output remains byte-identical
+  on the 13-document regression corpus. Median measured overhead versus
+  `b8a818f` was **+0.34%** across eight counterbalanced rounds (acceptance
+  threshold: at most 2%).
 
 ## 0.4.0 — 2026-08-29
 

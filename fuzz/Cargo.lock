@@ -346,7 +346,7 @@ dependencies = [
 
 [[package]]
 name = "gema-core"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "flate2",
  "image",
