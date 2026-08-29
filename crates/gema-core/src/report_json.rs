@@ -340,13 +340,36 @@ mod tests {
 
     #[test]
     fn warnings_carry_a_stable_kind_not_only_prose() {
-        let j = ReportJson::from_report(&sample_report(), None);
+        let mut report = sample_report();
+        report.warnings = vec![
+            Warning::ImageSkipped(9),
+            Warning::SignedDocument,
+            Warning::StreamsSkipped {
+                count: 3,
+                reason: crate::LimitKind::StreamBytes,
+            },
+            Warning::Other("aviso adicional".into()),
+        ];
+        let j = ReportJson::from_report(&report, None);
+
         assert_eq!(j.warnings[0].kind, "image_skipped");
         assert_eq!(j.warnings[0].object_id, Some(9));
+        assert!(!j.warnings[0].message.is_empty());
+
         assert_eq!(j.warnings[1].kind, "signed_document");
         assert_eq!(j.warnings[1].object_id, None);
-        // el texto sigue disponible, pero no es superficie estable
-        assert!(j.warnings[0].message.contains('9'));
+        assert!(!j.warnings[1].message.is_empty());
+
+        assert_eq!(j.warnings[2].kind, "streams_skipped");
+        assert_eq!(j.warnings[2].object_id, None);
+        assert!(!j.warnings[2].message.is_empty());
+        // `WarningJson` no tiene un campo para `count`: el `Display` y, por lo
+        // tanto, `message` son la única vía por la que llega al JSON.
+        assert!(j.warnings[2].message.contains('3'));
+
+        assert_eq!(j.warnings[3].kind, "other");
+        assert_eq!(j.warnings[3].object_id, None);
+        assert!(!j.warnings[3].message.is_empty());
     }
 
     #[test]
