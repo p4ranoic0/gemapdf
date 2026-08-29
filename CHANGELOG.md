@@ -5,6 +5,8 @@ All notable changes to GemaPDF are documented in this file. The project follows
 
 ## Unreleased
 
+## 0.4.0 — 2026-08-29
+
 ### Added
 
 - Esquema JSON versionado del reporte (`report_schema_version`), disponible en
