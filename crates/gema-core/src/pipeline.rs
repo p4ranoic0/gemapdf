@@ -280,7 +280,11 @@ pub fn compress_with_progress(
     } else {
         crate::rewrite::ImageDedupeStats::default()
     };
-    crate::rewrite::cleanup_and_compress(&mut doc, opts.recompress_streams);
+    let max_stream_bytes = opts
+        .max_stream_bytes
+        .unwrap_or(crate::rewrite::REFLATE_MAX_RAW);
+    let skipped_streams =
+        crate::rewrite::cleanup_and_compress(&mut doc, opts.recompress_streams, max_stream_bytes);
     // Tras comprimir (para que el XMP no se recomprima): estampa la marca gemaPDF.
     crate::rewrite::brand_metadata(&mut doc);
     let output = crate::rewrite::serialize(&mut doc)?;
@@ -289,6 +293,12 @@ pub fn compress_with_progress(
     // sumamos las de imágenes.
     let mut report = report0;
     report.warnings.extend(img_warnings);
+    if skipped_streams > 0 {
+        report.warnings.push(Warning::StreamsSkipped {
+            count: skipped_streams,
+            reason: LimitKind::StreamBytes,
+        });
+    }
     report.images = stats;
     let mut skip_totals = std::collections::BTreeMap::new();
     for stat in &report.images {

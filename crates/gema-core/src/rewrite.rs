@@ -262,8 +262,8 @@ pub fn dedupe_images(
 /// Piso de tamaño (bytes comprimidos) para re-Flatear: por debajo el ahorro no
 /// paga el CPU (el peso real vive en streams de cientos de KB).
 const REFLATE_MIN_BYTES: usize = 50 * 1024;
-/// Techo de bytes inflados (anti zip-bomb) al re-comprimir un stream.
-const REFLATE_MAX_RAW: usize = 256 * 1024 * 1024; // 256 MB
+/// Techo histórico de bytes inflados (anti zip-bomb) al re-comprimir un stream.
+pub(crate) const REFLATE_MAX_RAW: u64 = 256 * 1024 * 1024; // 256 MiB
 
 /// Re-Flatea a nivel máximo los streams no-imagen ya `FlateDecode` cuyo
 /// productor comprimió mal (p. ej. nivel 1 "fast" — típico de generadores de
@@ -279,12 +279,13 @@ const REFLATE_MAX_RAW: usize = 256 * 1024 * 1024; // 256 MB
 /// imágenes son del pipeline por-imagen y las preservadas deben salir
 /// byte-idénticas), > [`REFLATE_MIN_BYTES`]. Conserva el resultado sólo si
 /// achica (piso por-stream); zlib corrupto o salida desmedida → intacto.
-pub fn reflate_streams(doc: &mut Document) {
+pub fn reflate_streams(doc: &mut Document, max_raw_bytes: u64) -> usize {
     use flate2::read::ZlibDecoder;
     use flate2::write::ZlibEncoder;
     use flate2::Compression;
     use std::io::{Read, Write};
 
+    let mut skipped_by_limit = 0usize;
     for obj in doc.objects.values_mut() {
         let Object::Stream(s) = obj else { continue };
         if s.content.len() < REFLATE_MIN_BYTES {
@@ -302,9 +303,13 @@ pub fn reflate_streams(doc: &mut Document) {
         }
         // Inflar acotado: un zip-bomb no debe reventar memoria.
         let mut raw = Vec::new();
-        let mut dec = ZlibDecoder::new(s.content.as_slice()).take(REFLATE_MAX_RAW as u64 + 1);
-        if dec.read_to_end(&mut raw).is_err() || raw.len() > REFLATE_MAX_RAW {
-            continue; // corrupto o excesivo → intacto
+        let mut dec = ZlibDecoder::new(s.content.as_slice()).take(max_raw_bytes.saturating_add(1));
+        if dec.read_to_end(&mut raw).is_err() {
+            continue; // corrupto → intacto
+        }
+        if raw.len() as u64 > max_raw_bytes {
+            skipped_by_limit = skipped_by_limit.saturating_add(1);
+            continue; // excesivo → intacto
         }
         let mut enc = ZlibEncoder::new(Vec::new(), Compression::best());
         if enc.write_all(&raw).is_err() {
@@ -315,6 +320,7 @@ pub fn reflate_streams(doc: &mut Document) {
             s.set_content(best);
         }
     }
+    skipped_by_limit
 }
 
 /// Deduplica streams idénticos, recomprime todos los streams (Flate) y elimina
@@ -322,12 +328,19 @@ pub fn reflate_streams(doc: &mut Document) {
 /// repuntados queden sin referencias y se borren; el re-Flate va tras el prune
 /// (menos streams = menos CPU) y antes de `doc.compress()` (que sólo cubre
 /// streams sin filtro).
-pub fn cleanup_and_compress(doc: &mut Document, recompress_streams: bool) {
+pub fn cleanup_and_compress(
+    doc: &mut Document,
+    recompress_streams: bool,
+    max_stream_bytes: u64,
+) -> usize {
     dedupe_streams(doc);
     doc.prune_objects();
     if recompress_streams {
-        reflate_streams(doc);
+        let skipped_by_limit = reflate_streams(doc, max_stream_bytes);
         doc.compress();
+        skipped_by_limit
+    } else {
+        0
     }
 }
 
@@ -374,7 +387,7 @@ mod tests {
         doc.save_to(&mut before).unwrap();
 
         let mut doc2 = doc_with_uncompressed_content();
-        cleanup_and_compress(&mut doc2, true);
+        cleanup_and_compress(&mut doc2, true, REFLATE_MAX_RAW);
         let after = serialize(&mut doc2).unwrap();
 
         assert!(
@@ -651,7 +664,7 @@ mod tests {
             lvl1.clone(),
         ));
 
-        reflate_streams(&mut doc);
+        reflate_streams(&mut doc, REFLATE_MAX_RAW);
 
         let s = doc.get_object(id).unwrap().as_stream().unwrap();
         assert!(
@@ -722,7 +735,7 @@ mod tests {
             })
             .collect();
 
-        reflate_streams(&mut doc);
+        reflate_streams(&mut doc, REFLATE_MAX_RAW);
 
         for (i, id) in [img_id, parms_id, small_id, best_id].iter().enumerate() {
             let s = doc.get_object(*id).unwrap().as_stream().unwrap();
@@ -741,8 +754,123 @@ mod tests {
             dictionary! { "Filter" => "FlateDecode" },
             junk.clone(),
         ));
-        reflate_streams(&mut doc);
+        reflate_streams(&mut doc, REFLATE_MAX_RAW);
         let s = doc.get_object(id).unwrap().as_stream().unwrap();
         assert_eq!(s.content, junk, "zlib corrupto → intacto, sin panic");
+    }
+
+    fn pdf_with_flate_contents(raw_contents: &[Vec<u8>]) -> Vec<u8> {
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let mut page_ids = Vec::new();
+        for raw in raw_contents {
+            let compressed = zlib_level(raw, 1);
+            assert!(
+                compressed.len() > REFLATE_MIN_BYTES,
+                "fixture: el stream debe entrar al path de re-Flate"
+            );
+            let content_id = doc.add_object(Stream::new(
+                dictionary! { "Filter" => "FlateDecode" },
+                compressed,
+            ));
+            let page_id = doc.add_object(dictionary! {
+                "Type" => "Page", "Parent" => pages_id, "Contents" => content_id,
+                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            });
+            page_ids.push(page_id);
+        }
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => page_ids.iter().copied().map(Object::from).collect::<Vec<_>>(),
+                "Count" => page_ids.len() as i64,
+            }),
+        );
+        let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", catalog_id);
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn reflate_preserves_and_counts_stream_above_configured_limit() {
+        let raw = big_vector_content();
+        let compressed = zlib_level(&raw, 1);
+        let mut doc = Document::with_version("1.5");
+        let id = doc.add_object(Stream::new(
+            dictionary! { "Filter" => "FlateDecode" },
+            compressed.clone(),
+        ));
+
+        let skipped = reflate_streams(&mut doc, 1_024);
+
+        assert_eq!(skipped, 1);
+        let stream = doc.get_object(id).unwrap().as_stream().unwrap();
+        assert_eq!(stream.content, compressed, "el stream debe quedar intacto");
+    }
+
+    #[test]
+    fn reflate_recompresses_same_stream_below_configured_limit() {
+        let raw = big_vector_content();
+        let compressed = zlib_level(&raw, 1);
+        let mut doc = Document::with_version("1.5");
+        let id = doc.add_object(Stream::new(
+            dictionary! { "Filter" => "FlateDecode" },
+            compressed.clone(),
+        ));
+
+        let skipped = reflate_streams(&mut doc, raw.len() as u64);
+
+        assert_eq!(skipped, 0);
+        let stream = doc.get_object(id).unwrap().as_stream().unwrap();
+        assert!(stream.content.len() < compressed.len());
+        assert_eq!(stream.decompressed_content().unwrap(), raw);
+    }
+
+    #[test]
+    fn max_stream_bytes_none_matches_explicit_historical_limit() {
+        let input = pdf_with_flate_contents(&[big_vector_content()]);
+        let with_none = crate::compress(&input, &crate::CompressOptions::default()).unwrap();
+        let with_explicit = crate::compress(
+            &input,
+            &crate::CompressOptions {
+                max_stream_bytes: Some(REFLATE_MAX_RAW),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(with_none.output, with_explicit.output);
+        assert_eq!(with_none.report.warnings, with_explicit.report.warnings);
+    }
+
+    #[test]
+    fn stream_limit_warning_summarizes_all_skips_once() {
+        let first = big_vector_content();
+        let mut second = first.clone();
+        second.extend_from_slice(b"\n% segundo stream\n");
+        let input = pdf_with_flate_contents(&[first, second]);
+
+        let result = crate::compress(
+            &input,
+            &crate::CompressOptions {
+                max_stream_bytes: Some(1_024),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let summaries: Vec<_> = result
+            .report
+            .warnings
+            .iter()
+            .filter_map(|warning| match warning {
+                crate::Warning::StreamsSkipped { count, reason } => Some((*count, *reason)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(summaries, vec![(2, crate::LimitKind::StreamBytes)]);
     }
 }

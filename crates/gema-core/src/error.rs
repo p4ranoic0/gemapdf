@@ -2,8 +2,8 @@ use thiserror::Error;
 
 /// Límite configurable asociado a un rechazo o aviso del pipeline.
 ///
-/// `StreamBytes` queda reservado hasta que el límite de inflación de streams
-/// tenga productor; los demás se aplican a nivel de documento.
+/// `StreamBytes` nombra el motivo de un salto no fatal durante la recompresión;
+/// los demás se aplican como rechazos a nivel de documento.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum LimitKind {

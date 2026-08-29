@@ -162,6 +162,11 @@ pub struct CompressOptions {
     /// Máximo trabajo total estimado, en bytes, para procesar las imágenes. Si
     /// se excede, se rechaza el documento entero. `None` no impone este límite.
     pub max_total_work_bytes: Option<u64>,
+    /// Máximo de bytes producidos al inflar un stream no-imagen para
+    /// recomprimirlo. Los streams que lo superan se preservan intactos y se
+    /// reportan como omitidos. `None` conserva el límite interno histórico de
+    /// 256 MiB; nunca significa inflación sin techo.
+    pub max_stream_bytes: Option<u64>,
     /// Reduce la resolución de las imágenes cuyo DPI efectivo en página supera
     /// el objetivo del perfil.
     pub downsample: bool,
@@ -192,6 +197,7 @@ impl Default for CompressOptions {
             max_pages: None,
             max_objects: None,
             max_total_work_bytes: None,
+            max_stream_bytes: None,
             downsample: true,
             recompress_streams: true,
             remove_metadata: true,

@@ -147,7 +147,8 @@ pub struct ImageStatJson {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct WarningJson {
-    /// Discriminante estable: `signed_document`, `image_skipped` u `other`.
+    /// Discriminante estable: `signed_document`, `image_skipped`,
+    /// `streams_skipped` u `other`.
     pub kind: &'static str,
     /// Objeto afectado, cuando el aviso es sobre una imagen.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
@@ -260,6 +261,7 @@ impl ReportJson {
                     kind: match w {
                         Warning::SignedDocument => "signed_document",
                         Warning::ImageSkipped(_) => "image_skipped",
+                        Warning::StreamsSkipped { .. } => "streams_skipped",
                         Warning::Other(_) => "other",
                     },
                     object_id: match w {

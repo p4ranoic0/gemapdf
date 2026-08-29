@@ -120,6 +120,13 @@ pub enum Warning {
     SignedDocument,
     /// La imagen con ese número de objeto no se pudo optimizar.
     ImageSkipped(u32),
+    /// Streams preservados porque excedieron un límite no fatal.
+    StreamsSkipped {
+        /// Cantidad de streams preservados.
+        count: usize,
+        /// Límite que motivó los saltos.
+        reason: crate::LimitKind,
+    },
     /// Aviso sin estructura propia; el texto ya es legible.
     Other(String),
 }
@@ -131,6 +138,9 @@ impl std::fmt::Display for Warning {
         match self {
             Warning::SignedDocument => write!(f, "documento firmado criptográficamente"),
             Warning::ImageSkipped(id) => write!(f, "imagen omitida (object {id})"),
+            Warning::StreamsSkipped { count, reason } => {
+                write!(f, "{count} stream(s) omitido(s) por límite de {reason}")
+            }
             Warning::Other(msg) => f.write_str(msg),
         }
     }
@@ -207,6 +217,12 @@ mod tests {
     fn warnings_render_human_readable() {
         assert!(Warning::SignedDocument.to_string().contains("firmado"));
         assert!(Warning::ImageSkipped(7).to_string().contains('7'));
+        assert!(Warning::StreamsSkipped {
+            count: 2,
+            reason: crate::LimitKind::StreamBytes,
+        }
+        .to_string()
+        .contains("2 stream(s)"));
         assert_eq!(
             Warning::Other("texto libre".into()).to_string(),
             "texto libre"
