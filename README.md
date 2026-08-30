@@ -235,8 +235,8 @@ count and signature status before the user commits to compressing).
 ### JSON report
 
 `gema compress --json` and `gema analyze --json` print the report to stdout as
-JSON. The WASM binding currently emits its own report shape and will be aligned
-with this schema. Human output stays the default.
+JSON. The WASM binding emits this same versioned schema since 0.4.0. Human
+output stays the default.
 
 Add `--json-images` to `compress` for a per-image `images.detail` array. It is
 opt-in because `object_id` refers to the *input* document.

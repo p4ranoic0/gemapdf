@@ -377,8 +377,14 @@ texto pequeño. Mantener opt-in "máxima" hasta entonces.
 ## 6. Coberturas menores (horas, no semanas)
 
 - `/SMask /None` (Name): **hecho**; se trata como ausencia de máscara.
-- ExtGState luminosity softmasks (`/SMask <</G form>>`): fuera del alcance del
-  lever C; las imágenes dentro del grupo /G hoy se recomprimen lossy.
+- ExtGState luminosity softmasks (`/SMask <</G form>>`): **medido el
+  2026-08-29**. Las 8 máscaras del corpus sí tienen una imagen `/DCTDecode` en
+  su grupo `/G`; **7 de 8 salen byte-idénticas** (recomprimirlas no ganaba bytes
+  y el pipeline conserva el original) y **1 sí se recomprime con pérdida**
+  (`archivo muy grande de comprimir.pdf`, pág 61: 18,736 → 17,940 B). Impacto
+  visual medido con render a 100 dpi y comparación subpíxel: **delta máximo
+  1/255**, 0.06% de subpíxeles tocados, ninguno con delta > 2 — imperceptible.
+  El criterio (c) del §3 (pérdida visual) **no se activa**.
 - Dimensiones adversariales: **hecho** para width/height negativos, cero y
   altura sobre el máximo.
 - Warning perceptual: **hecho**; usa `Q_MAX` en vez de hardcodear 90.
@@ -401,6 +407,44 @@ warnings. Medición sobre 11 PDFs, con output default byte-idéntico 11/11:
 Conclusión: Indexed sub-byte y CCITT no justifican desarrollo para este corpus.
 El mayor grupo pendiente completo suma menos de 0.1 MB y tampoco es una palanca
 de compresión relevante.
+
+### Telemetría estructural — Slice D (2026-08-29)
+
+Módulo `telemetry` (cargo feature no-default), consumido por `usage_report`.
+Mide lo que hoy queda fuera del pipeline de imágenes, para decidir Slice E con
+datos. Corpus de 13 PDFs, 574,246,661 bytes de entrada:
+
+| métrica | valor |
+|---|---|
+| imágenes alcanzables sólo dentro de Forms | 19,846,889 B = **3.46%** de la entrada · 139 imágenes · 8 documentos |
+| imágenes inline (`BI`/`ID`/`EI`) | 354,552 B = **0.062%** · 267 imágenes |
+| soft masks de luminosidad en ExtGState | 8 máscaras · 6 documentos |
+| recursos no inspeccionables | 0 |
+
+**Resultado: Slice E no se abre.** La justificación es sutil y conviene no
+resumirla mal:
+
+**Forms SÍ gana la compuerta escrita** del §6 del spec de límites (≥1% de los
+bytes de imagen en ≥2 documentos). No se descarta por umbral, sino por
+**evidencia más fuerte que el umbral**: el A/B productivo del 2026-08-10
+implementó el lever completo y midió **0 bytes, 11/11 byte-idénticos**. Y el
+**98.9% de la masa** de la métrica (19,626,959 de 19,846,889 B) está en
+`doc-B 4.pdf`, que ese A/B cubrió con `0.000%, hash igual`.
+
+Queda registrado como **excepción explícita**: un proxy que gana la compuerta
+pero cuyo beneficio ya fue falsificado experimentalmente. El proceso no
+contemplaba este caso.
+
+Además, la métrica mide **alcanzabilidad, no compresión perdida**. El pipeline
+enumera los XObjects de imagen directamente desde `doc.objects`, sin depender de
+que sean alcanzables desde el content stream: esas imágenes **ya entran al
+pipeline**. Lo único que la recursión aportaría es el DPI efectivo, que gobierna
+el downsampling. Son *19.8 MB sin geometría de colocación*, no *19.8 MB
+ignorados*.
+
+**Inline**: 0.062%, un orden de magnitud debajo del umbral. Cerrado.
+
+Corrida: `gemapdf-internal-docs/benchmarks/20260829T235500Z-5833f4bd-slice-d-telemetria/`.
 
 ## 7. Publicación del repo (contexto para todo lo anterior)
 

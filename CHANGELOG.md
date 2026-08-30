@@ -3,6 +3,19 @@
 All notable changes to GemaPDF are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- Structural telemetry behind the non-default `telemetry` cargo feature: counts
+  inline images, images reachable only inside Form XObjects, ExtGState
+  luminosity soft masks, and uninspectable resources. Consumed by the internal
+  `usage_report` example.
+
+  It is **not** stable surface: it lives outside `Report` and the JSON schema,
+  is absent from the default build, and changes no output byte. A metric is
+  promoted to the contract only if it is shown to drive a decision.
+
 ## 0.5.0 — 2026-08-29
 
 ### Added
