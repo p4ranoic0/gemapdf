@@ -193,6 +193,28 @@ cd crates/gema-wasm
 wasm-pack build --target web
 ```
 
+**If you consume `gema-wasm` as a crate from crates.io and build for
+`wasm32-unknown-unknown`, you must set this rustflag yourself**, in your own
+`.cargo/config.toml`:
+
+```toml
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
+```
+
+`getrandom` reaches the tree through `lopdf -> rand` and requires an explicit
+backend on that target; enabling its `wasm_js` feature alone is not enough.
+The published crate ships its own `.cargo/config.toml` with this flag, but that
+does **not** help you: Cargo discovers configuration from the directory it is
+invoked in and from your workspace root, never from a dependency's source
+directory. Without the flag the build fails inside `getrandom`, with an error
+that never mentions GemaPDF.
+
+None of this applies if you only want to call it from JavaScript. That path is
+the prebuilt package on the `npm` branch
+(`github:p4ranoic0/gemapdf#wasm-v0.X.0`), which already carries the compiled
+`.wasm` and its JS glue.
+
 Then, in JS (reading the real exported API from
 `crates/gema-wasm/src/lib.rs` — `compress_with_report` returns
 `{ output: Uint8Array, report }` and takes an optional progress callback):
