@@ -3,19 +3,6 @@
 All notable changes to GemaPDF are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
-
-### Added
-
-- Structural telemetry behind the non-default `telemetry` cargo feature: counts
-  inline images, images reachable only inside Form XObjects, ExtGState
-  luminosity soft masks, and uninspectable resources. Consumed by the internal
-  `usage_report` example.
-
-  It is **not** stable surface: it lives outside `Report` and the JSON schema,
-  is absent from the default build, and changes no output byte. A metric is
-  promoted to the contract only if it is shown to drive a decision.
-
 ## 0.5.0 — 2026-08-29
 
 ### Added
@@ -29,6 +16,14 @@ All notable changes to GemaPDF are documented in this file. The project follows
 - Adversarial coverage for huge page trees, deeply nested objects, absurd image
   dimensions, and oversized inflated streams, plus a fuzz target combining all
   limits with pseudo-random cancellation.
+- Structural telemetry behind the non-default `telemetry` cargo feature: counts
+  inline images, images reachable only inside Form XObjects, ExtGState
+  luminosity soft masks, and uninspectable resources. Consumed by the internal
+  `usage_report` example.
+
+  It is **not** stable surface: it lives outside `Report` and the JSON schema,
+  is absent from the default build, and changes no output byte. A metric is
+  promoted to the contract only if it is shown to drive a decision.
 
 ### Changed
 
@@ -42,6 +37,16 @@ All notable changes to GemaPDF are documented in this file. The project follows
   on the 13-document regression corpus. Median measured overhead versus
   `b8a818f` was **+0.34%** across eight counterbalanced rounds (acceptance
   threshold: at most 2%).
+- The lockfile updates `chacha20` from 0.10.1, which was yanked, to 0.10.2 via
+  `lopdf 0.43` and `rand 0.10.2`. No manifest changed.
+
+### Measured and rejected
+
+- Slice D did not open Slice E. Form XObjects passed the written gate, but the
+  previously completed production A/B measured **0 bytes of benefit**. Inline
+  images represented **0.062%** of the corpus input. Of eight ExtGState
+  luminosity soft masks, seven remained byte-identical and the only recompressed
+  case showed no visual loss in the measured render (maximum delta: 1/255).
 
 ## 0.4.0 — 2026-08-29
 
