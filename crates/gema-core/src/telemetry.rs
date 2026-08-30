@@ -3,9 +3,9 @@
 //! Este módulo no es superficie estable. Una métrica se promueve al contrato
 //! público sólo si Slice E confirma que guía decisiones.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use lopdf::{Document, Object};
+use lopdf::{content::Content, Dictionary, Document, Object, ObjectId, Stream};
 
 use crate::GemaError;
 
@@ -45,9 +45,9 @@ pub struct SoftMaskTelemetry {
 pub struct StructuralTelemetry {
     /// Imágenes inline presentes en content streams de páginas.
     pub inline_images: InlineImageTelemetry,
-    /// Imágenes alcanzables únicamente dentro de Forms; D1 lo deja en cero.
+    /// Imágenes alcanzables únicamente dentro de Forms.
     pub images_only_in_forms: FormImageTelemetry,
-    /// Soft masks de luminosidad en ExtGState; D1 lo deja en cero.
+    /// Soft masks de luminosidad en ExtGState.
     pub extgstate_soft_masks: SoftMaskTelemetry,
     /// Recursos o streams que el recorrido no pudo resolver o decodificar.
     pub uninspectable_resources: u64,
@@ -61,8 +61,10 @@ pub fn structural_telemetry(input: &[u8]) -> Result<StructuralTelemetry, GemaErr
     }
 
     let mut telemetry = StructuralTelemetry::default();
-    for page_id in doc.get_pages().into_values() {
+    let mut walker = FormWalker::new(&doc);
+    for (page_number, page_id) in doc.get_pages() {
         inspect_page_resources(&doc, page_id, &mut telemetry.uninspectable_resources);
+        let page_resources = effective_page_resources(&doc, page_id);
 
         let mut page_has_inline_image = false;
         for content_id in doc.get_page_contents(page_id) {
@@ -83,13 +85,304 @@ pub fn structural_telemetry(input: &[u8]) -> Result<StructuralTelemetry, GemaErr
                 .data_bytes
                 .saturating_add(inline.data_bytes);
             page_has_inline_image |= inline.count != 0;
+
+            if let Some(resources) = page_resources {
+                walker.walk_content(&content, resources, 0, page_number);
+            }
         }
         if page_has_inline_image {
             saturating_increment(&mut telemetry.inline_images.pages);
         }
     }
 
+    walker.finish(&mut telemetry);
+
     Ok(telemetry)
+}
+
+const MAX_FORM_DEPTH: u64 = 64;
+const MAX_DOCUMENT_OPERATORS: u64 = 1_000_000;
+
+struct FormWalker<'a> {
+    doc: &'a Document,
+    operators_seen: u64,
+    active_forms: HashSet<ObjectId>,
+    page_images: HashSet<ObjectId>,
+    form_images: HashMap<ObjectId, u64>,
+    soft_masks: HashSet<ObjectId>,
+    soft_mask_pages: HashSet<u32>,
+    max_depth: u64,
+    uninspectable_resources: u64,
+}
+
+impl<'a> FormWalker<'a> {
+    fn new(doc: &'a Document) -> Self {
+        Self {
+            doc,
+            operators_seen: 0,
+            active_forms: HashSet::new(),
+            page_images: HashSet::new(),
+            form_images: HashMap::new(),
+            soft_masks: HashSet::new(),
+            soft_mask_pages: HashSet::new(),
+            max_depth: 0,
+            uninspectable_resources: 0,
+        }
+    }
+
+    fn walk_content(
+        &mut self,
+        bytes: &[u8],
+        resources: &'a Dictionary,
+        depth: u64,
+        page_number: u32,
+    ) {
+        let Ok(content) = Content::decode(bytes) else {
+            return;
+        };
+
+        for operation in content.operations {
+            if !self.consume_operator() {
+                return;
+            }
+            let Some(name) = operation
+                .operands
+                .first()
+                .and_then(|value| value.as_name().ok())
+            else {
+                continue;
+            };
+
+            match operation.operator.as_str() {
+                "Do" => self.walk_xobject(resources, name, depth, page_number),
+                "gs" => self.walk_extgstate(resources, name, depth, page_number),
+                _ => {}
+            }
+        }
+    }
+
+    fn consume_operator(&mut self) -> bool {
+        if self.operators_seen >= MAX_DOCUMENT_OPERATORS {
+            return false;
+        }
+        self.operators_seen = self.operators_seen.saturating_add(1);
+        true
+    }
+
+    fn walk_xobject(
+        &mut self,
+        resources: &'a Dictionary,
+        name: &[u8],
+        depth: u64,
+        page_number: u32,
+    ) {
+        let Some((object_id, stream)) = self.named_stream(resources, b"XObject", name) else {
+            return;
+        };
+        match stream.dict.get(b"Subtype").and_then(Object::as_name) {
+            Ok(b"Image") => {
+                if depth == 0 {
+                    self.page_images.insert(object_id);
+                } else {
+                    self.form_images
+                        .entry(object_id)
+                        .or_insert_with(|| usize_to_u64(stream.content.len()));
+                }
+            }
+            Ok(b"Form") => self.walk_form(object_id, stream, resources, depth, page_number),
+            Ok(_) => {}
+            Err(_) => saturating_increment(&mut self.uninspectable_resources),
+        }
+    }
+
+    fn walk_form(
+        &mut self,
+        object_id: ObjectId,
+        stream: &'a Stream,
+        inherited_resources: &'a Dictionary,
+        parent_depth: u64,
+        page_number: u32,
+    ) {
+        if parent_depth >= MAX_FORM_DEPTH || !self.active_forms.insert(object_id) {
+            return;
+        }
+
+        let depth = parent_depth.saturating_add(1);
+        self.max_depth = self.max_depth.max(depth);
+        let resources = match stream.dict.get(b"Resources") {
+            Ok(object) => match self
+                .doc
+                .dereference(object)
+                .map(|(_, object)| object)
+                .and_then(Object::as_dict)
+            {
+                Ok(resources) => Some(resources),
+                Err(_) => {
+                    saturating_increment(&mut self.uninspectable_resources);
+                    None
+                }
+            },
+            Err(_) => Some(inherited_resources),
+        };
+
+        if let Some(resources) = resources {
+            match stream.decompressed_content() {
+                Ok(content) => self.walk_content(&content, resources, depth, page_number),
+                Err(_) => saturating_increment(&mut self.uninspectable_resources),
+            }
+        }
+        self.active_forms.remove(&object_id);
+    }
+
+    fn walk_extgstate(
+        &mut self,
+        resources: &'a Dictionary,
+        name: &[u8],
+        depth: u64,
+        page_number: u32,
+    ) {
+        let Some((extgstate_id, extgstate)) = self.named_dictionary(resources, b"ExtGState", name)
+        else {
+            return;
+        };
+        let Ok(smask_object) = extgstate.get(b"SMask") else {
+            return;
+        };
+        if smask_object.as_name().is_ok_and(|value| value == b"None") {
+            return;
+        }
+
+        let Ok((smask_id, smask_object)) = self.doc.dereference(smask_object) else {
+            saturating_increment(&mut self.uninspectable_resources);
+            return;
+        };
+        let Ok(smask) = smask_object.as_dict() else {
+            saturating_increment(&mut self.uninspectable_resources);
+            return;
+        };
+        if !smask
+            .get(b"S")
+            .and_then(Object::as_name)
+            .is_ok_and(|name| name == b"Luminosity")
+        {
+            return;
+        }
+
+        let Ok(group_object) = smask.get(b"G") else {
+            saturating_increment(&mut self.uninspectable_resources);
+            return;
+        };
+        let Ok((group_id, group_object)) = self.doc.dereference(group_object) else {
+            saturating_increment(&mut self.uninspectable_resources);
+            return;
+        };
+        let (Some(group_id), Ok(group)) = (group_id, group_object.as_stream()) else {
+            saturating_increment(&mut self.uninspectable_resources);
+            return;
+        };
+        if !group
+            .dict
+            .get(b"Subtype")
+            .and_then(Object::as_name)
+            .is_ok_and(|name| name == b"Form")
+        {
+            return;
+        }
+
+        let mask_id = smask_id.or(extgstate_id).unwrap_or(group_id);
+        self.soft_masks.insert(mask_id);
+        self.soft_mask_pages.insert(page_number);
+        self.walk_form(group_id, group, resources, depth, page_number);
+    }
+
+    fn named_stream(
+        &mut self,
+        resources: &'a Dictionary,
+        category: &[u8],
+        name: &[u8],
+    ) -> Option<(ObjectId, &'a Stream)> {
+        let object = self.named_resource(resources, category, name)?;
+        let Ok((Some(object_id), object)) = self.doc.dereference(object) else {
+            saturating_increment(&mut self.uninspectable_resources);
+            return None;
+        };
+        match object.as_stream() {
+            Ok(stream) => Some((object_id, stream)),
+            Err(_) => {
+                saturating_increment(&mut self.uninspectable_resources);
+                None
+            }
+        }
+    }
+
+    fn named_dictionary(
+        &mut self,
+        resources: &'a Dictionary,
+        category: &[u8],
+        name: &[u8],
+    ) -> Option<(Option<ObjectId>, &'a Dictionary)> {
+        let object = self.named_resource(resources, category, name)?;
+        let Ok((object_id, object)) = self.doc.dereference(object) else {
+            saturating_increment(&mut self.uninspectable_resources);
+            return None;
+        };
+        match object.as_dict() {
+            Ok(dictionary) => Some((object_id, dictionary)),
+            Err(_) => {
+                saturating_increment(&mut self.uninspectable_resources);
+                None
+            }
+        }
+    }
+
+    fn named_resource(
+        &mut self,
+        resources: &'a Dictionary,
+        category: &[u8],
+        name: &[u8],
+    ) -> Option<&'a Object> {
+        let result = resources
+            .get(category)
+            .and_then(|object| self.doc.dereference(object).map(|(_, object)| object))
+            .and_then(Object::as_dict)
+            .and_then(|dictionary| dictionary.get(name));
+        match result {
+            Ok(object) => Some(object),
+            Err(_) => {
+                saturating_increment(&mut self.uninspectable_resources);
+                None
+            }
+        }
+    }
+
+    fn finish(self, telemetry: &mut StructuralTelemetry) {
+        for (object_id, encoded_bytes) in self.form_images {
+            if !self.page_images.contains(&object_id) {
+                saturating_increment(&mut telemetry.images_only_in_forms.count);
+                telemetry.images_only_in_forms.encoded_bytes = telemetry
+                    .images_only_in_forms
+                    .encoded_bytes
+                    .saturating_add(encoded_bytes);
+            }
+        }
+        telemetry.images_only_in_forms.max_depth = self.max_depth;
+        telemetry.extgstate_soft_masks.count = usize_to_u64(self.soft_masks.len());
+        telemetry.extgstate_soft_masks.pages = usize_to_u64(self.soft_mask_pages.len());
+        telemetry.uninspectable_resources = telemetry
+            .uninspectable_resources
+            .saturating_add(self.uninspectable_resources);
+    }
+}
+
+fn effective_page_resources(doc: &Document, page_id: ObjectId) -> Option<&Dictionary> {
+    let (inline_resources, resource_ids) = doc.get_page_resources(page_id).ok()?;
+    if let Some(resources) = inline_resources {
+        return Some(resources);
+    }
+    resource_ids
+        .first()
+        .and_then(|object_id| doc.get_object(*object_id).ok())
+        .and_then(|object| object.as_dict().ok())
 }
 
 fn inspect_page_resources(doc: &Document, page_id: lopdf::ObjectId, uninspectable: &mut u64) {
@@ -347,12 +640,20 @@ mod tests {
     use super::*;
 
     fn pdf_with_pages(contents: &[&[u8]], resources: Object) -> Vec<u8> {
-        let mut doc = Document::with_version("1.5");
+        let doc = Document::with_version("1.5");
+        let pages = contents
+            .iter()
+            .map(|content| (content.to_vec(), resources.clone()))
+            .collect();
+        save_with_pages(doc, pages)
+    }
+
+    fn save_with_pages(mut doc: Document, pages: Vec<(Vec<u8>, Object)>) -> Vec<u8> {
         let pages_id = doc.new_object_id();
         let mut page_ids = Vec::new();
 
-        for content in contents {
-            let content_id = doc.add_object(Stream::new(dictionary! {}, content.to_vec()));
+        for (content, resources) in &pages {
+            let content_id = doc.add_object(Stream::new(dictionary! {}, content.clone()));
             let page_id = doc.add_object(dictionary! {
                 "Type" => "Page",
                 "Parent" => pages_id,
@@ -368,7 +669,7 @@ mod tests {
             Object::Dictionary(dictionary! {
                 "Type" => "Pages",
                 "Kids" => page_ids,
-                "Count" => usize_to_i64(contents.len()),
+                "Count" => usize_to_i64(pages.len()),
             }),
         );
         let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
@@ -432,5 +733,150 @@ mod tests {
 
         assert_eq!(telemetry.inline_images.count, 0);
         assert_eq!(telemetry.inline_images.pages, 0);
+    }
+
+    #[test]
+    fn image_only_reachable_inside_a_form_is_counted_with_encoded_bytes() {
+        let mut doc = Document::with_version("1.5");
+        let image_data = vec![1, 2, 3, 4, 5];
+        let image_id = doc.add_object(image_stream(image_data.clone()));
+        let form_id = doc.add_object(form_stream(b"/Im Do".to_vec(), None));
+        let resources = Object::Dictionary(dictionary! {
+            "XObject" => dictionary! { "Fm" => form_id, "Im" => image_id },
+        });
+        let pdf = save_with_pages(doc, vec![(b"/Fm Do".to_vec(), resources)]);
+
+        let telemetry = structural_telemetry(&pdf).unwrap();
+
+        assert_eq!(telemetry.images_only_in_forms.count, 1);
+        assert_eq!(
+            telemetry.images_only_in_forms.encoded_bytes,
+            usize_to_u64(image_data.len())
+        );
+        assert_eq!(telemetry.images_only_in_forms.max_depth, 1);
+    }
+
+    #[test]
+    fn image_reachable_from_page_and_form_is_not_only_in_forms() {
+        let mut doc = Document::with_version("1.5");
+        let image_id = doc.add_object(image_stream(vec![9, 8, 7]));
+        let form_id = doc.add_object(form_stream(
+            b"/Im Do".to_vec(),
+            Some(dictionary! { "XObject" => dictionary! { "Im" => image_id } }),
+        ));
+        let resources = Object::Dictionary(dictionary! {
+            "XObject" => dictionary! { "Im" => image_id, "Fm" => form_id },
+        });
+        let pdf = save_with_pages(doc, vec![(b"/Im Do /Fm Do".to_vec(), resources)]);
+
+        let telemetry = structural_telemetry(&pdf).unwrap();
+
+        assert_eq!(telemetry.images_only_in_forms.count, 0);
+        assert_eq!(telemetry.images_only_in_forms.encoded_bytes, 0);
+        assert_eq!(telemetry.images_only_in_forms.max_depth, 1);
+    }
+
+    #[test]
+    fn nested_forms_report_depth_three() {
+        let mut doc = Document::with_version("1.5");
+        let image_id = doc.add_object(image_stream(vec![42]));
+        let form_three_id = doc.add_object(form_stream(
+            b"/Im Do".to_vec(),
+            Some(dictionary! { "XObject" => dictionary! { "Im" => image_id } }),
+        ));
+        let form_two_id = doc.add_object(form_stream(
+            b"/F3 Do".to_vec(),
+            Some(dictionary! { "XObject" => dictionary! { "F3" => form_three_id } }),
+        ));
+        let form_one_id = doc.add_object(form_stream(
+            b"/F2 Do".to_vec(),
+            Some(dictionary! { "XObject" => dictionary! { "F2" => form_two_id } }),
+        ));
+        let resources = Object::Dictionary(dictionary! {
+            "XObject" => dictionary! { "F1" => form_one_id },
+        });
+        let pdf = save_with_pages(doc, vec![(b"/F1 Do".to_vec(), resources)]);
+
+        let telemetry = structural_telemetry(&pdf).unwrap();
+
+        assert_eq!(telemetry.images_only_in_forms.count, 1);
+        assert_eq!(telemetry.images_only_in_forms.max_depth, 3);
+    }
+
+    #[test]
+    fn cyclic_forms_stop_at_cycle_guard() {
+        let mut doc = Document::with_version("1.5");
+        let form_one_id = doc.new_object_id();
+        let form_two_id = doc.new_object_id();
+        doc.objects.insert(
+            form_one_id,
+            form_stream(
+                b"/F2 Do".to_vec(),
+                Some(dictionary! { "XObject" => dictionary! { "F2" => form_two_id } }),
+            ),
+        );
+        doc.objects.insert(
+            form_two_id,
+            form_stream(
+                b"/F1 Do".to_vec(),
+                Some(dictionary! { "XObject" => dictionary! { "F1" => form_one_id } }),
+            ),
+        );
+        let resources = Object::Dictionary(dictionary! {
+            "XObject" => dictionary! { "F1" => form_one_id },
+        });
+        let pdf = save_with_pages(doc, vec![(b"/F1 Do".to_vec(), resources)]);
+
+        let telemetry = structural_telemetry(&pdf).unwrap();
+
+        assert_eq!(telemetry.images_only_in_forms.count, 0);
+        assert_eq!(telemetry.images_only_in_forms.max_depth, 2);
+    }
+
+    #[test]
+    fn counts_luminosity_soft_mask_and_its_page() {
+        let mut doc = Document::with_version("1.5");
+        let group_id = doc.add_object(form_stream(b"q Q".to_vec(), None));
+        let soft_mask_id = doc.add_object(dictionary! {
+            "S" => "Luminosity",
+            "G" => group_id,
+        });
+        let extgstate_id = doc.add_object(dictionary! { "SMask" => soft_mask_id });
+        let resources = Object::Dictionary(dictionary! {
+            "ExtGState" => dictionary! { "Mask" => extgstate_id },
+        });
+        let pdf = save_with_pages(doc, vec![(b"/Mask gs".to_vec(), resources)]);
+
+        let telemetry = structural_telemetry(&pdf).unwrap();
+
+        assert_eq!(telemetry.extgstate_soft_masks.count, 1);
+        assert_eq!(telemetry.extgstate_soft_masks.pages, 1);
+    }
+
+    fn image_stream(content: Vec<u8>) -> Object {
+        Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 1,
+                "Height" => 1,
+                "ColorSpace" => "DeviceRGB",
+                "BitsPerComponent" => 8,
+            },
+            content,
+        )
+        .into()
+    }
+
+    fn form_stream(content: Vec<u8>, resources: Option<lopdf::Dictionary>) -> Object {
+        let mut dictionary = dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+        };
+        if let Some(resources) = resources {
+            dictionary.set("Resources", resources);
+        }
+        Stream::new(dictionary, content).into()
     }
 }
