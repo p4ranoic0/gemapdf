@@ -81,8 +81,8 @@ these numbers):
   discard the alpha channel or orphan the mask XObject.
 
 What it doesn't do yet — CCITT/JBIG2/JPX decoding, a document-level JBIG2
-symbol dictionary for repeated letterheads/stamps, image deduplication,
-Form XObject DPI recursion — is tracked honestly in
+symbol dictionary for repeated letterheads/stamps, Form XObject DPI recursion —
+is tracked honestly in
 [`TODO-v2.md`](TODO-v2.md). Perceptual (JND) quality selection is available as
 an experimental, native-only CLI feature via `--quality-target`. The fuller
 design rationale

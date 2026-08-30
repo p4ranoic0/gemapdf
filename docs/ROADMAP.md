@@ -3,7 +3,7 @@
 > Registro durable de los levers investigados que requieren inversión grande.
 > Cada entrada lleva payoff MEDIDO (no estimado) donde existe, riesgo, y los
 > bloques de construcción con sus licencias (constraint del proyecto: sin AGPL).
-> Estado al 2026-07-27.
+> Estado al 2026-08-29.
 
 ## Estado actual (para ubicarse)
 
@@ -157,11 +157,12 @@ medición.** Se implementó de verdad (`/Matrix` compuesto con el CTM del `Do`,
 `/Resources` heredados si el form no los declara, guard de ciclo, tope de
 profundidad 8 y presupuesto de 200k operadores por página) y se midió sobre el
 corpus completo: **0 bytes de diferencia, 11/11 salidas byte-idénticas** sobre
-537 MB de entrada, 0 fallos de validación. No alcanza ninguno de los umbrales
-del §3 del spec de evolución incremental, así que el código productivo se
-revirtió (§7) y quedó sólo la conclusión más un test de caracterización que fija
-el gap. La salvedad original sigue vigente: imágenes dentro de Form XObjects y
-OCR invisible quedan fuera de la evidencia de escaneo.
+537 MB de entrada, 0 fallos de validación. El lever se descartó porque ese A/B
+midió **0 bytes**, no por incumplir un umbral: Slice D confirmó después que
+Forms sí gana la compuerta escrita (§6). El código productivo se revirtió (§7) y
+quedó sólo la conclusión más un test de caracterización que fija el gap. La
+salvedad original sigue vigente: imágenes dentro de Form XObjects y OCR
+invisible quedan fuera de la evidencia de escaneo.
 Corrida: `gemapdf-internal-docs/benchmarks/20260810T142628Z-2e11e619/`.
 
 **Lección de medición (NO repetir):** jamás medir calidad con SSIM2 sobre
@@ -379,12 +380,17 @@ texto pequeño. Mantener opt-in "máxima" hasta entonces.
 - `/SMask /None` (Name): **hecho**; se trata como ausencia de máscara.
 - ExtGState luminosity softmasks (`/SMask <</G form>>`): **medido el
   2026-08-29**. Las 8 máscaras del corpus sí tienen una imagen `/DCTDecode` en
-  su grupo `/G`; **7 de 8 salen byte-idénticas** (recomprimirlas no ganaba bytes
-  y el pipeline conserva el original) y **1 sí se recomprime con pérdida**
-  (`archivo muy grande de comprimir.pdf`, pág 61: 18,736 → 17,940 B). Impacto
-  visual medido con render a 100 dpi y comparación subpíxel: **delta máximo
-  1/255**, 0.06% de subpíxeles tocados, ninguno con delta > 2 — imperceptible.
-  El criterio (c) del §3 (pérdida visual) **no se activa**.
+  su grupo `/G`; el SHA-256 del stream crudo prueba que **7 de 8 salen
+  byte-idénticas** (recomprimirlas no ganaba bytes y el pipeline conserva el
+  original) y **1 sí se recomprime con pérdida**: `2897 0 R`,
+  `c250878152f5a42b…` → `bd690671fdece487…` (`archivo muy grande de
+  comprimir.pdf`, pág 61: 18,736 → 17,940 B). En esa página, renderizada con
+  `pdftoppm` a 100 dpi, la comparación subpíxel dio delta máximo 1/255, 0.06% de
+  subpíxeles tocados y ninguno con delta > 2. Es la única máscara modificada del
+  corpus, por lo que el ensayo cubre el único caso afectado, pero no permite
+  generalizar a otros renderizadores o resoluciones: **en el único caso
+  modificado, bajo este ensayo, no se observó pérdida visual suficiente para
+  activar el criterio (c)** del §3.
 - Dimensiones adversariales: **hecho** para width/height negativos, cero y
   altura sobre el máximo.
 - Warning perceptual: **hecho**; usa `Q_MAX` en vez de hardcodear 90.
@@ -438,8 +444,11 @@ contemplaba este caso.
 Además, la métrica mide **alcanzabilidad, no compresión perdida**. El pipeline
 enumera los XObjects de imagen directamente desde `doc.objects`, sin depender de
 que sean alcanzables desde el content stream: esas imágenes **ya entran al
-pipeline**. Lo único que la recursión aportaría es el DPI efectivo, que gobierna
-el downsampling. Son *19.8 MB sin geometría de colocación*, no *19.8 MB
+pipeline**. Para la compresión, la recursión aportaría el DPI efectivo que
+gobierna el downsampling; además, podría alterar la metadata heurística
+`has_scanned_pages`, porque esa evidencia comparte el mismo recorrido geométrico.
+El A/B de 0 bytes sigue cerrando el lever de compresión, pero no demuestra que
+el reporte sea idéntico. Son *19.8 MB sin geometría de colocación*, no *19.8 MB
 ignorados*.
 
 **Inline**: 0.062%, un orden de magnitud debajo del umbral. Cerrado.
@@ -457,8 +466,8 @@ Plan declarado: publicar la librería en un repo aparte. Checklist:
   publicar: después, cada uno de esos cambios sería incompatible.
 - Licencias del árbol: todas permisivas (MIT/Apache/BSD) — verificado; el modo
   perceptual añade ssimulacra2 (BSD-2) solo bajo feature.
-- Al crear el remote: **empujar también las ramas ancla** (`v2.0-levers`,
-  `v2.0-portable`) — hoy solo existen localmente.
+- El remote `origin` ya existe y las ramas ancla `v2.0-levers` y
+  `v2.0-portable` ya están publicadas allí.
 - CI ya listo (`.github/workflows/ci.yml`: fmt, tests y clippy en ambas
   variantes de features, build wasm + guard anti-ssimulacra2).
 - Gate local activo: hook `hooks/pre-commit` (`core.hooksPath=hooks`).

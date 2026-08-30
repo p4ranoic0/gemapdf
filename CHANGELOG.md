@@ -88,12 +88,13 @@ All notable changes to GemaPDF are documented in this file. The project follows
 
 ### Medido y descartado
 
-- **Recursión en Form XObjects para DPI efectivo.** Se implementó completa y se
-  midió sobre el corpus real: **0 bytes de diferencia y 11/11 salidas
-  byte-idénticas** sobre 537 MB de entrada, sin fallos de validación. No alcanza
-  ningún umbral de aceptación, así que el código productivo se revirtió y quedó
-  la conclusión más un test que caracteriza el gap. El comportamiento por
-  defecto no cambia.
+- **Form XObject recursion for effective DPI.** It was fully implemented and
+  measured on the real corpus: **0 bytes of difference and 11/11 byte-identical
+  outputs** across 537 MB of input, with no validation failures. Production code
+  was reverted because that A/B measured zero compression benefit, leaving the
+  conclusion and a characterization test for the gap. The default behavior did
+  not change. Slice D later established that Forms do pass the written gate, so
+  this was not an acceptance-threshold failure.
 
 - `SignaturePolicy::Flatten` is the documented product default in core, CLI and
   WASM, preserving visible signatures and seals in the compressed document.
