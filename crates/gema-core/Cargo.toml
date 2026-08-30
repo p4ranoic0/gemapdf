@@ -19,8 +19,14 @@ exclude = [
     "examples/mrc_spike.rs",
     "examples/ssim2_cmp.rs",
 ]
+
 keywords = ["pdf", "compression", "wasm"]
 categories = ["compression", "parser-implementations"]
+
+[[example]]
+name = "usage_report"
+path = "examples/usage_report.rs"
+required-features = ["telemetry"]
 
 [features]
 default = []
