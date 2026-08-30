@@ -27,6 +27,9 @@ default = []
 # Deriva `Serialize` en el esquema JSON del reporte. Apagado por default para
 # que el core sin features no arrastre serde.
 serde = ["dep:serde"]
+# Telemetría estructural experimental para arneses internos. No forma parte del
+# build por default ni del contrato estable del core.
+telemetry = []
 # reservados para v2 (no implementados en v1):
 # native = []  ; mozjpeg = []  ; webp = []  ; ghostscript = []  ; ocr = []
 # Modo de calidad perceptual (spec 2026-07-11): búsqueda de q por imagen

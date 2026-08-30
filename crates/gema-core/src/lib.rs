@@ -68,6 +68,9 @@ mod image_opt;
 
 pub(crate) mod geometry;
 
+#[cfg(feature = "telemetry")]
+pub mod telemetry;
+
 pub(crate) mod flatten;
 pub(crate) mod signatures;
 
