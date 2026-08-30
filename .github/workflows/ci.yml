@@ -26,6 +26,7 @@ jobs:
       # variante con el modo perceptual (feature opcional, spec 2026-07-11)
       - run: cargo clippy -p gema-core --all-targets --features perceptual -- -D warnings
       - run: cargo clippy -p gema-core --all-targets --features serde -- -D warnings
+      - run: cargo clippy -p gema-core --all-targets --features telemetry -- -D warnings
   test:
     runs-on: ubuntu-latest
     steps:
@@ -36,6 +37,8 @@ jobs:
       - run: cargo test -p gema-core --features perceptual
       # esquema JSON del reporte (feature opcional)
       - run: cargo test -p gema-core --features serde
+      # arnés interno de telemetría (sus tests deben correr igual)
+      - run: cargo test -p gema-core --features telemetry
       - run: cargo test -p gema-cli
       - run: cargo test -p gema-wasm
   wasm:
