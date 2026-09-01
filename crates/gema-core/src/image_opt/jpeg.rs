@@ -191,7 +191,123 @@ pub(crate) fn decode_cmyk_jpeg(bytes: &[u8]) -> Option<image::DynamicImage> {
 mod tests {
     use super::*;
     use image::codecs::jpeg::JpegEncoder;
+    use image::GenericImageView;
     use image::ImageEncoder;
+
+    const SYNTHETIC_CMYK_DIMENSIONS: (u32, u32) = (64, 64);
+
+    /// Codifica cuatro planos de gris con mozjpeg y los combina como los cuatro
+    /// componentes de un JPEG CMYK baseline. APP14 hace que `jpeg-decoder`
+    /// entregue estos planos en la convención invertida de Adobe.
+    fn synthetic_cmyk_jpeg() -> Vec<u8> {
+        let (width, height) = SYNTHETIC_CMYK_DIMENSIONS;
+        let mut planes = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+        for y in 0..height {
+            for x in 0..width {
+                // Fondo claro con gradientes y bandas diferentes por componente.
+                // Los samples bajos se invierten al leer el CMYK Adobe.
+                planes[0].push(20u8.saturating_add(((x * 3 + y) % 50) as u8));
+                planes[1].push(30u8.saturating_add(((x + y * 5) % 55) as u8));
+                planes[2].push(40u8.saturating_add(((x * 5 + y * 3) % 60) as u8));
+                planes[3].push(10u8.saturating_add(((x / 8 + y / 8) % 2) as u8 * 18));
+            }
+        }
+
+        let encoded: Vec<Vec<u8>> = planes
+            .iter()
+            .map(|plane| {
+                mozjpeg_rs::Encoder::new(mozjpeg_rs::Preset::BaselineFastest)
+                    .quality(90)
+                    .encode_gray(plane, width, height)
+                    .expect("mozjpeg debe codificar el plano sintético")
+            })
+            .collect();
+
+        let (dqt, dht, _) = grayscale_jpeg_parts(&encoded[0]);
+        let mut jpeg = Vec::new();
+        jpeg.extend_from_slice(&[0xFF, 0xD8]);
+        // APP14 Adobe, transform 0: los cuatro componentes son CMYK invertido.
+        jpeg.extend_from_slice(&[
+            0xFF, 0xEE, 0x00, 0x0E, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00,
+            0x00, 0x00,
+        ]);
+        jpeg.extend_from_slice(dqt);
+
+        // SOF0 con cuatro componentes, todos 1x1 y usando la tabla de cuantización 0.
+        jpeg.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x14, 0x08]);
+        jpeg.extend_from_slice(&(height as u16).to_be_bytes());
+        jpeg.extend_from_slice(&(width as u16).to_be_bytes());
+        jpeg.push(4);
+        for component in 1..=4 {
+            jpeg.extend_from_slice(&[component, 0x11, 0x00]);
+        }
+        jpeg.extend_from_slice(dht);
+
+        // Un scan no entrelazado por componente; los cuatro usan las mismas
+        // tablas Huffman baseline que mozjpeg emitió para cada plano de gris.
+        for (index, plane_jpeg) in encoded.iter().enumerate() {
+            let (_, _, entropy) = grayscale_jpeg_parts(plane_jpeg);
+            jpeg.extend_from_slice(&[
+                0xFF,
+                0xDA,
+                0x00,
+                0x08,
+                0x01,
+                (index + 1) as u8,
+                0x00,
+                0x00,
+                0x3F,
+                0x00,
+            ]);
+            jpeg.extend_from_slice(entropy);
+        }
+        jpeg.extend_from_slice(&[0xFF, 0xD9]); // EOI
+        jpeg
+    }
+
+    /// Extrae DQT, DHT y los datos entrópicos de un JPEG grayscale baseline
+    /// generado por mozjpeg. El preset elegido emite exactamente una tabla de
+    /// cada clase y un único scan.
+    fn grayscale_jpeg_parts(jpeg: &[u8]) -> (&[u8], &[u8], &[u8]) {
+        assert!(jpeg.starts_with(&[0xFF, 0xD8]));
+        assert!(jpeg.ends_with(&[0xFF, 0xD9]));
+        let mut offset = 2;
+        let mut dqt = None;
+        let mut dht = None;
+        while offset + 4 <= jpeg.len() {
+            assert_eq!(jpeg[offset], 0xFF);
+            let marker = jpeg[offset + 1];
+            let length = u16::from_be_bytes([jpeg[offset + 2], jpeg[offset + 3]]) as usize;
+            let end = offset + 2 + length;
+            assert!(end <= jpeg.len());
+            match marker {
+                0xDB => dqt = Some(&jpeg[offset..end]),
+                0xC4 => dht = Some(&jpeg[offset..end]),
+                0xDA => {
+                    return (
+                        dqt.expect("mozjpeg debe emitir DQT"),
+                        dht.expect("mozjpeg debe emitir DHT"),
+                        &jpeg[end..jpeg.len() - 2],
+                    );
+                }
+                _ => {}
+            }
+            offset = end;
+        }
+        panic!("mozjpeg debe emitir un scan SOS")
+    }
+
+    fn mean_rgb_brightness(image: &image::DynamicImage) -> f64 {
+        let rgb = image.to_rgb8();
+        let (sum, count) = rgb.pixels().fold((0u64, 0u64), |(sum, count), pixel| {
+            let pixel_sum = pixel
+                .0
+                .iter()
+                .fold(0u64, |sum, channel| sum.saturating_add(u64::from(*channel)));
+            (sum.saturating_add(pixel_sum), count.saturating_add(3))
+        });
+        sum as f64 / count as f64
+    }
 
     /// Construye una cabecera JPEG mínima con un SOF0 de `nf` componentes.
     fn jpeg_with_components(nf: u8) -> Vec<u8> {
@@ -245,24 +361,40 @@ mod tests {
         assert!(!is_cmyk_jpeg(&[0xFF, 0xD8, 0xFF]));
     }
 
-    /// Regresión del "bug del sello negro": el sello real "PERÚ PAE" es un JPEG
-    /// CMYK (YCCK). `image`/zune-jpeg lo devolvía casi todo negro; `decode_cmyk_jpeg`
-    /// debe devolver la imagen con color real. Verificamos que NO es casi-negra
-    /// (brillo medio alto — el sello es mayormente blanco/rojo) y sus dimensiones.
+    /// Regresión del "bug del sello negro": un JPEG CMYK Adobe mayormente claro
+    /// debe conservar su color al pasar por el decodificador específico.
     #[test]
-    fn real_cmyk_seal_decodes_to_color_not_black() {
-        let bytes = include_bytes!("../../tests/fixtures/cmyk_seal.jpg");
-        assert!(is_cmyk_jpeg(bytes), "el fixture debe ser CMYK (4 comp)");
-        let img = decode_cmyk_jpeg(bytes).expect("debe decodificar el CMYK");
-        let rgb = img.to_rgb8();
-        assert_eq!(rgb.dimensions(), (148, 148));
-        let (sum, n) = rgb.pixels().fold((0u64, 0u64), |(s, n), p| {
-            (s + p.0[0] as u64 + p.0[1] as u64 + p.0[2] as u64, n + 3)
-        });
-        let mean = sum as f64 / n as f64;
+    fn synthetic_cmyk_jpeg_decodes_to_color_not_black() {
+        let bytes = synthetic_cmyk_jpeg();
+        assert!(is_cmyk_jpeg(&bytes), "el fixture debe ser CMYK (4 comp)");
+        let image = decode_cmyk_jpeg(&bytes).expect("debe decodificar el CMYK");
+        assert_eq!(image.dimensions(), SYNTHETIC_CMYK_DIMENSIONS);
+        let mean = mean_rgb_brightness(&image);
         assert!(
             mean > 100.0,
-            "el sello decodificado no debe ser casi negro (brillo medio {mean:.0}/255)"
+            "el CMYK decodificado no debe ser casi negro (brillo medio {mean:.0}/255)"
+        );
+    }
+
+    /// Gate de fidelidad: el fixture sólo es útil si reproduce el ennegrecido de
+    /// `image`/zune-jpeg y a la vez se ve claro con `decode_cmyk_jpeg`.
+    #[test]
+    fn generic_decoder_blackens_synthetic_cmyk_but_ours_does_not() {
+        let bytes = synthetic_cmyk_jpeg();
+        let generic = image::load_from_memory(&bytes).expect("image debe abrir el CMYK");
+        let ours = decode_cmyk_jpeg(&bytes).expect("debe decodificar el CMYK");
+        let generic_mean = mean_rgb_brightness(&generic);
+        let ours_mean = mean_rgb_brightness(&ours);
+        eprintln!(
+            "gate de fidelidad CMYK: image/zune={generic_mean:.2}/255, nuestro={ours_mean:.2}/255"
+        );
+        assert!(
+            generic_mean < 32.0,
+            "image/zune debe reproducir el ennegrecido (brillo medio {generic_mean:.2}/255)"
+        );
+        assert!(
+            ours_mean > 100.0,
+            "nuestro decoder debe conservar el color (brillo medio {ours_mean:.2}/255)"
         );
     }
 
