@@ -306,8 +306,8 @@ tres, sólo se sostiene en uno.
    un stat por *XObject* (82 bases + 15 máscaras = **97**). Cuadra exacto: no
    hay objetos perdidos ni inline images sin contabilizar.
 
-Reproducir: `npm run gs:ref -- ~/Downloads/doc-A ebook` y después
-`gemapdf/scripts/compare-engines.sh ~/Downloads/doc-A ebook 84` (desde el
+Reproducir: `npm run gs:ref -- "$GEMAPDF_CORPUS" ebook` y después
+`gemapdf/scripts/compare-engines.sh "$GEMAPDF_CORPUS" ebook 84` (desde el
 commit 57e30ac el arnés recompila siempre: antes podía medir un binario viejo y
 emitir una tabla creíble pero falsa).
 

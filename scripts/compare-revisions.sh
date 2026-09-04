@@ -11,7 +11,7 @@
 #   baseline_ref = HEAD
 #   profile      = ebook
 #   repetitions  = 3
-#   corpus_dir   = ~/Downloads/doc-A
+#   corpus_dir   = $GEMAPDF_CORPUS (obligatorio: variable o 4º argumento)
 #   results_root = ../gemapdf-internal-docs/benchmarks
 #
 # Ejemplos:
@@ -32,7 +32,7 @@ fi
 BASELINE_REF="${1:-HEAD}"
 PROFILE="${2:-ebook}"
 REPETITIONS="${3:-3}"
-CORPUS="${4:-$HOME/Downloads/doc-A}"
+CORPUS="${4:-${GEMAPDF_CORPUS:?definí GEMAPDF_CORPUS o pasá el corpus como 4º argumento}}"
 INTERNAL_DOCS="${GEMAPDF_INTERNAL_DOCS:-$ROOT:h/gemapdf-internal-docs}"
 RESULTS_ROOT="${5:-$INTERNAL_DOCS/benchmarks}"
 RUST_TOOLCHAIN="${GEMA_RUST_TOOLCHAIN:-1.97.1}"

@@ -13,14 +13,14 @@
 #
 # Uso:
 #   scripts/compare-engines.sh [corpus_dir] [perfil] [tau]
-#   scripts/compare-engines.sh ~/Downloads/doc-A ebook 84
+#   GEMAPDF_CORPUS=/ruta/al/corpus scripts/compare-engines.sh "$GEMAPDF_CORPUS" ebook 84
 #
 # El TAMAÑO es sólo la mitad del veredicto: para el gate de calidad renderizá
 # páginas de las dos salidas y miralas (ver el bloque final que imprime el
 # comando pdftoppm listo para copiar).
 
 set -u
-CORPUS="${1:-$HOME/Downloads/doc-A}"
+CORPUS="${1:-${GEMAPDF_CORPUS:?definí GEMAPDF_CORPUS o pasá el corpus como primer argumento}}"
 PROFILE="${2:-ebook}"
 TAU="${3:-84}"
 
