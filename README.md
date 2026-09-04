@@ -1,5 +1,11 @@
 # GemaPDF
 
+[![crates.io](https://img.shields.io/crates/v/gema-core.svg)](https://crates.io/crates/gema-core)
+[![docs.rs](https://docs.rs/gema-core/badge.svg)](https://docs.rs/gema-core)
+[![CI](https://github.com/p4ranoic0/gemapdf/actions/workflows/ci.yml/badge.svg)](https://github.com/p4ranoic0/gemapdf/actions/workflows/ci.yml)
+[![license](https://img.shields.io/crates/l/gema-core.svg)](https://github.com/p4ranoic0/gemapdf)
+[![MSRV](https://img.shields.io/crates/msrv/gema-core.svg)](https://github.com/p4ranoic0/gemapdf)
+
 A pure-Rust, portable PDF compression engine. It ships as three crates:
 
 - **`gema-core`** — the compression engine itself. Pure Rust, no C bindings,
