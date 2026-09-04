@@ -27,11 +27,12 @@ GemaPDF takes a different approach: implement the actual PDF image-compression
 pipeline (parse, decode, downsample, re-encode, rewrite) in pure Rust, with no
 GPL/AGPL code anywhere in the tree. The payoff:
 
-- **WASM bundle size:** ~1.1 MB (pre-gzip), versus ~14 MB for `ghostscript-wasm`
-  (measured `wasm-pack build --target web` output of `crates/gema-wasm`
-  — `pkg/gema_wasm_bg.wasm`, no Ghostscript in the dependency graph to compare
-  against — the 14 MB figure is the published size of AGPL ghostscript-wasm
-  builds).
+- **WASM bundle size:** 1.35 MB pre-gzip (1,413,929 bytes), 0.52 MB gzipped,
+  versus ~14 MB for `ghostscript-wasm` (measured on the `wasm-pack build
+  --target web` output of `crates/gema-wasm` at 0.5.0 —
+  `pkg/gema_wasm_bg.wasm`; there is no Ghostscript in the dependency graph to
+  compare against, so the 14 MB figure is the published size of AGPL
+  ghostscript-wasm builds).
 - **License-clean:** permissive dependencies only (enforced with `cargo-deny`),
   safe to embed anywhere, including closed-source and commercial products,
   without triggering AGPL network-use clauses.
@@ -339,21 +340,22 @@ does not fail, it returns the document untouched. Observe it through
 
 ## Regression benchmarking
 
-To compare the current working tree with a Git revision over the private
-`~/Downloads/doc-A` corpus:
+To compare the current working tree with a Git revision over a local corpus
+of PDFs. The corpus directory and the results root are arguments, so point
+them wherever your files live:
 
 ```sh
-scripts/compare-revisions.sh HEAD ebook 3
+scripts/compare-revisions.sh HEAD ebook 3 /path/to/corpus /path/to/results
 ```
 
 Then validate rendered output against the immutable originals:
 
 ```sh
-scripts/compare-visuals.py ../gemapdf-internal-docs/benchmarks/<run-id> \
+scripts/compare-visuals.py /path/to/results/<run-id> \
   --against original
 
 # A strict visual-regression gate between the two compressed revisions:
-scripts/compare-visuals.py ../gemapdf-internal-docs/benchmarks/<run-id> \
+scripts/compare-visuals.py /path/to/results/<run-id> \
   --against baseline --max-changed-pct 0
 ```
 
@@ -363,9 +365,9 @@ with qpdf. Reports include pixel-change rate, MAE, RMS, PSNR, heatmaps, and
 side-by-side sheets. Explicit page/range selection remains available.
 
 The corpus is read-only. Derived PDFs, timings, validation logs, checksums and
-the summary are written to a timestamped directory under the external sibling
-`../gemapdf-internal-docs/benchmarks/`; nothing from the corpus is copied
-into this repository. Run `scripts/compare-revisions.sh --help` to override the
+the summary are written to a timestamped directory under the results root you
+pass, which is expected to live outside the repository; nothing from the corpus
+is copied into this repository. Run `scripts/compare-revisions.sh --help` to override the
 baseline, profile, repetitions, corpus or results root.
 
 ## Roadmap
