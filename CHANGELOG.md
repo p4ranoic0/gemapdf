@@ -3,6 +3,35 @@
 All notable changes to GemaPDF are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- `erase_text` (core and WASM) removes the glyphs that fall inside given page
+  regions from the content stream, replacing each one with the equivalent `TJ`
+  displacement so the rest of the line does not move. Built for a PDF editor
+  that used to hide replaced text under a filled rectangle, leaving it
+  selectable and searchable in the file.
+
+  It never erases a glyph outside a region. Pages with `/Rotate`, `/UserUnit`,
+  a box not starting at the origin, inline images, or text it cannot measure
+  (Type3, CMaps other than `Identity-H`, Symbol/ZapfDingbats, fonts without
+  metrics, rotated or clipping text) are left intact and reported per region.
+  After rewriting, the page is re-interpreted; if any other glyph changed code
+  or moved more than 0.01 pt, the original page is restored. The replaced
+  content stream is deleted when no other page references it.
+- Internal text interpreter with per-glyph geometry (full text state, simple
+  fonts with `/Widths`, Type0 `Identity-H` with `/W`/`/DW`, and embedded AFM
+  widths for the 12 Latin Core14 fonts). Not public API.
+
+### Measured
+
+- WASM release package (`wasm-pack build --target web`): **1,413,929 → 1,519,355
+  bytes (+105 KB)**. A first version that decoded fonts through lopdf's
+  `get_font_encoding` pulled in its glyph-name `match` (thousands of arms):
+  +889 KB, and the debug module was rejected by V8 with "too many locals".
+  Own static tables replace it.
+
 ## 0.5.0 — 2026-08-29
 
 ### Added

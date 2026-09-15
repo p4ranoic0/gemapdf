@@ -1,6 +1,6 @@
 use gema_core::{
-    compress as core_compress, compress_with_progress, CompressOptions, Phase, Profile, Report,
-    ReportJson, SignaturePolicy,
+    compress as core_compress, compress_with_progress, CompressOptions, EraseRegion, Phase,
+    Profile, Report, ReportJson, SignaturePolicy,
 };
 use serde_wasm_bindgen::Serializer;
 use wasm_bindgen::prelude::*;
@@ -106,6 +106,43 @@ pub fn compress_with_report(
         &out,
         &JsValue::from_str("output"),
         &js_sys::Uint8Array::from(&res.output[..]),
+    )
+    .map_err(|_| JsError::new("no se pudo construir el objeto resultado"))?;
+    js_sys::Reflect::set(&out, &JsValue::from_str("report"), &report)
+        .map_err(|_| JsError::new("no se pudo construir el objeto resultado"))?;
+    Ok(out.into())
+}
+
+/// Borra de verdad el texto que cae dentro de unas regiones.
+///
+/// - `regions`: array de `{ id: string, page: number (base 0), x, y, width,
+///   height }` en puntos, espacio de página PDF (origen abajo a la izquierda).
+///
+/// Devuelve `{ output: Uint8Array, report: { regions: [{ id, page,
+/// erased_glyphs, status }] } }`. `status` ∈ "erased" | "erased_unverified" |
+/// "nothing_found" | "skipped_encrypted" | "skipped_invalid_region" |
+/// "skipped_page_geometry" | "skipped_content" | "skipped_unsupported_text" |
+/// "skipped_verification". Sólo "erased" garantiza que en la región ya no queda
+/// texto; en cualquier otro caso el llamador debe seguir tapando la región.
+#[wasm_bindgen]
+pub fn erase_text(input: &[u8], regions: JsValue) -> Result<JsValue, JsError> {
+    let regions: Vec<EraseRegion> = serde_wasm_bindgen::from_value(regions)
+        .map_err(|e| JsError::new(&format!("regiones inválidas: {e}")))?;
+    let result =
+        gema_core::erase_text(input, &regions).map_err(|e| JsError::new(&e.to_string()))?;
+
+    let report = js_sys::Object::new();
+    js_sys::Reflect::set(
+        &report,
+        &JsValue::from_str("regions"),
+        &to_js_object(&result.regions)?,
+    )
+    .map_err(|_| JsError::new("no se pudo construir el informe"))?;
+    let out = js_sys::Object::new();
+    js_sys::Reflect::set(
+        &out,
+        &JsValue::from_str("output"),
+        &js_sys::Uint8Array::from(&result.output[..]),
     )
     .map_err(|_| JsError::new("no se pudo construir el objeto resultado"))?;
     js_sys::Reflect::set(&out, &JsValue::from_str("report"), &report)

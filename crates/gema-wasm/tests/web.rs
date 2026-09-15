@@ -84,3 +84,74 @@ fn compress_with_report_accepts_memory_limits() {
     let deduplicated = js_sys::Reflect::get(&images, &"deduplicated".into()).unwrap();
     assert_eq!(deduplicated.as_f64(), Some(0.0));
 }
+
+fn pdf_with_text(content: &[u8]) -> Vec<u8> {
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+        "Encoding" => "WinAnsiEncoding",
+    });
+    let content_id = doc.add_object(Stream::new(dictionary! {}, content.to_vec()));
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Contents" => content_id,
+        "Resources" => dictionary! { "Font" => dictionary! { "F1" => font_id } },
+        "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+    });
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![page_id.into()],
+            "Count" => 1,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog_id);
+    let mut bytes = Vec::new();
+    doc.save_to(&mut bytes).unwrap();
+    bytes
+}
+
+/// El contrato que consume el editor: regiones como objetos JS planos, salida
+/// `Uint8Array` y estados en snake_case con el `id` devuelto tal cual.
+#[wasm_bindgen_test]
+fn erase_text_speaks_plain_js() {
+    let input = pdf_with_text(b"BT /F1 12 Tf 1 0 0 1 100 700 Tm (Secreto) Tj ET");
+    let region = js_sys::Object::new();
+    for (key, value) in [
+        ("page", 0.0),
+        ("x", 90.0),
+        ("y", 690.0),
+        ("width", 200.0),
+        ("height", 30.0),
+    ] {
+        js_sys::Reflect::set(&region, &key.into(), &JsValue::from_f64(value)).unwrap();
+    }
+    js_sys::Reflect::set(&region, &"id".into(), &"bloque-7".into()).unwrap();
+    let regions = js_sys::Array::of1(&region);
+
+    let result = gema_wasm::erase_text(&input, regions.into()).unwrap();
+    let output = js_sys::Reflect::get(&result, &"output".into()).unwrap();
+    let bytes = js_sys::Uint8Array::new(&output).to_vec();
+    let doc = Document::load_mem(&bytes).unwrap();
+    let page_id = doc.get_pages()[&1];
+    let content = doc.get_page_content(page_id).unwrap();
+    assert!(!content.windows(7).any(|window| window == b"Secreto"));
+
+    let report = js_sys::Reflect::get(&result, &"report".into()).unwrap();
+    let reported = js_sys::Reflect::get(&report, &"regions".into()).unwrap();
+    let first = js_sys::Array::from(&reported).get(0);
+    let field = |name: &str| js_sys::Reflect::get(&first, &name.into()).unwrap();
+    assert_eq!(field("id").as_string().as_deref(), Some("bloque-7"));
+    assert_eq!(field("status").as_string().as_deref(), Some("erased"));
+    assert_eq!(field("erased_glyphs").as_f64(), Some(7.0));
+}
+
+#[wasm_bindgen_test]
+fn erase_text_rejects_malformed_regions() {
+    let input = pdf_with_text(b"BT /F1 12 Tf 1 0 0 1 100 700 Tm (Hola) Tj ET");
+    assert!(gema_wasm::erase_text(&input, JsValue::from_str("no es un array")).is_err());
+}

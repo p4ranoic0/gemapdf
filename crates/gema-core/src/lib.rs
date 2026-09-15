@@ -67,6 +67,10 @@ pub use analyze::analyze;
 mod image_opt;
 
 pub(crate) mod geometry;
+pub(crate) mod text_geometry;
+
+mod text_erase;
+pub use text_erase::{erase_text, EraseRegion, EraseResult, EraseStatus, RegionReport};
 
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
