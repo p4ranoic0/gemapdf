@@ -9,14 +9,14 @@ exclude = ["fuzz"]
 
 [workspace.package]
 edition = "2021"
-version = "0.5.0"
+version = "0.6.0"
 rust-version = "1.97.1"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/p4ranoic0/gemapdf"
 readme = "README.md"
 
 [workspace.dependencies]
-gema-core = { version = "0.5.0", path = "crates/gema-core" }
+gema-core = { version = "0.6.0", path = "crates/gema-core" }
 lopdf = "0.43"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 flate2 = "1"

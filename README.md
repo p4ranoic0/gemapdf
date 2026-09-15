@@ -33,9 +33,9 @@ GemaPDF takes a different approach: implement the actual PDF image-compression
 pipeline (parse, decode, downsample, re-encode, rewrite) in pure Rust, with no
 GPL/AGPL code anywhere in the tree. The payoff:
 
-- **WASM bundle size:** 1.35 MB pre-gzip (1,413,929 bytes), 0.52 MB gzipped,
-  versus ~14 MB for `ghostscript-wasm` (measured on the `wasm-pack build
-  --target web` output of `crates/gema-wasm` at 0.5.0 —
+- **WASM bundle size:** 1.45 MB pre-gzip (1,519,364 bytes), 0.56 MB with
+  `gzip -9`, versus ~14 MB for `ghostscript-wasm` (measured on the `wasm-pack build
+  --target web` output of `crates/gema-wasm` at 0.6.0 —
   `pkg/gema_wasm_bg.wasm`; there is no Ghostscript in the dependency graph to
   compare against, so the 14 MB figure is the published size of AGPL
   ghostscript-wasm builds).

@@ -3,7 +3,7 @@
 All notable changes to GemaPDF are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.6.0 — 2026-09-15
 
 ### Added
 
@@ -26,7 +26,7 @@ All notable changes to GemaPDF are documented in this file. The project follows
 
 ### Measured
 
-- WASM release package (`wasm-pack build --target web`): **1,413,929 → 1,519,355
+- WASM release package (`wasm-pack build --target web`): **1,413,929 → 1,519,364
   bytes (+105 KB)**. A first version that decoded fonts through lopdf's
   `get_font_encoding` pulled in its glyph-name `match` (thousands of arms):
   +889 KB, and the debug module was rejected by V8 with "too many locals".
