@@ -1,9 +1,22 @@
 #!/usr/bin/env bash
 # Gate de tamaño del paquete WASM. El techo se pasa por argumento o sale del
-# valor por defecto, que es el tamaño medido en la 0.6.0 antes de separar los
-# crates. Mover código entre crates no puede mover un byte de este número.
+# valor por defecto.
+#
+# Medido el 2026-09-16, con `lto = "fat"` y `codegen-units = 1`:
+#
+#   antes de separar, sin LTO ... 1519364   (el techo viejo)
+#   después de separar, sin LTO . 1537665   (+18301)
+#   antes de separar, con LTO ... 1368389
+#   después de separar, con LTO . 1384354   (+15965)  <- el techo de hoy
+#
+# Dos conclusiones que conviene no perder. Primera: separar un crate en dos
+# SÍ cuesta bytes —unos 16 KB de genéricas de lopdf instanciadas de los dos
+# lados— y ni el LTO más agresivo las deduplica; la idea de que mover código
+# entre crates es gratis quedó refutada por medición. Segunda: activar LTO
+# saca 151 KB, así que el bundle queda más chico que antes de que existiera
+# el borrado de texto.
 set -euo pipefail
-CEILING="${1:-1519364}"
+CEILING="${1:-1384354}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/crates/gema-wasm"
 wasm-pack build --target web >/dev/null 2>&1

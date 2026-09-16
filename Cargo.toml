@@ -16,6 +16,15 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/p4ranoic0/gemapdf"
 readme = "README.md"
 
+# El perfil de release nunca estuvo configurado: todo lo publicado hasta la
+# 0.5.0 se compiló con el default (`lto = false`, `codegen-units = 16`).
+# Medido el 2026-09-16 sobre el paquete wasm: activarlo saca 151 KB, más que
+# cualquier lever de compresión que siga abierto. A cambio, los builds de
+# release tardan bastante más; el desarrollo diario no cambia.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
 [workspace.dependencies]
 gema-core = { version = "0.6.0", path = "crates/gema-core" }
 gema-edit = { version = "0.6.0", path = "crates/gema-edit" }

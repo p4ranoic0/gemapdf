@@ -580,6 +580,7 @@ name = "gema-wasm"
 version = "0.6.0"
 dependencies = [
  "gema-core",
+ "gema-edit",
  "getrandom",
  "js-sys",
  "lopdf",
