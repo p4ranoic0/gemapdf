@@ -567,6 +567,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gema-edit"
+version = "0.6.0"
+dependencies = [
+ "lopdf",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "gema-wasm"
 version = "0.6.0"
 dependencies = [

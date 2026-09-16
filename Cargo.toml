@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/gema-core",
+    "crates/gema-edit",
     "crates/gema-wasm",
     "crates/gema-cli",
 ]
@@ -17,6 +18,7 @@ readme = "README.md"
 
 [workspace.dependencies]
 gema-core = { version = "0.6.0", path = "crates/gema-core" }
+gema-edit = { version = "0.6.0", path = "crates/gema-edit" }
 lopdf = "0.43"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 flate2 = "1"

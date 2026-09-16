@@ -1,0 +1,25 @@
+[package]
+name = "gema-edit"
+description = "Regional text editing for PDF documents: remove glyphs inside a region"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["pdf", "text", "wasm"]
+categories = ["text-processing", "wasm"]
+# El fixture de tests pesa 450 KB y no tiene por qué viajar en el paquete
+# publicado. `include` deja fuera todo lo que no se enumere acá.
+include = ["src/**", "THIRD_PARTY_NOTICES.md"]
+
+[features]
+default = []
+# Deriva Serialize/Deserialize en los tipos del informe. Apagado por default
+# para que el crate sin features no arrastre serde.
+serde = ["dep:serde"]
+
+[dependencies]
+lopdf.workspace = true
+thiserror.workspace = true
+serde = { version = "1", features = ["derive"], optional = true }
