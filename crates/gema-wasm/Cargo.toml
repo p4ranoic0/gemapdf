@@ -14,7 +14,7 @@ categories = ["compression", "wasm"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-gema-core = { workspace = true, features = ["serde"] }
+gema-compress = { workspace = true, features = ["serde"] }
 gema-edit = { workspace = true, features = ["serde"] }
 wasm-bindgen = "0.2"
 js-sys = "0.3"

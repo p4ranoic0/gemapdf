@@ -1,4 +1,4 @@
-use gema_core::{compress, CompressOptions, Profile};
+use gema_compress::{compress, CompressOptions, Profile};
 use image::codecs::jpeg::JpegEncoder;
 use image::{ImageEncoder, RgbImage};
 use lopdf::{dictionary, Document, Object, Stream};
@@ -192,7 +192,7 @@ fn high_dpi_image_downsamples_and_saves_more() {
     assert_eq!(with_ds.report.images.len(), 1);
     assert_eq!(
         with_ds.report.images[0].action,
-        gema_core::ImageAction::Downsampled,
+        gema_compress::ImageAction::Downsampled,
         "P2: 600 DPI vs objetivo 150 → debe downsamplear, images={:?}",
         with_ds.report.images
     );

@@ -2,7 +2,7 @@
 
 use std::cell::Cell;
 
-use gema_core::{compress_with_control, CancelSignal, CompressOptions};
+use gema_compress::{compress_with_control, CancelSignal, CompressOptions};
 use libfuzzer_sys::fuzz_target;
 
 struct PseudoRandomCancel {

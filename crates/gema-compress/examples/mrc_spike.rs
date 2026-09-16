@@ -14,7 +14,7 @@
 //! la resolución). Revivir SOLO si el corpus migra a 300+ dpi. Nota: eg_p98
 //! (certificado, CMYK) se descartó — este spike lo carga con `image::open`
 //! (zune) que lo decodifica NEGRO (el bug del "sello negro"); un MRC real
-//! usaría el workaround jpeg-decoder+Adobe de gema-core.
+//! usaría el workaround jpeg-decoder+Adobe de gema-compress.
 //! ══════════════════════════════════════════════════════════════════════════
 //!
 //! Segmenta UN escaneo (imagen ya extraída con `pdfimages -j`) en MRC:

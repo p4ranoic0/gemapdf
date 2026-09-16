@@ -23,7 +23,7 @@ mod tests {
 
     #[test]
     fn display_is_identical_to_the_old_core_error() {
-        // Los textos se copian LITERALMENTE de gema-core: este plan no puede
+        // Los textos se copian LITERALMENTE de gema-compress: este plan no puede
         // cambiar ni una palabra de lo que ve el usuario.
         assert_eq!(
             EditError::Parse("x".into()).to_string(),

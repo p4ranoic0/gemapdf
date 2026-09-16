@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/gema-core",
+    "crates/gema-compress",
     "crates/gema-edit",
     "crates/gema-wasm",
     "crates/gema-cli",
@@ -26,7 +26,7 @@ lto = "fat"
 codegen-units = 1
 
 [workspace.dependencies]
-gema-core = { version = "0.6.0", path = "crates/gema-core" }
+gema-compress = { version = "0.6.0", path = "crates/gema-compress" }
 gema-edit = { version = "0.6.0", path = "crates/gema-edit" }
 lopdf = "0.43"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

@@ -1,5 +1,5 @@
 [package]
-name = "gema-core"
+name = "gema-compress"
 description = "Pure-Rust portable PDF compression engine (WASM + native), no AGPL"
 edition.workspace = true
 version.workspace = true

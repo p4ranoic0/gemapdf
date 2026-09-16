@@ -1,4 +1,4 @@
-//! gema-core: compresión PDF portable (Rust puro → WASM + nativo).
+//! gema-compress: compresión PDF portable (Rust puro → WASM + nativo).
 //!
 //! [`analyze`] inspecciona un PDF sin tocarlo; [`compress`],
 //! [`compress_with_progress`] y [`compress_with_control`] producen el PDF
@@ -6,7 +6,7 @@
 //! con control de forma cooperativa.
 //!
 //! ```no_run
-//! use gema_core::{compress, CompressOptions, Profile};
+//! use gema_compress::{compress, CompressOptions, Profile};
 //!
 //! let pdf = std::fs::read("entrada.pdf")?;
 //! let res = compress(

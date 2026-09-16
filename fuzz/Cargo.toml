@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-gema-core = { path = "../crates/gema-core" }
+gema-compress = { path = "../crates/gema-compress" }
 
 [[bin]]
 name = "analyze"

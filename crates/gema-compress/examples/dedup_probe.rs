@@ -1,5 +1,5 @@
 //! Sonda: mide cuánto recuperaría deduplicar streams byte-idénticos en un PDF.
-//! Uso: cargo run --release -p gema-core --example dedup_probe -- <pdf...>
+//! Uso: cargo run --release -p gema-compress --example dedup_probe -- <pdf...>
 //!
 //! Un merge de documentos suele embeber la MISMA fuente (o imagen) muchas veces
 //! como objetos separados. Si su contenido de stream es byte-idéntico, se pueden

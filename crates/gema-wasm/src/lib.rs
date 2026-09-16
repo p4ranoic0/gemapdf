@@ -1,4 +1,4 @@
-use gema_core::{
+use gema_compress::{
     compress as core_compress, compress_with_progress, CompressOptions, Phase, Profile, Report,
     ReportJson, SignaturePolicy,
 };
@@ -35,7 +35,7 @@ pub fn compress(input: &[u8], profile: &str) -> Result<Vec<u8>, JsError> {
 /// vienen a 0 (el análisis no recorre imágenes en v1).
 #[wasm_bindgen]
 pub fn analyze(input: &[u8]) -> Result<JsValue, JsError> {
-    let report = gema_core::analyze(input).map_err(|e| JsError::new(&e.to_string()))?;
+    let report = gema_compress::analyze(input).map_err(|e| JsError::new(&e.to_string()))?;
     to_js_object(&to_js_report(&report, None))
 }
 
@@ -252,7 +252,7 @@ fn phase_to_js(p: Phase) -> JsValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gema_core::{
+    use gema_compress::{
         ImageAction, ImageSkipReason, ImageSkipSummary, ImageStat, Phase, Report, SignaturePolicy,
         Warning,
     };

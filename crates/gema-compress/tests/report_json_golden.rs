@@ -3,7 +3,7 @@
 //! (subir además `REPORT_SCHEMA_VERSION`).
 #![cfg(feature = "serde")]
 
-use gema_core::{
+use gema_compress::{
     ImageAction, ImageSkipReason, ImageSkipSummary, ImageStat, Report, ReportJson, SignaturePolicy,
     Warning,
 };

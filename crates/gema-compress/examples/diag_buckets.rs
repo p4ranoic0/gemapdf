@@ -4,7 +4,7 @@
 //!
 //! Uso: diag_buckets <dpi> <quality> <pdf...>
 
-use gema_core::{compress, CompressOptions, ImageAction};
+use gema_compress::{compress, CompressOptions, ImageAction};
 use lopdf::{Document, Object};
 use std::collections::HashMap;
 use std::path::Path;

@@ -4,13 +4,13 @@
 //! línea CSV con métricas agregadas (sin contenido). Uso:
 //!
 //! ```sh
-//! cargo run -p gema-core --features telemetry --example usage_report -- ebook a.pdf b.pdf
+//! cargo run -p gema-compress --features telemetry --example usage_report -- ebook a.pdf b.pdf
 //! ```
 //!
 //! Primer argumento = perfil (screen|ebook|printer). El resto = rutas a PDFs.
 //! No imprime nombres completos: solo el basename, para no filtrar rutas.
 
-use gema_core::{
+use gema_compress::{
     compress,
     telemetry::{structural_telemetry, StructuralTelemetry},
     CompressOptions, ImageAction, ImageSkipReason, Profile,

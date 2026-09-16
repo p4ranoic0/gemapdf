@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use gema_core::{analyze, compress, CompressOptions, Profile, SignaturePolicy};
+use gema_compress::{analyze, compress, CompressOptions, Profile, SignaturePolicy};
 use std::fs;
 use std::process::ExitCode;
 
@@ -128,9 +128,9 @@ fn run(cli: Cli) -> Result<(), String> {
             if json || json_images {
                 // stdout es JSON puro: cualquier aviso va a stderr.
                 let view = if json_images {
-                    gema_core::ReportJson::from_report_with_images(&r, Some(signatures))
+                    gema_compress::ReportJson::from_report_with_images(&r, Some(signatures))
                 } else {
-                    gema_core::ReportJson::from_report(&r, Some(signatures))
+                    gema_compress::ReportJson::from_report(&r, Some(signatures))
                 };
                 println!(
                     "{}",
@@ -181,7 +181,7 @@ fn run(cli: Cli) -> Result<(), String> {
             let r = analyze(&bytes).map_err(|e| e.to_string())?;
             if json {
                 // `analyze` no aplica política de firmas: el campo va ausente.
-                let view = gema_core::ReportJson::from_report(&r, None);
+                let view = gema_compress::ReportJson::from_report(&r, None);
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&view).map_err(|e| e.to_string())?

@@ -3,5 +3,5 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    let _ = gema_core::compress(data, &gema_core::CompressOptions::default());
+    let _ = gema_compress::compress(data, &gema_compress::CompressOptions::default());
 });
