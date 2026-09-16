@@ -2,14 +2,13 @@
 //!
 //! Esta fase sólo observa. Si una fuente o un código no tiene métricas fiables,
 //! registra el motivo y no inventa posiciones que G2 pudiera usar para borrar.
-#![allow(dead_code)] // G2 consumirá este módulo; G1 sólo lo ejerce desde tests.
 
 use std::collections::{HashMap, HashSet};
 
 use lopdf::content::Content;
 use lopdf::{Dictionary, Document, Object, ObjectId};
 
-use crate::geometry::Matrix;
+use crate::matrix::Matrix;
 
 #[path = "core14_metrics.rs"]
 mod core14_metrics;

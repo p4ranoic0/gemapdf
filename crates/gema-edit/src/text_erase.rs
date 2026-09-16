@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use lopdf::content::{Content, Operation};
 use lopdf::{dictionary, Document, Object, ObjectId, Stream, StringFormat};
 
-use crate::error::GemaError;
+use crate::error::EditError;
 use crate::text_geometry::{interpret_page_text, Glyph, PageText};
 
 /// Tolerancia de posición al verificar que los glifos no borrados siguen en su
@@ -120,7 +120,7 @@ pub struct EraseResult {
 ///
 /// Un documento cifrado no es un error: se devuelve intacto con
 /// [`EraseStatus::SkippedEncrypted`].
-pub fn erase_text(input: &[u8], regions: &[EraseRegion]) -> Result<EraseResult, GemaError> {
+pub fn erase_text(input: &[u8], regions: &[EraseRegion]) -> Result<EraseResult, EditError> {
     let mut reports: Vec<RegionReport> = regions
         .iter()
         .map(|region| RegionReport {
@@ -138,7 +138,7 @@ pub fn erase_text(input: &[u8], regions: &[EraseRegion]) -> Result<EraseResult, 
         return Ok(unchanged(reports));
     }
 
-    let mut doc = Document::load_mem(input).map_err(|e| GemaError::Parse(e.to_string()))?;
+    let mut doc = Document::load_mem(input).map_err(|e| EditError::Parse(e.to_string()))?;
     if doc.is_encrypted() {
         for report in &mut reports {
             report.status = EraseStatus::SkippedEncrypted;
@@ -176,7 +176,7 @@ pub fn erase_text(input: &[u8], regions: &[EraseRegion]) -> Result<EraseResult, 
     }
     let mut output = Vec::new();
     doc.save_to(&mut output)
-        .map_err(|e| GemaError::Io(e.to_string()))?;
+        .map_err(|e| EditError::Io(e.to_string()))?;
     Ok(EraseResult {
         output,
         regions: reports,

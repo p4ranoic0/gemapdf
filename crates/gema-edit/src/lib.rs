@@ -9,3 +9,7 @@ mod error;
 pub use error::EditError;
 
 pub(crate) mod matrix;
+pub(crate) mod text_geometry;
+
+mod text_erase;
+pub use text_erase::{erase_text, EraseRegion, EraseResult, EraseStatus, RegionReport};

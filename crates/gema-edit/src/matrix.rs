@@ -5,10 +5,6 @@
 //! fijada por la especificación del PDF y no va a cambiar, pero la
 //! representación, la precisión o un arreglo aplicado de un solo lado sí
 //! pueden divergir: **cualquier cambio acá se replica allá, y al revés.**
-// Su consumidor, `text_geometry`, llega en el commit siguiente de este mismo
-// refactor. Hasta entonces el tipo está sin usar y clippy lo trataría como
-// código muerto. Quitar este allow cuando el intérprete se mude.
-#![allow(dead_code)]
 
 /// Matriz de transformación PDF `[a b c d e f]`, que representa
 /// ```text

@@ -1,7 +1,8 @@
 use gema_core::{
-    compress as core_compress, compress_with_progress, CompressOptions, EraseRegion, Phase,
-    Profile, Report, ReportJson, SignaturePolicy,
+    compress as core_compress, compress_with_progress, CompressOptions, Phase, Profile, Report,
+    ReportJson, SignaturePolicy,
 };
+use gema_edit::EraseRegion;
 use serde_wasm_bindgen::Serializer;
 use wasm_bindgen::prelude::*;
 
@@ -129,7 +130,7 @@ pub fn erase_text(input: &[u8], regions: JsValue) -> Result<JsValue, JsError> {
     let regions: Vec<EraseRegion> = serde_wasm_bindgen::from_value(regions)
         .map_err(|e| JsError::new(&format!("regiones inválidas: {e}")))?;
     let result =
-        gema_core::erase_text(input, &regions).map_err(|e| JsError::new(&e.to_string()))?;
+        gema_edit::erase_text(input, &regions).map_err(|e| JsError::new(&e.to_string()))?;
 
     let report = js_sys::Object::new();
     js_sys::Reflect::set(
