@@ -21,24 +21,29 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy
-      - run: cargo clippy -p gema-core --all-targets --no-default-features -- -D warnings
+      - run: cargo clippy -p gema-compress --all-targets --no-default-features -- -D warnings
       - run: cargo clippy -p gema-cli -p gema-wasm --all-targets -- -D warnings
       # variante con el modo perceptual (feature opcional, spec 2026-07-11)
-      - run: cargo clippy -p gema-core --all-targets --features perceptual -- -D warnings
-      - run: cargo clippy -p gema-core --all-targets --features serde -- -D warnings
-      - run: cargo clippy -p gema-core --all-targets --features telemetry -- -D warnings
+      - run: cargo clippy -p gema-compress --all-targets --features perceptual -- -D warnings
+      - run: cargo clippy -p gema-compress --all-targets --features serde -- -D warnings
+      - run: cargo clippy -p gema-compress --all-targets --features telemetry -- -D warnings
+      - run: cargo clippy -p gema-edit --all-targets --no-default-features -- -D warnings
+      - run: cargo clippy -p gema-edit --all-targets --features serde -- -D warnings
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.97.1
-      - run: cargo test -p gema-core --no-default-features
+      - run: cargo test -p gema-compress --no-default-features
       # variante con el modo perceptual (feature opcional, spec 2026-07-11)
-      - run: cargo test -p gema-core --features perceptual
+      - run: cargo test -p gema-compress --features perceptual
       # esquema JSON del reporte (feature opcional)
-      - run: cargo test -p gema-core --features serde
+      - run: cargo test -p gema-compress --features serde
       # arnés interno de telemetría (sus tests deben correr igual)
-      - run: cargo test -p gema-core --features telemetry
+      - run: cargo test -p gema-compress --features telemetry
+      # el crate de edición, en sus dos variantes
+      - run: cargo test -p gema-edit --no-default-features
+      - run: cargo test -p gema-edit --features serde
       - run: cargo test -p gema-cli
       - run: cargo test -p gema-wasm
   wasm:
@@ -58,16 +63,28 @@ jobs:
       - run: cargo install wasm-pack --version 0.15.0 --locked
       - run: cd crates/gema-wasm && wasm-pack build --target web
       - run: cd crates/gema-wasm && wasm-pack test --node
+      # El techo sale medido, no estimado: ver la tabla en el propio script.
+      - name: el .wasm no crece
+        run: scripts/wasm-size-gate.sh
   package:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.97.1
-      - run: cargo package -p gema-core
+      - run: cargo package -p gema-compress
       # Los crates dependientes solo pueden verificarse por completo después de
-      # publicar gema-core; --list sí valida ahora sus manifests y contenidos.
+      # publicar gema-compress; --list sí valida ahora sus manifests y contenidos.
+      - run: cargo package -p gema-edit --list
       - run: cargo package -p gema-cli --list
       - run: cargo package -p gema-wasm --list
+  boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.97.1
+      # Sin esto la separación se degrada sola y nadie se entera hasta que el
+      # bundle engordó.
+      - run: scripts/crate-boundary-gate.sh
   dependencies:
     runs-on: ubuntu-latest
     steps:

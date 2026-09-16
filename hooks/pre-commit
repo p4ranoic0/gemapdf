@@ -7,15 +7,18 @@ source "$HOME/.cargo/env" 2>/dev/null || true
 
 echo "→ pre-commit: fmt + tests + clippy + dependencias…"
 cargo fmt --all --check
-cargo test -p gema-core --no-default-features --quiet 2>&1 | tail -1
-cargo test -p gema-core --features perceptual --quiet 2>&1 | tail -1
-cargo test -p gema-core --features serde --quiet 2>&1 | tail -1
+cargo test -p gema-compress --no-default-features --quiet 2>&1 | tail -1
+cargo test -p gema-compress --features perceptual --quiet 2>&1 | tail -1
+cargo test -p gema-compress --features serde --quiet 2>&1 | tail -1
+cargo test -p gema-edit --no-default-features --quiet 2>&1 | tail -1
+cargo test -p gema-edit --features serde --quiet 2>&1 | tail -1
 cargo test -p gema-cli --quiet 2>&1 | tail -1
 cargo test -p gema-wasm --quiet 2>&1 | tail -1
-cargo clippy -p gema-core --all-targets --no-default-features -- -D warnings 2>&1 | tail -1
+cargo clippy -p gema-compress --all-targets --no-default-features -- -D warnings 2>&1 | tail -1
+cargo clippy -p gema-edit --all-targets --no-default-features -- -D warnings 2>&1 | tail -1
 cargo clippy -p gema-cli -p gema-wasm --all-targets -- -D warnings 2>&1 | tail -1
-cargo clippy -p gema-core --all-targets --features perceptual -- -D warnings 2>&1 | tail -1
-cargo clippy -p gema-core --all-targets --features serde -- -D warnings 2>&1 | tail -1
+cargo clippy -p gema-compress --all-targets --features perceptual -- -D warnings 2>&1 | tail -1
+cargo clippy -p gema-compress --all-targets --features serde -- -D warnings 2>&1 | tail -1
 if command -v cargo-deny >/dev/null 2>&1; then
   cargo deny check bans licenses sources
 else

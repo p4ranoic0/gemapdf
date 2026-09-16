@@ -7,7 +7,12 @@
 #   antes de separar, sin LTO ... 1519364   (el techo viejo)
 #   después de separar, sin LTO . 1537665   (+18301)
 #   antes de separar, con LTO ... 1368389
-#   después de separar, con LTO . 1384354   (+15965)  <- el techo de hoy
+#   después de separar, con LTO . 1384354   (+15965)
+#   tras renombrar el crate ..... 1384370   (+16)     <- el techo de hoy
+#
+# Esos 16 bytes finales no son código: `gema-compress` tiene ocho caracteres
+# más que `gema-core`, y el nombre del crate viaja dentro del .wasm en los
+# símbolos y la metadata de wasm-bindgen.
 #
 # Dos conclusiones que conviene no perder. Primera: separar un crate en dos
 # SÍ cuesta bytes —unos 16 KB de genéricas de lopdf instanciadas de los dos
@@ -16,7 +21,7 @@
 # saca 151 KB, así que el bundle queda más chico que antes de que existiera
 # el borrado de texto.
 set -euo pipefail
-CEILING="${1:-1384354}"
+CEILING="${1:-1384370}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/crates/gema-wasm"
 wasm-pack build --target web >/dev/null 2>&1
