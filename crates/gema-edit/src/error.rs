@@ -17,7 +17,7 @@ pub enum EditError {
     /// Fallo al leer o escribir bytes.
     #[error("I/O error: {0}")]
     Io(String),
-    /// Un límite de `EditOptions` se superó **en el camino de
+    /// Un límite de [`crate::EditOptions`] se superó **en el camino de
     /// borrado**. La llamada aborta porque no se puede reescribir lo que no
     /// se leyó entero. Los límites superados durante la inspección residual
     /// no producen este error: dejan `inspection_incomplete`.

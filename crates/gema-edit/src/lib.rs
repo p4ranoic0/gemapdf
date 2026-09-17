@@ -26,10 +26,14 @@
 mod error;
 pub use error::{EditError, LimitKind};
 
+pub mod options;
+pub use options::{EditOptions, ObjectBudget};
+
 pub(crate) mod matrix;
 pub(crate) mod text_geometry;
 
 mod text_removal;
 pub use text_removal::{
-    remove_text_glyphs, RegionReport, RemovalResult, RemovalStatus, TextRegion,
+    remove_text_glyphs, remove_text_glyphs_with, RegionReport, RemovalResult, RemovalStatus,
+    TextRegion,
 };

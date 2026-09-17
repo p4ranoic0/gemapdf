@@ -16,7 +16,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use lopdf::content::{Content, Operation};
 use lopdf::{dictionary, Document, Object, ObjectId, Stream, StringFormat};
 
-use crate::error::EditError;
+use crate::error::{EditError, LimitKind};
+use crate::options::{BudgetMeter, EditOptions};
 use crate::text_geometry::{interpret_page_text, Glyph, PageText};
 
 /// Tolerancia de posición al verificar que los glifos no borrados siguen en su
@@ -152,6 +153,32 @@ pub fn remove_text_glyphs(
     input: &[u8],
     regions: &[TextRegion],
 ) -> Result<RemovalResult, EditError> {
+    remove_text_glyphs_with(input, regions, &EditOptions::default())
+}
+
+/// Elimina los glifos que caen dentro de `regions`, acotado por `opts`.
+pub fn remove_text_glyphs_with(
+    input: &[u8],
+    regions: &[TextRegion],
+    opts: &EditOptions,
+) -> Result<RemovalResult, EditError> {
+    if input.len() > opts.max_input_bytes {
+        return Err(EditError::LimitExceeded(LimitKind::InputBytes));
+    }
+    if regions.len() > opts.max_regions {
+        return Err(EditError::LimitExceeded(LimitKind::Regions));
+    }
+    let mut meter = BudgetMeter::new(&opts.budget);
+    remove_text_glyphs_inner(input, regions, opts, &mut meter)
+}
+
+fn remove_text_glyphs_inner(
+    input: &[u8],
+    regions: &[TextRegion],
+    opts: &EditOptions,
+    meter: &mut BudgetMeter,
+) -> Result<RemovalResult, EditError> {
+    let _ = (opts, meter);
     let mut reports: Vec<RegionReport> = regions
         .iter()
         .map(|region| RegionReport {
@@ -708,6 +735,36 @@ mod tests {
             width,
             height,
         }
+    }
+
+    #[test]
+    fn with_options_rejects_too_many_regions_before_parsing() {
+        let opts = crate::EditOptions {
+            max_regions: 1,
+            ..crate::EditOptions::default()
+        };
+        let regions = [
+            region(0, 0.0, 0.0, 10.0, 10.0),
+            region(0, 20.0, 0.0, 10.0, 10.0),
+        ];
+        let err = super::remove_text_glyphs_with(b"", &regions, &opts).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::EditError::LimitExceeded(crate::LimitKind::Regions)
+        ));
+    }
+
+    #[test]
+    fn with_options_rejects_oversized_input_before_parsing() {
+        let opts = crate::EditOptions {
+            max_input_bytes: 3,
+            ..crate::EditOptions::default()
+        };
+        let err = super::remove_text_glyphs_with(b"%PDF", &[], &opts).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::EditError::LimitExceeded(crate::LimitKind::InputBytes)
+        ));
     }
 
     fn glyphs(bytes: &[u8], page: u32) -> Vec<Glyph> {
