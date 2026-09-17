@@ -152,6 +152,41 @@ fn lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+/// `/Rect` como `[x_min, y_min, x_max, y_max]`.
+#[allow(dead_code)] // se consume desde la Task 7
+fn parse_rect(obj: &Object) -> Option<[f64; 4]> {
+    let items = obj.as_array().ok()?;
+    if items.len() != 4 {
+        return None;
+    }
+    let mut v = [0.0f64; 4];
+    for (i, item) in items.iter().enumerate() {
+        v[i] = match item {
+            Object::Integer(n) => *n as f64,
+            Object::Real(x) => f64::from(*x),
+            _ => return None,
+        };
+        if !v[i].is_finite() {
+            return None;
+        }
+    }
+    Some([
+        v[0].min(v[2]),
+        v[1].min(v[3]),
+        v[0].max(v[2]),
+        v[1].max(v[3]),
+    ])
+}
+
+/// Intersección estricta: bordes que se tocan y rectángulos de área cero no cuentan.
+#[allow(dead_code)] // se consume desde la Task 7
+fn intersects(rect: [f64; 4], region: &crate::TextRegion) -> bool {
+    let (rx1, ry1) = (region.x, region.y);
+    let (rx2, ry2) = (region.x + region.width, region.y + region.height);
+    let has_area = rect[0] < rect[2] && rect[1] < rect[3];
+    has_area && rect[0] < rx2 && rx1 < rect[2] && rect[1] < ry2 && ry1 < rect[3]
+}
+
 /// Recorre el documento cobrando cada resolución al presupuesto.
 #[allow(dead_code)] // se consume desde la Task 7
 pub(crate) struct Inspector<'a> {
@@ -391,6 +426,67 @@ impl<'a> Inspector<'a> {
             self.risks.push(ResidualRisk::ActualText { page });
         }
     }
+
+    /// Recorre `/Annots` a mano, distinguiendo ausencia de referencias rotas.
+    pub(crate) fn inspect_annotations(
+        &mut self,
+        page_dict: &'a Dictionary,
+        page: u32,
+        regions: &[&crate::TextRegion],
+    ) {
+        let annots = match page_dict.get(b"Annots") {
+            Err(_) => return,
+            Ok(o) => o,
+        };
+        let Some(annots) = self.deref(annots, Some(page)) else {
+            return;
+        };
+        let Object::Array(items) = annots else {
+            self.gap(
+                GapReason::MalformedAnnots,
+                Some(page),
+                "/Annots is not an array",
+            );
+            return;
+        };
+        for (i, item) in items.iter().enumerate() {
+            let Some(obj) = self.deref(item, Some(page)) else {
+                continue;
+            };
+            let Object::Dictionary(dict) = obj else {
+                self.gap(
+                    GapReason::MalformedAnnots,
+                    Some(page),
+                    format!("/Annots[{i}] is not a dictionary"),
+                );
+                continue;
+            };
+            let subtype = match dict.get(b"Subtype") {
+                Ok(Object::Name(n)) => lossy(n),
+                _ => "unknown".to_string(),
+            };
+            let rect = dict
+                .get(b"Rect")
+                .ok()
+                .and_then(|r| self.deref(r, Some(page)))
+                .and_then(parse_rect);
+            match rect {
+                Some(rect) => {
+                    if regions.iter().any(|g| intersects(rect, g)) {
+                        self.risks.push(ResidualRisk::Annotation { page, subtype });
+                    }
+                }
+                None => {
+                    self.gap(
+                        GapReason::MalformedRect,
+                        Some(page),
+                        format!("/Annots[{i}] /Subtype /{subtype}"),
+                    );
+                    self.risks.push(ResidualRisk::Annotation { page, subtype });
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -398,6 +494,7 @@ mod tests {
     use super::*;
     use crate::options::{BudgetMeter, ObjectBudget};
     use crate::test_support::Fixture;
+    use crate::TextRegion;
     use lopdf::content::Content;
     use lopdf::{dictionary, Object};
 
@@ -619,5 +716,172 @@ mod tests {
                 serde_json::json!({ "kind": "optional_content", "page": 3 })
             );
         }
+    }
+    fn run_annots(
+        fx: &Fixture,
+        page_id: lopdf::ObjectId,
+        regions: &[TextRegion],
+    ) -> (Vec<ResidualRisk>, Vec<InspectionGap>) {
+        let mut meter = BudgetMeter::new(&ObjectBudget::default());
+        let mut insp = Inspector::new(&fx.doc, &mut meter);
+        let page_dict = fx.doc.get_dictionary(page_id).unwrap();
+        let refs: Vec<&TextRegion> = regions.iter().collect();
+        insp.inspect_annotations(page_dict, 0, &refs);
+        (insp.risks, insp.gaps)
+    }
+
+    fn region(x: f64, y: f64, width: f64, height: f64) -> TextRegion {
+        TextRegion {
+            id: "r".into(),
+            page: 0,
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    fn annot(subtype: &str, rect: Vec<Object>) -> lopdf::Dictionary {
+        dictionary! { "Type" => "Annot", "Subtype" => subtype, "Rect" => rect }
+    }
+
+    #[test]
+    fn lopdf_swallows_broken_annotation_refs_so_we_walk_annots_ourselves() {
+        let mut fx = Fixture::new();
+        let c = fx.content_stream(dictionary! {}, crate::test_support::HOLA);
+        let page = fx.add_page(
+            c,
+            Some(Fixture::default_resources()),
+            vec![("Annots", vec![Object::Reference((999, 0))].into())],
+        );
+        // El hecho que motiva la tarea: lopdf no distingue "rota" de "no hay".
+        assert!(fx.doc.get_page_annotations(page).unwrap().is_empty());
+        let (risks, gaps) = run_annots(&fx, page, &[region(0.0, 0.0, 612.0, 792.0)]);
+        assert!(risks.is_empty());
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].reason, GapReason::BrokenReference);
+    }
+
+    #[test]
+    fn page_without_annots_has_no_risk_and_no_gap() {
+        let mut fx = Fixture::new();
+        let page = fx.text_page(crate::test_support::HOLA);
+        let (risks, gaps) = run_annots(&fx, page, &[region(0.0, 0.0, 612.0, 792.0)]);
+        assert!(risks.is_empty() && gaps.is_empty());
+    }
+
+    #[test]
+    fn intersecting_annotation_is_a_risk_and_non_intersecting_is_not() {
+        let mut fx = Fixture::new();
+        // Esquinas invertidas a propósito: [x2 y2 x1 y1] es válido y se normaliza.
+        let a = fx.doc.add_object(annot(
+            "FreeText",
+            vec![50.into(), 50.into(), 10.into(), 10.into()],
+        ));
+        let c = fx.content_stream(dictionary! {}, crate::test_support::HOLA);
+        let page = fx.add_page(
+            c,
+            Some(Fixture::default_resources()),
+            vec![("Annots", vec![Object::Reference(a)].into())],
+        );
+        let (risks, gaps) = run_annots(&fx, page, &[region(40.0, 40.0, 100.0, 100.0)]);
+        assert_eq!(
+            risks,
+            vec![ResidualRisk::Annotation {
+                page: 0,
+                subtype: "FreeText".into()
+            }]
+        );
+        assert!(gaps.is_empty());
+        let (risks, gaps) = run_annots(&fx, page, &[region(200.0, 200.0, 10.0, 10.0)]);
+        assert!(risks.is_empty() && gaps.is_empty());
+    }
+
+    #[test]
+    fn inline_annotation_dictionaries_are_accepted() {
+        let mut fx = Fixture::new();
+        let inline = annot("Square", vec![0.into(), 0.into(), 20.into(), 20.into()]);
+        let c = fx.content_stream(dictionary! {}, crate::test_support::HOLA);
+        let page = fx.add_page(
+            c,
+            Some(Fixture::default_resources()),
+            vec![("Annots", vec![inline.into()].into())],
+        );
+        let (risks, _) = run_annots(&fx, page, &[region(5.0, 5.0, 5.0, 5.0)]);
+        assert_eq!(risks.len(), 1);
+    }
+
+    #[test]
+    fn malformed_rect_is_a_gap_and_a_conservative_risk() {
+        let mut fx = Fixture::new();
+        let short = fx
+            .doc
+            .add_object(annot("Text", vec![1.into(), 2.into(), 3.into()]));
+        let nan = fx.doc.add_object(annot(
+            "Text",
+            vec![0.into(), 0.into(), Object::Real(f32::NAN), 5.into()],
+        ));
+        let missing = fx
+            .doc
+            .add_object(dictionary! { "Type" => "Annot", "Subtype" => "Text" });
+        let c = fx.content_stream(dictionary! {}, crate::test_support::HOLA);
+        let annots: Vec<Object> = [short, nan, missing]
+            .iter()
+            .map(|id| Object::Reference(*id))
+            .collect();
+        let page = fx.add_page(
+            c,
+            Some(Fixture::default_resources()),
+            vec![("Annots", annots.into())],
+        );
+        let (risks, gaps) = run_annots(&fx, page, &[region(500.0, 700.0, 1.0, 1.0)]);
+        assert_eq!(risks.len(), 3);
+        assert_eq!(gaps.len(), 3);
+        assert!(gaps.iter().all(|g| g.reason == GapReason::MalformedRect));
+        let details: Vec<&str> = gaps.iter().map(|g| g.detail.as_str()).collect();
+        assert_eq!(
+            details,
+            [
+                "/Annots[0] /Subtype /Text",
+                "/Annots[1] /Subtype /Text",
+                "/Annots[2] /Subtype /Text"
+            ]
+        );
+    }
+
+    #[test]
+    fn annots_that_is_not_an_array_is_a_gap() {
+        let mut fx = Fixture::new();
+        let c = fx.content_stream(dictionary! {}, crate::test_support::HOLA);
+        let page = fx.add_page(
+            c,
+            Some(Fixture::default_resources()),
+            vec![("Annots", 7.into())],
+        );
+        let (risks, gaps) = run_annots(&fx, page, &[region(0.0, 0.0, 1.0, 1.0)]);
+        assert!(risks.is_empty());
+        assert_eq!(gaps[0].reason, GapReason::MalformedAnnots);
+    }
+
+    #[test]
+    fn zero_area_rect_never_intersects() {
+        assert!(!intersects(
+            [10.0, 10.0, 10.0, 50.0],
+            &region(0.0, 0.0, 100.0, 100.0)
+        ));
+        assert!(!intersects(
+            [10.0, 10.0, 50.0, 10.0],
+            &region(0.0, 0.0, 100.0, 100.0)
+        ));
+        // Y el caso con área sí intersecta: el test no pasa por devolver siempre false.
+        assert!(intersects(
+            [10.0, 10.0, 50.0, 50.0],
+            &region(0.0, 0.0, 100.0, 100.0)
+        ));
+        // Bordes que sólo se tocan no cuentan.
+        assert!(!intersects(
+            [100.0, 0.0, 150.0, 50.0],
+            &region(0.0, 0.0, 100.0, 100.0)
+        ));
     }
 }
