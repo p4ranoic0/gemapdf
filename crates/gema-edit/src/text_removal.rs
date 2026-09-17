@@ -847,7 +847,7 @@ fn is_referenced(doc: &Document, target: ObjectId) -> bool {
 mod tests {
     use lopdf::{dictionary, Dictionary, Document, Object, Stream};
 
-    use super::{finish, remove_text_glyphs, RemovalStatus, SignatureIndicators, TextRegion};
+    use super::{remove_text_glyphs, RemovalStatus, SignatureIndicators, TextRegion};
     use crate::inspect::{GapReason, InspectionGap, ResidualRisk};
     use crate::text_geometry::{interpret_page_text, Glyph};
 
@@ -1318,36 +1318,77 @@ mod tests {
 
     #[test]
     fn clean_page_reports_no_risks_and_complete_inspection() {
-        let input = build(&[b"BT /F1 12 Tf (hola) Tj ET"], None, vec![]);
-        let result = remove_text_glyphs(&input, &[region(0, 500.0, 700.0, 10.0, 10.0)]).unwrap();
-        assert!(!result.inspection_incomplete);
-        assert!(result.residual_risks.is_empty());
-        assert!(result.inspection_gaps.is_empty());
+        let pdf = build(&[b"BT /F1 12 Tf 10 10 Td (hola) Tj ET"], None, vec![]);
+        let r = remove_text_glyphs(&pdf, &[region(0, 0.0, 0.0, 612.0, 792.0)]).unwrap();
+        assert_eq!(r.regions[0].status, RemovalStatus::Removed);
+        assert!(r.residual_risks.is_empty(), "{:?}", r.residual_risks);
+        assert!(!r.inspection_incomplete);
+        assert!(r.inspection_gaps.is_empty());
     }
 
     #[test]
     fn shared_stream_and_form_xobject_surface_in_the_result() {
-        let input = build(&[b"BT /F1 12 Tf (hola) Tj ET"], None, vec![]);
-        let result = remove_text_glyphs(&input, &[region(0, 0.0, 0.0, 612.0, 792.0)]).unwrap();
-        assert!(result.residual_risks.iter().all(|r| !r.kind().is_empty()));
+        use crate::test_support::Fixture;
+        let mut fx = Fixture::new();
+        let form = fx.doc.add_object(lopdf::Stream::new(
+            lopdf::dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => vec![0.into(), 0.into(), 1.into(), 1.into()] },
+            Vec::new(),
+        ));
+        let mut res = Fixture::default_resources();
+        res.set("XObject", lopdf::dictionary! { "Fx1" => form });
+        let shared = fx.content_stream(
+            lopdf::dictionary! {},
+            b"BT /F1 12 Tf 10 10 Td (hola) Tj ET q /Fx1 Do Q",
+        );
+        fx.add_page(shared, Some(res.clone()), vec![]);
+        fx.add_page(shared, Some(res), vec![]);
+        let pdf = fx.bytes();
+        let r = remove_text_glyphs(&pdf, &[region(0, 0.0, 0.0, 612.0, 792.0)]).unwrap();
+        let kinds: Vec<&str> = r.residual_risks.iter().map(|k| k.kind()).collect();
+        assert!(kinds.contains(&"shared_content_stream"), "{kinds:?}");
+        assert!(kinds.contains(&"form_xobject"), "{kinds:?}");
+        assert!(!r.inspection_incomplete);
     }
 
     #[test]
     fn broken_annotation_reference_marks_the_inspection_incomplete() {
-        let input = build(
-            &[b"BT /F1 12 Tf (hola) Tj ET"],
-            Some(("Annots", vec![Object::Reference((999, 0))].into())),
-            vec![],
+        use crate::test_support::Fixture;
+        let mut fx = Fixture::new();
+        let c = fx.content_stream(lopdf::dictionary! {}, b"BT /F1 12 Tf 10 10 Td (hola) Tj ET");
+        fx.add_page(
+            c,
+            Some(Fixture::default_resources()),
+            vec![("Annots", vec![lopdf::Object::Reference((999, 0))].into())],
         );
-        let result = remove_text_glyphs(&input, &[region(0, 500.0, 700.0, 10.0, 10.0)]).unwrap();
-        assert!(result.inspection_incomplete);
+        let pdf = fx.bytes();
+        let r = remove_text_glyphs(&pdf, &[region(0, 0.0, 0.0, 612.0, 792.0)]).unwrap();
+        assert_eq!(r.regions[0].status, RemovalStatus::Removed);
+        assert!(r.inspection_incomplete);
+        assert_eq!(
+            r.inspection_gaps[0].reason,
+            crate::GapReason::BrokenReference
+        );
     }
 
     #[test]
     fn unchanged_document_is_still_inspected() {
-        let input = build(&[b"BT /F1 12 Tf (hola) Tj ET"], None, vec![]);
-        let result = remove_text_glyphs(&input, &[region(0, 500.0, 700.0, 10.0, 10.0)]).unwrap();
-        assert_eq!(result.output, input);
+        use crate::test_support::Fixture;
+        let mut fx = Fixture::new();
+        let a = fx.doc.add_object(lopdf::dictionary! {
+            "Type" => "Annot", "Subtype" => "FreeText",
+            "Rect" => vec![400.into(), 600.into(), 600.into(), 780.into()]
+        });
+        let c = fx.content_stream(lopdf::dictionary! {}, b"BT /F1 12 Tf 10 10 Td (hola) Tj ET");
+        fx.add_page(
+            c,
+            Some(Fixture::default_resources()),
+            vec![("Annots", vec![lopdf::Object::Reference(a)].into())],
+        );
+        let pdf = fx.bytes();
+        let r = remove_text_glyphs(&pdf, &[region(0, 500.0, 700.0, 1.0, 1.0)]).unwrap();
+        assert_eq!(r.regions[0].status, RemovalStatus::NothingFound);
+        assert_eq!(r.output, pdf);
+        assert_eq!(r.residual_risks.len(), 1, "{:?}", r.residual_risks);
     }
 
     #[test]
@@ -1359,22 +1400,26 @@ mod tests {
 
     #[test]
     fn risks_and_gaps_come_out_sorted_and_deduplicated() {
-        let risk = ResidualRisk::ActualText { page: 1 };
-        let gap = InspectionGap {
-            reason: GapReason::BrokenReference,
-            page: Some(2),
+        let risk = ResidualRisk::OptionalContent { page: 1 };
+        let other = ResidualRisk::ActualText { page: 0 };
+        let gap = |p| InspectionGap {
+            reason: crate::GapReason::BrokenReference,
+            page: Some(p),
             detail: "x".into(),
         };
-        let result = finish(
+        let r = super::finish(
             vec![],
             vec![],
             false,
-            vec![risk.clone(), risk],
-            vec![gap.clone(), gap],
+            vec![risk.clone(), other.clone(), risk.clone()],
+            vec![gap(2), gap(1), gap(2)],
             SignatureIndicators::default(),
         );
-        assert_eq!(result.residual_risks.len(), 1);
-        assert_eq!(result.inspection_gaps.len(), 1);
+        assert_eq!(r.residual_risks.len(), 2);
+        let mut sorted = r.residual_risks.clone();
+        sorted.sort();
+        assert_eq!(r.residual_risks, sorted);
+        assert_eq!(r.inspection_gaps, vec![gap(1), gap(2)]);
     }
 
     #[test]
@@ -1401,6 +1446,6 @@ mod tests {
         assert_eq!(r.regions[0].status, RemovalStatus::Removed);
         assert!(r.signature.sig_flags);
         assert!(r.modified);
-        assert_ne!(r.output, pdf);
+        assert_ne!(r.output, pdf, "se reescribe igual: informar, no bloquear");
     }
 }

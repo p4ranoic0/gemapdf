@@ -134,7 +134,10 @@ mod tests {
         let s = detect_in(&fx);
         assert!(s.sig_flags && !s.sig_field && !s.perms);
         fx.set_catalog("AcroForm", dictionary! { "SigFlags" => 2 });
-        assert!(!detect_in(&fx).sig_flags);
+        assert!(
+            !detect_in(&fx).sig_flags,
+            "el bit 2 (AppendOnly) solo no es firma"
+        );
     }
     #[test]
     fn sig_field_is_found_even_nested_in_kids_through_an_indirect_acroform() {
