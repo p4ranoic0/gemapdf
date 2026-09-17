@@ -285,33 +285,37 @@ fn remove_text_glyphs_inner(
     let mut read_gaps = Vec::new();
     for (page, page_id, original, content, read_error) in &mut inspected_pages {
         if let Some(error) = read_error.take() {
-            let reason = match &error {
-                StreamReadError::UnsupportedFilter(_) => GapReason::UnsupportedFilter,
-                StreamReadError::Corrupt => GapReason::CorruptStream,
-                StreamReadError::Missing | StreamReadError::NotAStream => {
-                    GapReason::BrokenReference
+            let (reason, detail) = match &error {
+                StreamReadError::UnsupportedFilter(filter) => {
+                    (GapReason::UnsupportedFilter, filter.clone())
                 }
+                StreamReadError::Corrupt => (GapReason::CorruptStream, "page content".into()),
+                StreamReadError::Missing => (GapReason::BrokenReference, "/Contents".into()),
+                StreamReadError::NotAStream => (
+                    GapReason::MalformedObject,
+                    "/Contents is not a stream".into(),
+                ),
                 StreamReadError::Budget(_) | StreamReadError::TooLarge => {
-                    GapReason::BudgetExhausted
+                    unreachable!("erase_on_page converts budget errors to LimitExceeded")
                 }
             };
             read_gaps.push(InspectionGap {
                 reason,
                 page: Some(*page),
-                detail: format!("{error:?}"),
+                detail,
             });
         }
-        let Some(content) = content else {
+        let resources = inspector.resources(*page_id, *page);
+        if let Some(content) = content {
+            inspector.inspect_marked_content(content, &resources, *page);
+            inspector.inspect_form_xobjects(content, &resources, *page);
+        } else {
             inspector.gap(
                 GapReason::NotInspected,
                 Some(*page),
-                "page content not decoded",
+                "page content was not read",
             );
-            continue;
-        };
-        let resources = inspector.resources(*page_id, *page);
-        inspector.inspect_marked_content(content, &resources, *page);
-        inspector.inspect_form_xobjects(content, &resources, *page);
+        }
         let page_dict = doc.get_dictionary(*page_id).ok();
         if let Some(dict) = page_dict {
             inspector.inspect_annotations(
@@ -322,6 +326,8 @@ fn remove_text_glyphs_inner(
                     .filter(|r| r.page == *page)
                     .collect::<Vec<_>>(),
             );
+        } else {
+            inspector.gap(GapReason::BrokenReference, Some(*page), "page dictionary");
         }
         inspector.inspect_shared_content(original, *page, &pages);
     }
@@ -392,16 +398,34 @@ fn erase_on_page(
     let Ok(content) = Content::decode(&bytes) else {
         return Ok(untouched(RemovalStatus::SkippedContent));
     };
-    if content.operations.len() > opts.max_content_operations
-        || content
-            .operations
-            .iter()
-            .any(|operation| operation.operator == "BI")
-    {
+    if content.operations.len() > opts.max_content_operations {
         return Ok(untouched(RemovalStatus::SkippedContent));
     }
+    if content
+        .operations
+        .iter()
+        .any(|operation| operation.operator == "BI")
+    {
+        return Ok(PageOutcome {
+            regions: indices
+                .iter()
+                .map(|&index| (index, 0, RemovalStatus::SkippedContent))
+                .collect(),
+            changed: false,
+            read_error: None,
+            content: Some(content.clone()),
+        });
+    }
     let Ok(before) = interpret_content(doc, page_id, &content) else {
-        return Ok(untouched(RemovalStatus::SkippedContent));
+        return Ok(PageOutcome {
+            regions: indices
+                .iter()
+                .map(|&index| (index, 0, RemovalStatus::SkippedContent))
+                .collect(),
+            changed: false,
+            read_error: None,
+            content: Some(content.clone()),
+        });
     };
     let page_has_unsupported = !before.unsupported.is_empty();
 
@@ -1111,6 +1135,55 @@ mod tests {
             .iter()
             .all(|report| report.status == RemovalStatus::SkippedInvalidRegion));
         assert_eq!(result.output, plain);
+    }
+
+    #[test]
+    fn rotated_page_still_inspects_annotations() {
+        let input = build(
+            &[b"BT /F1 10 Tf 1 0 0 1 100 700 Tm (AB) Tj ET"],
+            Some(("Rotate", Object::Integer(90))),
+            vec![],
+        );
+        let mut doc = Document::load_mem(&input).unwrap();
+        let page_id = doc.get_pages()[&1];
+        let annot = doc.add_object(dictionary! {
+            "Subtype" => "FreeText",
+            "Rect" => vec![90.into(), 690.into(), 120.into(), 730.into()],
+        });
+        doc.get_dictionary_mut(page_id)
+            .unwrap()
+            .set("Annots", vec![annot.into()]);
+        let mut pdf = Vec::new();
+        doc.save_to(&mut pdf).unwrap();
+        let result = remove_text_glyphs(&pdf, &[region(0, 90.0, 690.0, 40.0, 40.0)]).unwrap();
+        assert!(result
+            .inspection_gaps
+            .iter()
+            .any(|gap| gap.reason == GapReason::NotInspected));
+        assert!(result
+            .residual_risks
+            .iter()
+            .any(|risk| matches!(risk, crate::inspect::ResidualRisk::Annotation { .. })));
+    }
+
+    #[test]
+    fn read_error_details_are_stable() {
+        let input = build(&[b"BT /F1 10 Tf (AB) Tj ET"], None, vec![]);
+        let mut doc = Document::load_mem(&input).unwrap();
+        let page_id = doc.get_pages()[&1];
+        let stream = doc.add_object(Stream::new(
+            dictionary! { "Filter" => "LZWDecode" },
+            b"not lzw".to_vec(),
+        ));
+        doc.get_dictionary_mut(page_id)
+            .unwrap()
+            .set("Contents", stream);
+        let mut pdf = Vec::new();
+        doc.save_to(&mut pdf).unwrap();
+        let result = remove_text_glyphs(&pdf, &[region(0, 0.0, 0.0, 10.0, 10.0)]).unwrap();
+        assert!(result.inspection_gaps.iter().any(|gap| {
+            gap.reason == GapReason::UnsupportedFilter && gap.detail == "LZWDecode"
+        }));
     }
 
     #[test]
