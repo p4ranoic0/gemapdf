@@ -24,7 +24,7 @@
 #![warn(missing_docs)]
 
 mod error;
-pub use error::EditError;
+pub use error::{EditError, LimitKind};
 
 pub(crate) mod matrix;
 pub(crate) mod text_geometry;
