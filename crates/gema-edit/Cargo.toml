@@ -11,7 +11,7 @@ keywords = ["pdf", "text", "wasm"]
 categories = ["text-processing", "wasm"]
 # El fixture de tests pesa 450 KB y no tiene por qué viajar en el paquete
 # publicado. `include` deja fuera todo lo que no se enumere acá.
-include = ["src/**", "THIRD_PARTY_NOTICES.md"]
+include = ["src/**", "THIRD_PARTY_NOTICES.md", "LICENSE-MIT", "LICENSE-APACHE"]
 
 [features]
 default = []

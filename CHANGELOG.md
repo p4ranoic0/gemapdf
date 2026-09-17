@@ -3,49 +3,44 @@
 All notable changes to GemaPDF are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## 0.6.0 — 2026-09-17
 
 ### Changed (breaking)
 
-- `gema-edit`: `erase_text` → `remove_text_glyphs` (+ `remove_text_glyphs_with(…, &EditOptions)`); `EraseRegion` → `TextRegion`, `EraseStatus` → `RemovalStatus` (`removed`, `removed_unverified`), `EraseResult` → `RemovalResult`, `erased_glyphs` → `removed_glyphs`. `Removed` documenta su alcance real: no afirma que la región quedó limpia.
-- `gema-edit`: `EditError` habla inglés y gana `LimitExceeded(LimitKind)`.
-- `gema-edit`: `RemovalResult` gana `residual_risks`, `inspection_incomplete`, `inspection_gaps`, `signature`, `modified` y `not_inspected`. Informe JSON versionado (`schema_version = 1`) vía `RemovalResult::report()`.
-- `gema-wasm`: `erase_text` → `remove_text_glyphs`; el objeto devuelto incluye el informe v1. El portfolio queda incompatible hasta su migración.
-- `gema-cli`: los errores de **uso** de `compress` y `analyze` salen con código 1 en vez del 2 de `clap` (`main` usa `try_parse`); el 2 queda reservado para "escrito pero no garantizado" de `remove-text`.
-- `gema-edit`: `ResidualRisk::FormXObject` se serializa como `form_xobject` (igual que `kind()`).
+- `gema-compress` is the compression engine formerly named `gema-core`; the
+  `gema-core` 0.5.0 package is the last release under that name. The engine
+  remains pure Rust and is shared by native and WebAssembly targets.
+- `gema-edit` introduces the public editing API: `TextRegion`,
+  `RemovalStatus`, `RemovalResult`, `remove_text_glyphs`, and
+  `remove_text_glyphs_with(…, &EditOptions)`. `removed` reports what was
+  rewritten; it does not claim that the region is clean.
+- `gema-edit`: `EditError` uses English messages and gains
+  `LimitExceeded(LimitKind)`. `RemovalResult` exposes `residual_risks`,
+  `inspection_incomplete`, `inspection_gaps`, `signature`, `modified`, and
+  `not_inspected`, with a versioned JSON report (`schema_version = 1`).
+- `gema-wasm`: the editing export is `remove_text_glyphs` and returns the
+  report v1; existing consumers must migrate before using this release.
+- `gema-cli`: usage errors from `compress` and `analyze` exit with code 1;
+  `remove-text` uses 0 for guaranteed output, 1 for an error, 2 for written
+  but not guaranteed, and 3 when the report cannot be printed.
 
 ### Added
 
-- `gema-edit`: `EditOptions` con `max_input_bytes`, `max_regions`, `max_decompressed_bytes`, `max_total_decompressed_bytes`, `max_content_operations` y `ObjectBudget`. Ningún stream se descomprime sin tope; `FlateDecode` usa fallback acotado de deflate crudo, LZW/ASCII85/predictores se informan como `unsupported_filter`.
-- `gema-edit`: el truncado o checksum inválido de Flate que no supera el fallback se informa como `SkippedContent`; `modified` es un campo, y cero regiones deja `inspection_gaps` con `NotInspected`.
-- `gema-cli`: `remove-text <in> <out> --region [<id>@]<page>:<x>,<y>,<w>,<h> [--json]`. Códigos: 0 garantizado, 1 error, 2 escrito pero no garantizado, 3 escrito pero informe no impreso.
-
-### Verified
-
-- Byte-identidad de compresión contra `d9d2c77` sobre el corpus: 0 bytes de diferencia, 12/12 idénticos (corrida `20260917T115728Z-96453c9e`). El código de edición no tocó `gema-compress`.
-- Compatibilidad del lector acotado: 2139 páginas iguales, 0 distintas, 0 errores.
-- Tamaño del `.wasm`: 1430909 bytes crudos (+46539, +3,4 %) y 569305 en gzip-9 (+18134) contra `d9d2c77`; techo ratificado. El grueso viene de conectar la inspección residual.
-
-## 0.6.0 — 2026-09-15
-
-### Added
-
-- `erase_text` (core and WASM) removes the glyphs that fall inside given page
-  regions from the content stream, replacing each one with the equivalent `TJ`
-  displacement so the rest of the line does not move. Built for a PDF editor
-  that used to hide replaced text under a filled rectangle, leaving it
-  selectable and searchable in the file.
-
-  It never erases a glyph outside a region. Pages with `/Rotate`, `/UserUnit`,
-  a box not starting at the origin, inline images, or text it cannot measure
-  (Type3, CMaps other than `Identity-H`, Symbol/ZapfDingbats, fonts without
-  metrics, rotated or clipping text) are left intact and reported per region.
-  After rewriting, the page is re-interpreted; if any other glyph changed code
-  or moved more than 0.01 pt, the original page is restored. The replaced
-  content stream is deleted when no other page references it.
-- Internal text interpreter with per-glyph geometry (full text state, simple
-  fonts with `/Widths`, Type0 `Identity-H` with `/W`/`/DW`, and embedded AFM
-  widths for the 12 Latin Core14 fonts). Not public API.
+- `gema-edit`: bounded stream reading and conservative residual-risk
+  inspection. `EditOptions` limits input bytes, regions, decompressed bytes,
+  total decompressed bytes, content operations, and object traversal. Flate
+  Decode has a bounded raw-deflate fallback; unsupported filters and gaps are
+  reported instead of silently treated as safe.
+- Text removal preserves the rest of a line with equivalent `TJ` displacement,
+  never rewrites glyphs outside a requested region, and restores the original
+  page if re-interpretation finds an unrelated glyph move or code change.
+  Shared streams, Form XObjects, signatures, unsupported text, metadata, and
+  XMP are reported according to the documented inspection boundary; this is
+  not a redaction primitive.
+- `gema-cli`: `remove-text <in> <out> --region [<id>@]<page>:<x>,<y>,<w>,<h>
+  [--json]`.
+- The compression and editing engines are separate crates; the WebAssembly
+  size gate and crate-boundary gate are part of CI.
 
 ### Measured
 
@@ -54,6 +49,12 @@ All notable changes to GemaPDF are documented in this file. The project follows
   `get_font_encoding` pulled in its glyph-name `match` (thousands of arms):
   +889 KB, and the debug module was rejected by V8 with "too many locals".
   Own static tables replace it.
+
+### Verified
+
+- Byte-identidad de compresión contra `d9d2c77` sobre el corpus: 0 bytes de diferencia, 12/12 idénticos (corrida `20260917T115728Z-96453c9e`). El código de edición no tocó `gema-compress`.
+- Compatibilidad del lector acotado: 2139 páginas iguales, 0 distintas, 0 errores.
+- Tamaño del `.wasm`: 1430909 bytes crudos (+46539, +3,4 %) y 569305 en gzip-9 (+18134) contra `d9d2c77`; techo ratificado. El grueso viene de conectar la inspección residual.
 
 ## 0.5.0 — 2026-08-29
 

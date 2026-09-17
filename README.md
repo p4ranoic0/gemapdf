@@ -1,25 +1,31 @@
 # GemaPDF
 
-[![crates.io](https://img.shields.io/crates/v/gema-core.svg)](https://crates.io/crates/gema-core)
-[![docs.rs](https://docs.rs/gema-core/badge.svg)](https://docs.rs/gema-core)
+[![crates.io](https://img.shields.io/crates/v/gema-compress.svg)](https://crates.io/crates/gema-compress)
+[![docs.rs](https://docs.rs/gema-compress/badge.svg)](https://docs.rs/gema-compress)
 [![CI](https://github.com/p4ranoic0/gemapdf/actions/workflows/ci.yml/badge.svg)](https://github.com/p4ranoic0/gemapdf/actions/workflows/ci.yml)
-[![license](https://img.shields.io/crates/l/gema-core.svg)](https://github.com/p4ranoic0/gemapdf)
-[![MSRV](https://img.shields.io/crates/msrv/gema-core.svg)](https://github.com/p4ranoic0/gemapdf)
+[![license](https://img.shields.io/crates/l/gema-compress.svg)](https://github.com/p4ranoic0/gemapdf)
+[![MSRV](https://img.shields.io/crates/msrv/gema-compress.svg)](https://github.com/p4ranoic0/gemapdf)
 
-A pure-Rust, portable PDF compression engine. It ships as three crates:
+A pure-Rust, portable PDF compression engine. It ships as four crates:
 
-- **`gema-core`** — the compression engine itself. Pure Rust, no C bindings,
+- **`gema-compress`** — the compression engine itself. Pure Rust, no C bindings,
   no system dependencies. Compiles to both WebAssembly and native code from
   the same source.
-- **`gema-cli`** — a command-line tool (`gema`) built on `gema-core`.
+- **`gema-edit`** — regional text editing: removes glyphs from requested regions
+  and reports what may survive; it is not a redaction primitive.
+- **`gema-cli`** — a command-line tool (`gema`) built on `gema-compress` and
+  `gema-edit`.
 - **`gema-wasm`** — WebAssembly bindings (via `wasm-bindgen`) so the same
   engine runs in a browser tab, client-side, with no server round-trip.
 
 Project license: **MIT OR Apache-2.0** (see [`LICENSE-MIT`](LICENSE-MIT) and
 [`LICENSE-APACHE`](LICENSE-APACHE)) — **no AGPL, anywhere in the dependency
 tree.** That's a deliberate design constraint, not an accident: it's what lets
-`gema-core` run client-side in a browser and be embedded in commercial or
+`gema-compress` run client-side in a browser and be embedded in commercial or
 closed-source products without copyleft obligations.
+
+`gema-core` was renamed to `gema-compress` in 0.6.0; `gema-core` 0.5.0 is the
+last version published under that name.
 
 ## Why this exists
 
@@ -42,7 +48,7 @@ GPL/AGPL code anywhere in the tree. The payoff:
 - **License-clean:** permissive dependencies only (enforced with `cargo-deny`),
   safe to embed anywhere, including closed-source and commercial products,
   without triggering AGPL network-use clauses.
-- **One codebase, two targets:** the same `gema-core` crate compiles to
+- **One codebase, two targets:** the same `gema-compress` crate compiles to
   `wasm32-unknown-unknown` for the browser and to native for the CLI/server,
   with no `#[cfg]`-gated fork of the compression logic.
 
@@ -55,7 +61,7 @@ non-image content streams beyond `save_modern`'s object/xref-stream packing).
 
 Measured on a real corpus (see `docs/USAGE-ANALYSIS.md` for the full v1
 report, `docs/USAGE-ANALYSIS-v2.md` for the v2.0 measurement, and
-`crates/gema-core/examples/usage_report.rs`, the harness used to produce
+`crates/gema-compress/examples/usage_report.rs`, the harness used to produce
 these numbers):
 
 - **v1** (recompress-only, no real DPI downsampling, DCT/PNG images only):
@@ -97,20 +103,21 @@ design rationale
 "high-compression" native-only mode looks like) is in
 [`docs/V2-DESIGN.md`](docs/V2-DESIGN.md).
 
-## The three crates
+## The four crates
 
 | Crate | What it is | Targets |
 |---|---|---|
-| [`gema-core`](crates/gema-core) | The compression engine: PDF parsing (via `lopdf`), image decode/downsample/recompress pipeline, progress reporting. | `wasm32-unknown-unknown` + native |
-| [`gema-cli`](crates/gema-cli) | `gema` binary: compress/analyze a PDF from the command line. | native |
+| [`gema-compress`](crates/gema-compress) | The compression engine: PDF parsing (via `lopdf`), image decode/downsample/recompress pipeline, progress reporting. | `wasm32-unknown-unknown` + native |
+| [`gema-edit`](crates/gema-edit) | Removes glyphs in requested regions and reports residual risks and inspection gaps; it is not a redaction primitive. | native + `wasm32-unknown-unknown` |
+| [`gema-cli`](crates/gema-cli) | `gema` binary: compress/analyze a PDF and run `remove-text` from the command line. | native |
 | [`gema-wasm`](crates/gema-wasm) | `wasm-bindgen` bindings exposing `compress`, `analyze`, `compress_with_report` to JS. | `wasm32-unknown-unknown` |
 
 ## Usage
 
-### Rust (`gema-core`)
+### Rust (`gema-compress`)
 
 ```rust
-use gema_core::{compress, CompressOptions, Profile};
+use gema_compress::{compress, CompressOptions, Profile};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input = std::fs::read("input.pdf")?;
@@ -142,7 +149,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 `dedupe_images` flag collapses byte-identical image XObjects when their render
 semantics match; signature/seal images and transparency masks are excluded.
 See
-`crates/gema-core/src/options.rs` for the full set and their profile
+`crates/gema-compress/src/options.rs` for the full set and their profile
 defaults (Screen 72dpi/q40, Ebook 150dpi/q65, Printer 300dpi/q80).
 
 Native callers that process untrusted or very large PDFs can bound image work
@@ -184,11 +191,14 @@ gema compress in.pdf out.pdf --dedupe-images
 gema analyze in.pdf
 ```
 
+`gema remove-text in.pdf out.pdf --region <page>:<x>,<y>,<w>,<h>` removes glyphs
+from selected regions and reports what may survive; it is not a redaction primitive.
+
 Profiles: `screen` | `ebook` | `printer` | `custom` (default `ebook`; `custom`
 takes Ebook's base values and expects `--image-dpi` / `--jpeg-quality` on top).
 Signature policies: `flatten` (default, preserves the visible appearance) |
 `strict` (returns signed PDFs unchanged) | `ignore`. Both sets are parsed by
-`gema-core` itself (`Profile: FromStr`, `SignaturePolicy: FromStr`), so the CLI
+`gema-compress` itself (`Profile: FromStr`, `SignaturePolicy: FromStr`), so the CLI
 and the WASM binding accept exactly the same names.
 
 ### Web (`gema-wasm`)
@@ -323,7 +333,7 @@ is the stable discriminant; `warnings[].message` is prose and may be reworded.
 
 ### API stability
 
-The supported surface is what `gema-core` re-exports; implementation modules are
+The supported surface is what `gema-compress` re-exports; implementation modules are
 private.
 
 - Enums the pipeline grows are `#[non_exhaustive]` — `ImageSkipReason`,
