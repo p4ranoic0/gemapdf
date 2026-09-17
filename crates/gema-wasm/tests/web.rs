@@ -148,6 +148,13 @@ fn remove_text_glyphs_speaks_plain_js() {
     assert_eq!(field("id").as_string().as_deref(), Some("bloque-7"));
     assert_eq!(field("status").as_string().as_deref(), Some("removed"));
     assert_eq!(field("removed_glyphs").as_f64(), Some(7.0));
+    let report_field = |name: &str| js_sys::Reflect::get(&report, &name.into()).unwrap();
+    assert_eq!(report_field("schema_version").as_f64(), Some(1.0));
+    assert_eq!(report_field("modified").as_bool(), Some(true));
+    assert_eq!(report_field("inspection_incomplete").as_bool(), Some(false));
+    assert!(js_sys::Array::is_array(&report_field("not_inspected")));
+    assert!(js_sys::Array::is_array(&report_field("residual_risks")));
+    assert_eq!(report_field("signature").is_object(), true);
 }
 
 #[wasm_bindgen_test]

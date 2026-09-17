@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "modified": true,
+  "regions": [
+    {
+      "id": "r1",
+      "page": 0,
+      "removed_glyphs": 4,
+      "status": "removed"
+    }
+  ],
+  "residual_risks": [],
+  "inspection_incomplete": false,
+  "inspection_gaps": [],
+  "signature": {
+    "sig_flags": false,
+    "sig_field": false,
+    "perms": false
+  },
+  "not_inspected": [
+    "document_info",
+    "xmp_metadata",
+    "form_xobject_content",
+    "annotation_appearance",
+    "structure_tree",
+    "embedded_files",
+    "outlines"
+  ]
+}

@@ -32,6 +32,7 @@ pub enum ResidualRisk {
     },
     /// La página dibuja un Form XObject. Su contenido **no se reescribe ni se
     /// inspecciona**: el texto que haya adentro sobrevive.
+    #[cfg_attr(feature = "serde", serde(rename = "form_xobject"))]
     FormXObject {
         /// Página inspeccionada.
         page: u32,
@@ -1085,5 +1086,54 @@ mod tests {
         insp.inspect_form_xobjects(&Content::decode(ops).unwrap(), &resources, 0);
         assert!(insp.risks.is_empty());
         assert_eq!(insp.gaps[0].reason, GapReason::MalformedObject);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn every_risk_kind_matches_its_serde_tag() {
+        let all = [
+            ResidualRisk::SharedContentStream {
+                page: 0,
+                shared_with: vec![],
+            },
+            ResidualRisk::FormXObject {
+                page: 0,
+                name: "Fx".into(),
+            },
+            ResidualRisk::Annotation {
+                page: 0,
+                subtype: "Text".into(),
+            },
+            ResidualRisk::OptionalContent { page: 0 },
+            ResidualRisk::ActualText { page: 0 },
+        ];
+        for risk in all {
+            let v = serde_json::to_value(&risk).unwrap();
+            assert_eq!(
+                v["kind"],
+                serde_json::Value::String(risk.kind().to_string()),
+                "{}",
+                risk.kind()
+            );
+        }
+        for reason in [
+            GapReason::BrokenReference,
+            GapReason::ReferenceCycle,
+            GapReason::ReferenceDepth,
+            GapReason::BudgetExhausted,
+            GapReason::UnsupportedFilter,
+            GapReason::CorruptStream,
+            GapReason::MalformedAnnots,
+            GapReason::MalformedRect,
+            GapReason::MissingResource,
+            GapReason::MalformedObject,
+            GapReason::Encrypted,
+            GapReason::NotInspected,
+        ] {
+            assert_eq!(
+                serde_json::to_value(reason).unwrap(),
+                serde_json::Value::String(reason.as_str().to_string())
+            );
+        }
     }
 }

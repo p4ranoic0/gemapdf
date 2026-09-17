@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "modified": true,
+  "regions": [
+    {
+      "id": "r1",
+      "page": 0,
+      "removed_glyphs": 4,
+      "status": "removed_unverified"
+    },
+    {
+      "id": "r2",
+      "page": 0,
+      "removed_glyphs": 0,
+      "status": "skipped_unsupported_text"
+    }
+  ],
+  "residual_risks": [
+    {
+      "kind": "shared_content_stream",
+      "page": 0,
+      "shared_with": [
+        1
+      ]
+    },
+    {
+      "kind": "form_xobject",
+      "page": 0,
+      "name": "Fx1"
+    }
+  ],
+  "inspection_incomplete": true,
+  "inspection_gaps": [
+    {
+      "reason": "broken_reference",
+      "page": 0,
+      "detail": "999 0 R"
+    }
+  ],
+  "signature": {
+    "sig_flags": true,
+    "sig_field": false,
+    "perms": false
+  },
+  "not_inspected": [
+    "document_info",
+    "xmp_metadata",
+    "form_xobject_content",
+    "annotation_appearance",
+    "structure_tree",
+    "embedded_files",
+    "outlines"
+  ]
+}

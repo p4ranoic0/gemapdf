@@ -119,12 +119,14 @@ pub fn compress_with_report(
 /// - `regions`: array de `{ id: string, page: number (base 0), x, y, width,
 ///   height }` en puntos, espacio de página PDF (origen abajo a la izquierda).
 ///
-/// Devuelve `{ output: Uint8Array, report: { regions: [{ id, page,
-/// removed_glyphs, status }] } }`. `status` ∈ "removed" | "removed_unverified" |
+/// Devuelve `{ output: Uint8Array, report: { schema_version, modified, regions,
+/// residual_risks, inspection_incomplete, inspection_gaps, signature,
+/// not_inspected } }`. `status` ∈ "removed" | "removed_unverified" |
 /// "nothing_found" | "skipped_encrypted" | "skipped_invalid_region" |
 /// "skipped_page_geometry" | "skipped_content" | "skipped_unsupported_text" |
-/// "skipped_verification". Sólo "removed" garantiza que en la región ya no queda
-/// texto; en cualquier otro caso el llamador debe seguir tapando la región.
+/// "skipped_verification". `removed` significa que el content stream directo ya
+/// no emite esos glifos, no que la región quedó limpia: mirar `residual_risks`,
+/// `inspection_incomplete` y `not_inspected`.
 #[wasm_bindgen]
 pub fn remove_text_glyphs(input: &[u8], regions: JsValue) -> Result<JsValue, JsError> {
     let regions: Vec<TextRegion> = serde_wasm_bindgen::from_value(regions)
@@ -132,13 +134,7 @@ pub fn remove_text_glyphs(input: &[u8], regions: JsValue) -> Result<JsValue, JsE
     let result =
         gema_edit::remove_text_glyphs(input, &regions).map_err(|e| JsError::new(&e.to_string()))?;
 
-    let report = js_sys::Object::new();
-    js_sys::Reflect::set(
-        &report,
-        &JsValue::from_str("regions"),
-        &to_js_object(&result.regions)?,
-    )
-    .map_err(|_| JsError::new("no se pudo construir el informe"))?;
+    let report = to_js_object(&result.report())?;
     let out = js_sys::Object::new();
     js_sys::Reflect::set(
         &out,

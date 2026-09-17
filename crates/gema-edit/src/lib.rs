@@ -31,12 +31,14 @@ pub use options::{EditOptions, ObjectBudget};
 
 mod inspect;
 pub(crate) mod matrix;
+mod report;
 mod signature;
 mod stream_read;
 #[cfg(test)]
 pub(crate) mod test_support;
 
 pub use inspect::{GapReason, InspectionGap, ResidualRisk};
+pub use report::{RemovalReport, NOT_INSPECTED_SURFACES, REPORT_SCHEMA_VERSION};
 pub use signature::SignatureIndicators;
 pub(crate) mod text_geometry;
 
