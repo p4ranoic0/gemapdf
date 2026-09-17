@@ -546,6 +546,7 @@ dependencies = [
  "gema-compress",
  "gema-edit",
  "lopdf",
+ "serde",
  "serde_json",
 ]
 
