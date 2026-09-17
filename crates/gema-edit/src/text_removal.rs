@@ -149,6 +149,8 @@ pub struct RemovalResult {
 ///
 /// Un documento cifrado no es un error: se devuelve intacto con
 /// [`RemovalStatus::SkippedEncrypted`].
+///
+/// Equivale a [`remove_text_glyphs_with`] con [`EditOptions::default`].
 pub fn remove_text_glyphs(
     input: &[u8],
     regions: &[TextRegion],
@@ -157,6 +159,11 @@ pub fn remove_text_glyphs(
 }
 
 /// Elimina los glifos que caen dentro de `regions`, acotado por `opts`.
+///
+/// Los límites de entrada y de regiones se verifican **antes** de parsear el
+/// PDF. Los del content stream se verifican mientras se lee; superarlos
+/// aborta con [`EditError::LimitExceeded`]. Los de la inspección residual no
+/// abortan: dejan `inspection_incomplete`.
 pub fn remove_text_glyphs_with(
     input: &[u8],
     regions: &[TextRegion],
@@ -178,7 +185,7 @@ fn remove_text_glyphs_inner(
     opts: &EditOptions,
     meter: &mut BudgetMeter,
 ) -> Result<RemovalResult, EditError> {
-    let _ = (opts, meter);
+    let _ = (opts, meter); // se consumen desde la Task 4
     let mut reports: Vec<RegionReport> = regions
         .iter()
         .map(|region| RegionReport {

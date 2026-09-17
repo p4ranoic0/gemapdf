@@ -102,6 +102,11 @@ mod tests {
         ];
         for (kind, expected) in all {
             assert_eq!(kind.as_str(), expected);
+            #[cfg(feature = "serde")]
+            assert_eq!(
+                serde_json::to_value(kind).unwrap(),
+                serde_json::Value::String(expected.to_string())
+            );
         }
     }
 }
