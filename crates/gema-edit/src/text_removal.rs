@@ -18,16 +18,14 @@ use lopdf::{dictionary, Document, Object, ObjectId, Stream, StringFormat};
 
 use crate::error::{EditError, LimitKind};
 use crate::options::{BudgetMeter, EditOptions};
-use crate::text_geometry::{interpret_page_text, Glyph, PageText};
+use crate::stream_read::{read_page_content_bounded, StreamReadError};
+use crate::text_geometry::{interpret_content, Glyph, PageText};
 
 /// Tolerancia de posición al verificar que los glifos no borrados siguen en su
 /// sitio (puntos PDF). El intérprete trabaja con matrices `f32`.
 const POSITION_TOLERANCE: f64 = 0.01;
 /// Tolerancia para considerar que una caja de página empieza en el origen.
 const BOX_TOLERANCE: f64 = 0.01;
-/// Páginas con más operadores se dejan intactas.
-const MAX_PAGE_OPERATIONS: usize = 1_000_000;
-
 /// Rectángulo cuyo texto debe desaparecer, en espacio de página PDF (origen
 /// abajo a la izquierda, puntos).
 #[derive(Debug, Clone, PartialEq)]
@@ -185,7 +183,6 @@ fn remove_text_glyphs_inner(
     opts: &EditOptions,
     meter: &mut BudgetMeter,
 ) -> Result<RemovalResult, EditError> {
-    let _ = (opts, meter); // se consumen desde la Task 4
     let mut reports: Vec<RegionReport> = regions
         .iter()
         .map(|region| RegionReport {
@@ -228,7 +225,7 @@ fn remove_text_glyphs_inner(
     let mut changed = false;
     for (page, indices) in by_page {
         let page_id = pages[&(page + 1)];
-        let outcome = erase_on_page(&mut doc, page_id, regions, &indices);
+        let outcome = erase_on_page(&mut doc, page_id, regions, &indices, opts, meter)?;
         for (index, removed_glyphs, status) in outcome.regions {
             reports[index].removed_glyphs = removed_glyphs;
             reports[index].status = status;
@@ -251,6 +248,8 @@ fn remove_text_glyphs_inner(
 struct PageOutcome {
     regions: Vec<(usize, usize, RemovalStatus)>,
     changed: bool,
+    #[allow(dead_code)] // se lee desde la Task 7
+    read_error: Option<StreamReadError>,
 }
 
 /// `(índice de operación, índice de operando, offset del código)`.
@@ -265,27 +264,50 @@ fn erase_on_page(
     page_id: ObjectId,
     regions: &[TextRegion],
     indices: &[usize],
-) -> PageOutcome {
+    opts: &EditOptions,
+    meter: &mut BudgetMeter,
+) -> Result<PageOutcome, EditError> {
     let untouched = |status| PageOutcome {
         regions: indices.iter().map(|&index| (index, 0, status)).collect(),
         changed: false,
+        read_error: None,
+    };
+    let untouched_with = |status, read_error| PageOutcome {
+        regions: indices.iter().map(|&index| (index, 0, status)).collect(),
+        changed: false,
+        read_error: Some(read_error),
     };
     if !page_geometry_is_plain(doc, page_id) {
-        return untouched(RemovalStatus::SkippedPageGeometry);
+        return Ok(untouched(RemovalStatus::SkippedPageGeometry));
     }
-    let Ok(content) = doc.get_and_decode_page_content(page_id) else {
-        return untouched(RemovalStatus::SkippedContent);
+    let bytes = match read_page_content_bounded(doc, page_id, opts, meter) {
+        Ok(bytes) => bytes,
+        Err(StreamReadError::Budget(kind)) => return Err(EditError::LimitExceeded(kind)),
+        Err(StreamReadError::TooLarge) => {
+            unreachable!("read_page_content_bounded lo traduce a Budget")
+        }
+        Err(
+            e @ (StreamReadError::UnsupportedFilter(_)
+            | StreamReadError::Corrupt
+            | StreamReadError::Missing
+            | StreamReadError::NotAStream),
+        ) => {
+            return Ok(untouched_with(RemovalStatus::SkippedContent, e));
+        }
     };
-    if content.operations.len() > MAX_PAGE_OPERATIONS
+    let Ok(content) = Content::decode(&bytes) else {
+        return Ok(untouched(RemovalStatus::SkippedContent));
+    };
+    if content.operations.len() > opts.max_content_operations
         || content
             .operations
             .iter()
             .any(|operation| operation.operator == "BI")
     {
-        return untouched(RemovalStatus::SkippedContent);
+        return Ok(untouched(RemovalStatus::SkippedContent));
     }
-    let Ok(before) = interpret_page_text(doc, page_id) else {
-        return untouched(RemovalStatus::SkippedContent);
+    let Ok(before) = interpret_content(doc, page_id, &content) else {
+        return Ok(untouched(RemovalStatus::SkippedContent));
     };
     let page_has_unsupported = !before.unsupported.is_empty();
 
@@ -339,10 +361,11 @@ fn erase_on_page(
         statuses.push((region_index, count, status));
     }
     if erase.is_empty() {
-        return PageOutcome {
+        return Ok(PageOutcome {
             regions: statuses,
             changed: false,
-        };
+            read_error: None,
+        });
     }
 
     let failed = |statuses: Vec<(usize, usize, RemovalStatus)>, status| PageOutcome {
@@ -357,13 +380,14 @@ fn erase_on_page(
             })
             .collect(),
         changed: false,
+        read_error: None,
     };
 
     let Some(operations) = rewrite_operations(&content.operations, &before, &erase) else {
-        return failed(statuses, RemovalStatus::SkippedContent);
+        return Ok(failed(statuses, RemovalStatus::SkippedContent));
     };
     let Ok(bytes) = (Content { operations }).encode() else {
-        return failed(statuses, RemovalStatus::SkippedContent);
+        return Ok(failed(statuses, RemovalStatus::SkippedContent));
     };
 
     let old_streams = doc.get_page_contents(page_id);
@@ -373,19 +397,21 @@ fn erase_on_page(
         .and_then(|page| page.get(b"Contents").ok())
         .cloned()
     else {
-        return failed(statuses, RemovalStatus::SkippedContent);
+        return Ok(failed(statuses, RemovalStatus::SkippedContent));
     };
-    let mut stream = Stream::new(dictionary! {}, bytes);
+    let mut stream = Stream::new(dictionary! {}, bytes.clone());
     let _ = stream.compress();
     let new_stream = doc.add_object(stream);
     set_contents(doc, page_id, Object::Reference(new_stream));
 
-    let verified = interpret_page_text(doc, page_id)
-        .is_ok_and(|after| unremoved_glyphs_unchanged(&before, &after, &erase));
+    let verified = Content::decode(&bytes)
+        .ok()
+        .and_then(|after| interpret_content(doc, page_id, &after).ok())
+        .is_some_and(|after| unremoved_glyphs_unchanged(&before, &after, &erase));
     if !verified {
         set_contents(doc, page_id, previous_contents);
         doc.objects.remove(&new_stream);
-        return failed(statuses, RemovalStatus::SkippedVerification);
+        return Ok(failed(statuses, RemovalStatus::SkippedVerification));
     }
 
     // El stream viejo sigue conteniendo el texto borrado. Si ninguna otra página
@@ -395,10 +421,11 @@ fn erase_on_page(
             doc.objects.remove(&old);
         }
     }
-    PageOutcome {
+    Ok(PageOutcome {
         regions: statuses,
         changed: true,
-    }
+        read_error: None,
+    })
 }
 
 fn set_contents(doc: &mut Document, page_id: ObjectId, contents: Object) {
@@ -771,6 +798,33 @@ mod tests {
         assert!(matches!(
             err,
             crate::EditError::LimitExceeded(crate::LimitKind::InputBytes)
+        ));
+    }
+
+    #[test]
+    fn operation_limit_skips_the_page_like_today() {
+        let pdf = build(&[b"BT /F1 12 Tf 10 10 Td (hola) Tj ET"], None, vec![]);
+        let opts = crate::EditOptions {
+            max_content_operations: 3,
+            ..crate::EditOptions::default()
+        };
+        let r = super::remove_text_glyphs_with(&pdf, &[region(0, 0.0, 0.0, 612.0, 792.0)], &opts)
+            .unwrap();
+        assert_eq!(r.regions[0].status, RemovalStatus::SkippedContent);
+    }
+
+    #[test]
+    fn page_byte_limit_aborts_the_call() {
+        let pdf = build(&[b"BT /F1 12 Tf 10 10 Td (hola) Tj ET"], None, vec![]);
+        let opts = crate::EditOptions {
+            max_decompressed_bytes: 8,
+            ..crate::EditOptions::default()
+        };
+        let err = super::remove_text_glyphs_with(&pdf, &[region(0, 0.0, 0.0, 612.0, 792.0)], &opts)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::EditError::LimitExceeded(crate::LimitKind::DecompressedBytes)
         ));
     }
 

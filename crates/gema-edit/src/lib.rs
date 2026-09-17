@@ -30,6 +30,7 @@ pub mod options;
 pub use options::{EditOptions, ObjectBudget};
 
 pub(crate) mod matrix;
+mod stream_read;
 pub(crate) mod text_geometry;
 
 mod text_removal;

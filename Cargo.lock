@@ -571,6 +571,7 @@ dependencies = [
 name = "gema-edit"
 version = "0.6.0"
 dependencies = [
+ "flate2",
  "lopdf",
  "serde",
  "serde_json",

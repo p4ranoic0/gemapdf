@@ -721,9 +721,15 @@ fn show_string(
     }
 }
 
-/// Interpreta una página sin modificar el documento ni exponer API pública.
-pub(crate) fn interpret_page_text(doc: &Document, page_id: ObjectId) -> lopdf::Result<PageText> {
-    let Content { operations } = doc.get_and_decode_page_content(page_id)?;
+/// Interpreta `content` como el contenido de `page_id`. No lee streams: el
+/// llamador ya los leyó acotados (o, en la verificación, los acaba de producir
+/// en memoria).
+pub(crate) fn interpret_content(
+    doc: &Document,
+    page_id: ObjectId,
+    content: &Content,
+) -> lopdf::Result<PageText> {
+    let operations = &content.operations;
     let fonts = page_font_metrics(doc, page_id)?;
     let form_names = page_form_names(doc, page_id)?;
     let mut output = PageText {
@@ -896,6 +902,12 @@ pub(crate) fn interpret_page_text(doc: &Document, page_id: ObjectId) -> lopdf::R
     }
 
     Ok(output)
+}
+
+#[cfg(test)]
+pub(crate) fn interpret_page_text(doc: &Document, page_id: ObjectId) -> lopdf::Result<PageText> {
+    let content = doc.get_and_decode_page_content(page_id)?;
+    interpret_content(doc, page_id, &content)
 }
 
 #[cfg(test)]

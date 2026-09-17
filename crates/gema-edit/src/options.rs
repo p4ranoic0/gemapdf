@@ -69,7 +69,6 @@ impl Default for ObjectBudget {
 }
 
 /// Contador vivo de un presupuesto. Interno: el llamador sólo ve los límites.
-#[allow(dead_code)] // se consume desde la Task 4
 #[derive(Debug)]
 pub(crate) struct BudgetMeter {
     limits: ObjectBudget,
@@ -78,7 +77,6 @@ pub(crate) struct BudgetMeter {
     bytes: usize,
 }
 
-#[allow(dead_code)] // se consume desde la Task 4
 impl BudgetMeter {
     pub(crate) fn new(limits: &ObjectBudget) -> Self {
         BudgetMeter {
@@ -124,6 +122,7 @@ impl BudgetMeter {
     }
 
     /// `Err` si `depth` supera `max_reference_depth`.
+    #[allow(dead_code)] // se consume desde la Task 5
     pub(crate) fn check_depth(&self, depth: usize) -> Result<(), crate::LimitKind> {
         if depth > self.limits.max_reference_depth {
             return Err(crate::LimitKind::ReferenceDepth);
