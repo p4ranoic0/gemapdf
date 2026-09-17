@@ -207,8 +207,8 @@ pub(crate) fn read_page_content_bounded(
     meter: &mut BudgetMeter,
 ) -> Result<Vec<u8>, StreamReadError> {
     let mut out = Vec::new();
-    for id in doc.get_page_contents(page_id) {
-        if !out.is_empty() {
+    for (index, id) in doc.get_page_contents(page_id).into_iter().enumerate() {
+        if index > 0 {
             out.push(b'\n');
         }
         let page_left = opts.max_decompressed_bytes.saturating_sub(out.len());
@@ -547,6 +547,107 @@ mod tests {
         assert_eq!(
             read_page_content_bounded(&doc, page, &opts, &mut m).unwrap_err(),
             StreamReadError::Budget(crate::LimitKind::TotalDecompressedBytes)
+        );
+    }
+
+    #[test]
+    fn empty_first_stream_still_gets_a_separator() {
+        let mut doc = Document::with_version("1.5");
+        let a = doc.add_object(Stream::new(dictionary! {}, Vec::new()));
+        let b = doc.add_object(Stream::new(dictionary! {}, b"BT ET".to_vec()));
+        let page = doc.add_object(dictionary! { "Type" => "Page", "Contents" => vec![Object::Reference(a), Object::Reference(b)] });
+        let out =
+            read_page_content_bounded(&doc, page, &EditOptions::default(), &mut meter()).unwrap();
+        assert_eq!(out, b"\nBT ET");
+    }
+
+    #[test]
+    #[ignore]
+    fn bounded_reader_matches_lopdf_on_corpus() {
+        let root =
+            std::env::var_os("GEMAPDF_CORPUS").expect("GEMAPDF_CORPUS debe apuntar al corpus");
+        let mut files = Vec::new();
+        fn collect(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("no se puede leer el corpus") {
+                let path = entry.expect("entrada inválida").path();
+                if path.is_dir() {
+                    collect(&path, files);
+                } else if path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+                    && !path
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .ends_with("_comprimido")
+                    && !path
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .ends_with("_compressed")
+                {
+                    files.push(path);
+                }
+            }
+        }
+        collect(std::path::Path::new(&root), &mut files);
+        files.sort();
+        let mut equal = 0usize;
+        let mut different = Vec::new();
+        let mut errors = Vec::new();
+        for path in files {
+            let bytes = std::fs::read(&path).expect("no se puede leer PDF");
+            let doc = match Document::load_mem(&bytes) {
+                Ok(doc) => doc,
+                Err(e) => {
+                    errors.push(format!("{}: parse {e}", path.display()));
+                    continue;
+                }
+            };
+            for (number, page) in doc.get_pages() {
+                let expected = match doc.get_page_content(page) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        errors.push(format!("{}:{}: lopdf {e}", path.display(), number));
+                        continue;
+                    }
+                };
+                let ids = doc.get_page_contents(page);
+                match read_page_content_bounded(&doc, page, &EditOptions::default(), &mut meter()) {
+                    Ok(actual) => {
+                        let mut normalized = actual.clone();
+                        if !ids.is_empty() {
+                            normalized.push(b'\n');
+                        }
+                        if expected == normalized {
+                            equal += 1;
+                        } else {
+                            different.push(format!(
+                                "{}:{}: first actual={:?} expected={:?}",
+                                path.display(),
+                                number,
+                                &actual[..actual.len().min(32)],
+                                &expected[..expected.len().min(32)]
+                            ));
+                        }
+                    }
+                    Err(e) => errors.push(format!("{}:{}: {:?}", path.display(), number, e)),
+                }
+            }
+        }
+        println!("páginas iguales: {equal}");
+        println!("páginas distintas: {}", different.len());
+        for item in &different {
+            println!("distinta {item}");
+        }
+        println!("errores: {}", errors.len());
+        for item in &errors {
+            println!("error {item}");
+        }
+        assert!(
+            different.is_empty(),
+            "{} páginas distintas",
+            different.len()
         );
     }
 }

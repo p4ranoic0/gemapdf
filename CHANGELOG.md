@@ -3,6 +3,29 @@
 All notable changes to GemaPDF are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed (breaking)
+
+- `gema-edit`: `erase_text` → `remove_text_glyphs` (+ `remove_text_glyphs_with(…, &EditOptions)`); `EraseRegion` → `TextRegion`, `EraseStatus` → `RemovalStatus` (`removed`, `removed_unverified`), `EraseResult` → `RemovalResult`, `erased_glyphs` → `removed_glyphs`. `Removed` documenta su alcance real: no afirma que la región quedó limpia.
+- `gema-edit`: `EditError` habla inglés y gana `LimitExceeded(LimitKind)`.
+- `gema-edit`: `RemovalResult` gana `residual_risks`, `inspection_incomplete`, `inspection_gaps`, `signature`, `modified` y `not_inspected`. Informe JSON versionado (`schema_version = 1`) vía `RemovalResult::report()`.
+- `gema-wasm`: `erase_text` → `remove_text_glyphs`; el objeto devuelto incluye el informe v1. El portfolio queda incompatible hasta su migración.
+
+- `gema-cli`: los errores de **uso** de `compress` y `analyze` salen con código 1 en vez del 2 de `clap` (`main` usa `try_parse`); el 2 queda reservado para "escrito pero no garantizado" de `remove-text`.
+- `gema-edit`: `ResidualRisk::FormXObject` se serializa como `form_xobject` (igual que `kind()`).
+
+### Added
+
+- `gema-edit`: `EditOptions` con `max_input_bytes`, `max_regions`, `max_decompressed_bytes`, `max_total_decompressed_bytes`, `max_content_operations` y `ObjectBudget`. Ningún stream se descomprime sin tope; `FlateDecode` usa fallback acotado de deflate crudo, LZW/ASCII85/predictores se informan como `unsupported_filter`.
+- `gema-edit`: el truncado o checksum inválido de Flate que no supera el fallback se informa como `SkippedContent`; `modified` es un campo, y cero regiones deja `inspection_gaps` con `NotInspected`.
+- `gema-cli`: `remove-text <in> <out> --region [<id>@]<page>:<x>,<y>,<w>,<h> [--json]`. Códigos: 0 garantizado, 1 error, 2 escrito pero no garantizado, 3 escrito pero informe no impreso.
+
+### Verified
+
+- Byte-identidad de compresión contra `d9d2c77` sobre el corpus: 0 bytes de diferencia, 12/12 idénticos (corrida `20260917T115728Z-96453c9e`). El código de edición no tocó `gema-compress`.
+- Compatibilidad del lector acotado: 2139 páginas iguales, 0 distintas, 0 errores.
+
 ## 0.6.0 — 2026-09-15
 
 ### Added
