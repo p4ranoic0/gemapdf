@@ -8,6 +8,7 @@
 
 use lopdf::content::Content;
 use lopdf::{Dictionary, Document, Object, ObjectId};
+use std::collections::BTreeMap;
 
 use crate::options::BudgetMeter;
 
@@ -147,13 +148,11 @@ pub struct InspectionGap {
     pub detail: String,
 }
 
-#[allow(dead_code)] // se consume desde la Task 7
 fn lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
 /// `/Rect` como `[x_min, y_min, x_max, y_max]`.
-#[allow(dead_code)] // se consume desde la Task 7
 fn parse_rect(obj: &Object) -> Option<[f64; 4]> {
     let items = obj.as_array().ok()?;
     if items.len() != 4 {
@@ -179,7 +178,6 @@ fn parse_rect(obj: &Object) -> Option<[f64; 4]> {
 }
 
 /// Intersección estricta: bordes que se tocan y rectángulos de área cero no cuentan.
-#[allow(dead_code)] // se consume desde la Task 7
 fn intersects(rect: [f64; 4], region: &crate::TextRegion) -> bool {
     let (rx1, ry1) = (region.x, region.y);
     let (rx2, ry2) = (region.x + region.width, region.y + region.height);
@@ -188,15 +186,14 @@ fn intersects(rect: [f64; 4], region: &crate::TextRegion) -> bool {
 }
 
 /// Recorre el documento cobrando cada resolución al presupuesto.
-#[allow(dead_code)] // se consume desde la Task 7
 pub(crate) struct Inspector<'a> {
     doc: &'a Document,
     meter: &'a mut BudgetMeter,
     pub(crate) risks: Vec<ResidualRisk>,
     pub(crate) gaps: Vec<InspectionGap>,
+    contents_index: Option<Vec<(u32, Vec<ObjectId>)>>,
 }
 
-#[allow(dead_code)] // se consume desde la Task 7
 impl<'a> Inspector<'a> {
     pub(crate) fn new(doc: &'a Document, meter: &'a mut BudgetMeter) -> Self {
         Inspector {
@@ -204,6 +201,7 @@ impl<'a> Inspector<'a> {
             meter,
             risks: Vec::new(),
             gaps: Vec::new(),
+            contents_index: None,
         }
     }
 
@@ -484,6 +482,70 @@ impl<'a> Inspector<'a> {
                     );
                     self.risks.push(ResidualRisk::Annotation { page, subtype });
                 }
+            }
+        }
+    }
+
+    pub(crate) fn inspect_shared_content(
+        &mut self,
+        original: &[ObjectId],
+        page: u32,
+        pages: &BTreeMap<u32, ObjectId>,
+    ) {
+        if original.is_empty() {
+            return;
+        }
+        let doc = self.doc;
+        let index = self.contents_index.get_or_insert_with(|| {
+            pages
+                .iter()
+                .map(|(number, id)| (number.saturating_sub(1), doc.get_page_contents(*id)))
+                .collect()
+        });
+        let shared_with = index
+            .iter()
+            .filter(|(other, ids)| *other != page && ids.iter().any(|id| original.contains(id)))
+            .map(|(other, _)| *other)
+            .collect::<Vec<_>>();
+        if !shared_with.is_empty() {
+            self.risks
+                .push(ResidualRisk::SharedContentStream { page, shared_with });
+        }
+    }
+
+    pub(crate) fn inspect_form_xobjects(
+        &mut self,
+        content: &Content,
+        resources: &[&'a Dictionary],
+        page: u32,
+    ) {
+        let mut seen = std::collections::BTreeSet::new();
+        for op in &content.operations {
+            if op.operator != "Do" {
+                continue;
+            }
+            let Some(Object::Name(name)) = op.operands.first() else {
+                continue;
+            };
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            match self.resource(resources, b"XObject", name, page) {
+                Some(Object::Stream(stream)) => {
+                    if matches!(stream.dict.get(b"Subtype"), Ok(Object::Name(kind)) if kind == b"Form")
+                    {
+                        self.risks.push(ResidualRisk::FormXObject {
+                            page,
+                            name: lossy(name),
+                        });
+                    }
+                }
+                Some(other) => self.gap(
+                    GapReason::MalformedObject,
+                    Some(page),
+                    format!("/XObject /{} is {}", lossy(name), other.enum_variant()),
+                ),
+                None => {}
             }
         }
     }
@@ -883,5 +945,137 @@ mod tests {
             [100.0, 0.0, 150.0, 50.0],
             &region(0.0, 0.0, 100.0, 100.0)
         ));
+    }
+    #[test]
+    fn shared_content_stream_names_the_other_pages() {
+        let mut fx = Fixture::new();
+        let shared = fx.content_stream(dictionary! {}, crate::test_support::HOLA);
+        let p0 = fx.add_page(shared, Some(Fixture::default_resources()), vec![]);
+        let _p1 = fx.add_page(shared, Some(Fixture::default_resources()), vec![]);
+        let _p2 = fx.text_page(crate::test_support::HOLA);
+        let mut meter = BudgetMeter::new(&ObjectBudget::default());
+        let mut insp = Inspector::new(&fx.doc, &mut meter);
+        let pages = fx.doc.get_pages();
+        let original = fx.doc.get_page_contents(p0);
+        insp.inspect_shared_content(&original, 0, &pages);
+        assert_eq!(
+            insp.risks,
+            vec![ResidualRisk::SharedContentStream {
+                page: 0,
+                shared_with: vec![1]
+            }]
+        );
+        assert!(insp.gaps.is_empty());
+    }
+
+    #[test]
+    fn shared_stream_disappears_when_both_pages_are_rewritten() {
+        let mut fx = Fixture::new();
+        let shared = fx.content_stream(dictionary! {}, crate::test_support::HOLA);
+        let p0 = fx.add_page(shared, Some(Fixture::default_resources()), vec![]);
+        let p1 = fx.add_page(shared, Some(Fixture::default_resources()), vec![]);
+        let pdf = fx.bytes();
+        let regions = [
+            TextRegion {
+                id: "r0".into(),
+                page: 0,
+                x: 0.0,
+                y: 0.0,
+                width: 612.0,
+                height: 792.0,
+            },
+            TextRegion {
+                id: "r1".into(),
+                page: 1,
+                x: 0.0,
+                y: 0.0,
+                width: 612.0,
+                height: 792.0,
+            },
+        ];
+        let result = crate::remove_text_glyphs(&pdf, &regions).unwrap();
+        assert!(!result
+            .residual_risks
+            .iter()
+            .any(|r| matches!(r, ResidualRisk::SharedContentStream { .. })));
+        let _ = (p0, p1); // IDs documentan las dos páginas reescritas.
+    }
+
+    #[test]
+    fn form_xobject_drawn_by_the_page_is_a_risk_but_images_are_not() {
+        let ops = b"q /Fx1 Do Q q /Im1 Do Q q /Fx1 Do Q";
+        let mut fx = Fixture::new();
+        let form = fx.doc.add_object(lopdf::Stream::new(
+            dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()] },
+            b"BT /F1 12 Tf (oculto) Tj ET".to_vec(),
+        ));
+        let image = fx.doc.add_object(lopdf::Stream::new(
+            dictionary! { "Type" => "XObject", "Subtype" => "Image", "Width" => 1, "Height" => 1 },
+            vec![0],
+        ));
+        let mut res = Fixture::default_resources();
+        res.set("XObject", dictionary! { "Fx1" => form, "Im1" => image });
+        let c = fx.content_stream(dictionary! {}, ops);
+        let page = fx.add_page(c, Some(res), vec![]);
+        let mut meter = BudgetMeter::new(&ObjectBudget::default());
+        let mut insp = Inspector::new(&fx.doc, &mut meter);
+        let resources = insp.resources(page, 0);
+        insp.inspect_form_xobjects(&Content::decode(ops).unwrap(), &resources, 0);
+        // Un solo riesgo aunque /Fx1 se dibuje dos veces.
+        assert_eq!(
+            insp.risks,
+            vec![ResidualRisk::FormXObject {
+                page: 0,
+                name: "Fx1".into()
+            }]
+        );
+        assert!(insp.gaps.is_empty());
+    }
+
+    #[test]
+    fn actual_text_inside_a_form_xobject_is_not_claimed_as_inspected() {
+        // El form trae /ActualText adentro. No se entra: el riesgo es
+        // FormXObject, nunca ActualText, y `not_inspected` (Task 9) declara
+        // que el contenido de los forms no se miró.
+        let ops = b"q /Fx1 Do Q";
+        let mut fx = Fixture::new();
+        let form = fx.doc.add_object(lopdf::Stream::new(
+            dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()] },
+            b"/Span <</ActualText (secreto)>> BDC BT /F1 12 Tf (x) Tj ET EMC".to_vec(),
+        ));
+        let mut res = Fixture::default_resources();
+        res.set("XObject", dictionary! { "Fx1" => form });
+        let c = fx.content_stream(dictionary! {}, ops);
+        let page = fx.add_page(c, Some(res), vec![]);
+        let mut meter = BudgetMeter::new(&ObjectBudget::default());
+        let mut insp = Inspector::new(&fx.doc, &mut meter);
+        let resources = insp.resources(page, 0);
+        let content = Content::decode(ops).unwrap();
+        insp.inspect_marked_content(&content, &resources, 0);
+        insp.inspect_form_xobjects(&content, &resources, 0);
+        assert_eq!(
+            insp.risks,
+            vec![ResidualRisk::FormXObject {
+                page: 0,
+                name: "Fx1".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn xobject_that_is_not_a_stream_is_a_gap() {
+        let ops = b"q /Fx1 Do Q";
+        let mut fx = Fixture::new();
+        let bogus = fx.doc.add_object(dictionary! { "Subtype" => "Form" });
+        let mut res = Fixture::default_resources();
+        res.set("XObject", dictionary! { "Fx1" => bogus });
+        let c = fx.content_stream(dictionary! {}, ops);
+        let page = fx.add_page(c, Some(res), vec![]);
+        let mut meter = BudgetMeter::new(&ObjectBudget::default());
+        let mut insp = Inspector::new(&fx.doc, &mut meter);
+        let resources = insp.resources(page, 0);
+        insp.inspect_form_xobjects(&Content::decode(ops).unwrap(), &resources, 0);
+        assert!(insp.risks.is_empty());
+        assert_eq!(insp.gaps[0].reason, GapReason::MalformedObject);
     }
 }

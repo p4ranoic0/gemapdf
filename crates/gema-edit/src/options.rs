@@ -78,6 +78,10 @@ pub(crate) struct BudgetMeter {
 }
 
 impl BudgetMeter {
+    #[cfg(test)]
+    pub(crate) fn objects_touched(&self) -> usize {
+        self.objects
+    }
     pub(crate) fn new(limits: &ObjectBudget) -> Self {
         BudgetMeter {
             limits: limits.clone(),
@@ -122,7 +126,6 @@ impl BudgetMeter {
     }
 
     /// `Err` si `depth` supera `max_reference_depth`.
-    #[allow(dead_code)] // se consume desde la Task 7
     pub(crate) fn check_depth(&self, depth: usize) -> Result<(), crate::LimitKind> {
         if depth > self.limits.max_reference_depth {
             return Err(crate::LimitKind::ReferenceDepth);
@@ -178,6 +181,7 @@ mod tests {
         };
         let mut meter = BudgetMeter::new(&budget);
         assert_eq!(meter.touch_object(), Ok(()));
+        assert_eq!(meter.objects_touched(), 1);
         assert_eq!(meter.touch_object(), Err(LimitKind::InspectedObjects));
         assert_eq!(meter.check_depth(3), Ok(()));
         assert_eq!(meter.check_depth(4), Err(LimitKind::ReferenceDepth));

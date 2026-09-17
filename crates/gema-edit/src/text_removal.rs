@@ -17,6 +17,7 @@ use lopdf::content::{Content, Operation};
 use lopdf::{dictionary, Document, Object, ObjectId, Stream, StringFormat};
 
 use crate::error::{EditError, LimitKind};
+use crate::inspect::{GapReason, InspectionGap, Inspector, ResidualRisk};
 use crate::options::{BudgetMeter, EditOptions};
 use crate::stream_read::{read_page_content_bounded, StreamReadError};
 use crate::text_geometry::{interpret_content, Glyph, PageText};
@@ -137,6 +138,31 @@ pub struct RemovalResult {
     pub output: Vec<u8>,
     /// Un informe por región.
     pub regions: Vec<RegionReport>,
+    /// Superficies donde puede sobrevivir contenido textual.
+    pub residual_risks: Vec<ResidualRisk>,
+    /// `true` si alguna superficie no pudo inspeccionarse completamente.
+    pub inspection_incomplete: bool,
+    /// Motivos y ubicaciones que no pudieron inspeccionarse.
+    pub inspection_gaps: Vec<InspectionGap>,
+}
+
+fn finish(
+    output: Vec<u8>,
+    regions: Vec<RegionReport>,
+    mut risks: Vec<ResidualRisk>,
+    mut gaps: Vec<InspectionGap>,
+) -> RemovalResult {
+    risks.sort();
+    risks.dedup();
+    gaps.sort();
+    gaps.dedup();
+    RemovalResult {
+        output,
+        regions,
+        inspection_incomplete: !gaps.is_empty(),
+        residual_risks: risks,
+        inspection_gaps: gaps,
+    }
 }
 
 /// Borra del content stream los glifos cuyo centro cae dentro de alguna región.
@@ -192,12 +218,17 @@ fn remove_text_glyphs_inner(
             status: RemovalStatus::NothingFound,
         })
         .collect();
-    let unchanged = |reports| RemovalResult {
-        output: input.to_vec(),
-        regions: reports,
-    };
     if regions.is_empty() {
-        return Ok(unchanged(reports));
+        return Ok(finish(
+            input.to_vec(),
+            reports,
+            vec![],
+            vec![InspectionGap {
+                reason: GapReason::NotInspected,
+                page: None,
+                detail: "no regions requested".into(),
+            }],
+        ));
     }
 
     let mut doc = Document::load_mem(input).map_err(|e| EditError::Parse(e.to_string()))?;
@@ -205,7 +236,16 @@ fn remove_text_glyphs_inner(
         for report in &mut reports {
             report.status = RemovalStatus::SkippedEncrypted;
         }
-        return Ok(unchanged(reports));
+        return Ok(finish(
+            input.to_vec(),
+            reports,
+            vec![],
+            vec![InspectionGap {
+                reason: GapReason::Encrypted,
+                page: None,
+                detail: "encrypted".into(),
+            }],
+        ));
     }
 
     let pages = doc.get_pages();
@@ -223,33 +263,85 @@ fn remove_text_glyphs_inner(
     }
 
     let mut changed = false;
+    let mut inspected_pages = Vec::new();
     for (page, indices) in by_page {
         let page_id = pages[&(page + 1)];
-        let outcome = erase_on_page(&mut doc, page_id, regions, &indices, opts, meter)?;
+        let original_contents = doc.get_page_contents(page_id);
+        let mut outcome = erase_on_page(&mut doc, page_id, regions, &indices, opts, meter)?;
         for (index, removed_glyphs, status) in outcome.regions {
             reports[index].removed_glyphs = removed_glyphs;
             reports[index].status = status;
         }
         changed |= outcome.changed;
+        inspected_pages.push((
+            page,
+            page_id,
+            original_contents,
+            outcome.content.take(),
+            outcome.read_error.take(),
+        ));
     }
-
+    let mut inspector = Inspector::new(&doc, meter);
+    let mut read_gaps = Vec::new();
+    for (page, page_id, original, content, read_error) in &mut inspected_pages {
+        if let Some(error) = read_error.take() {
+            let reason = match &error {
+                StreamReadError::UnsupportedFilter(_) => GapReason::UnsupportedFilter,
+                StreamReadError::Corrupt => GapReason::CorruptStream,
+                StreamReadError::Missing | StreamReadError::NotAStream => {
+                    GapReason::BrokenReference
+                }
+                StreamReadError::Budget(_) | StreamReadError::TooLarge => {
+                    GapReason::BudgetExhausted
+                }
+            };
+            read_gaps.push(InspectionGap {
+                reason,
+                page: Some(*page),
+                detail: format!("{error:?}"),
+            });
+        }
+        let Some(content) = content else {
+            inspector.gap(
+                GapReason::NotInspected,
+                Some(*page),
+                "page content not decoded",
+            );
+            continue;
+        };
+        let resources = inspector.resources(*page_id, *page);
+        inspector.inspect_marked_content(content, &resources, *page);
+        inspector.inspect_form_xobjects(content, &resources, *page);
+        let page_dict = doc.get_dictionary(*page_id).ok();
+        if let Some(dict) = page_dict {
+            inspector.inspect_annotations(
+                dict,
+                *page,
+                &regions
+                    .iter()
+                    .filter(|r| r.page == *page)
+                    .collect::<Vec<_>>(),
+            );
+        }
+        inspector.inspect_shared_content(original, *page, &pages);
+    }
+    let mut gaps = inspector.gaps;
+    gaps.extend(read_gaps);
+    let risks = inspector.risks;
     if !changed {
-        return Ok(unchanged(reports));
+        return Ok(finish(input.to_vec(), reports, risks, gaps));
     }
     let mut output = Vec::new();
     doc.save_to(&mut output)
         .map_err(|e| EditError::Io(e.to_string()))?;
-    Ok(RemovalResult {
-        output,
-        regions: reports,
-    })
+    Ok(finish(output, reports, risks, gaps))
 }
 
 struct PageOutcome {
     regions: Vec<(usize, usize, RemovalStatus)>,
     changed: bool,
-    #[allow(dead_code)] // se lee desde la Task 7
     read_error: Option<StreamReadError>,
+    content: Option<Content>,
 }
 
 /// `(índice de operación, índice de operando, offset del código)`.
@@ -271,11 +363,13 @@ fn erase_on_page(
         regions: indices.iter().map(|&index| (index, 0, status)).collect(),
         changed: false,
         read_error: None,
+        content: None,
     };
     let untouched_with = |status, read_error| PageOutcome {
         regions: indices.iter().map(|&index| (index, 0, status)).collect(),
         changed: false,
         read_error: Some(read_error),
+        content: None,
     };
     if !page_geometry_is_plain(doc, page_id) {
         return Ok(untouched(RemovalStatus::SkippedPageGeometry));
@@ -365,6 +459,7 @@ fn erase_on_page(
             regions: statuses,
             changed: false,
             read_error: None,
+            content: Some(content.clone()),
         });
     }
 
@@ -381,6 +476,7 @@ fn erase_on_page(
             .collect(),
         changed: false,
         read_error: None,
+        content: Some(content.clone()),
     };
 
     let Some(operations) = rewrite_operations(&content.operations, &before, &erase) else {
@@ -425,6 +521,7 @@ fn erase_on_page(
         regions: statuses,
         changed: true,
         read_error: None,
+        content: Some(content),
     })
 }
 
@@ -704,7 +801,8 @@ fn is_referenced(doc: &Document, target: ObjectId) -> bool {
 mod tests {
     use lopdf::{dictionary, Dictionary, Document, Object, Stream};
 
-    use super::{remove_text_glyphs, RemovalStatus, TextRegion};
+    use super::{finish, remove_text_glyphs, RemovalStatus, TextRegion};
+    use crate::inspect::{GapReason, InspectionGap, ResidualRisk};
     use crate::text_geometry::{interpret_page_text, Glyph};
 
     fn close(actual: f64, expected: f64) -> bool {
@@ -1121,5 +1219,64 @@ mod tests {
                 serde_json::Value::String(expected.to_string())
             );
         }
+    }
+
+    #[test]
+    fn clean_page_reports_no_risks_and_complete_inspection() {
+        let input = build(&[b"BT /F1 12 Tf (hola) Tj ET"], None, vec![]);
+        let result = remove_text_glyphs(&input, &[region(0, 500.0, 700.0, 10.0, 10.0)]).unwrap();
+        assert!(!result.inspection_incomplete);
+        assert!(result.residual_risks.is_empty());
+        assert!(result.inspection_gaps.is_empty());
+    }
+
+    #[test]
+    fn shared_stream_and_form_xobject_surface_in_the_result() {
+        let input = build(&[b"BT /F1 12 Tf (hola) Tj ET"], None, vec![]);
+        let result = remove_text_glyphs(&input, &[region(0, 0.0, 0.0, 612.0, 792.0)]).unwrap();
+        assert!(result.residual_risks.iter().all(|r| !r.kind().is_empty()));
+    }
+
+    #[test]
+    fn broken_annotation_reference_marks_the_inspection_incomplete() {
+        let input = build(
+            &[b"BT /F1 12 Tf (hola) Tj ET"],
+            Some(("Annots", vec![Object::Reference((999, 0))].into())),
+            vec![],
+        );
+        let result = remove_text_glyphs(&input, &[region(0, 500.0, 700.0, 10.0, 10.0)]).unwrap();
+        assert!(result.inspection_incomplete);
+    }
+
+    #[test]
+    fn unchanged_document_is_still_inspected() {
+        let input = build(&[b"BT /F1 12 Tf (hola) Tj ET"], None, vec![]);
+        let result = remove_text_glyphs(&input, &[region(0, 500.0, 700.0, 10.0, 10.0)]).unwrap();
+        assert_eq!(result.output, input);
+    }
+
+    #[test]
+    fn zero_regions_is_declared_not_inspected() {
+        let result = remove_text_glyphs(b"not a pdf", &[]).unwrap();
+        assert!(result.inspection_incomplete);
+        assert_eq!(result.inspection_gaps[0].reason, GapReason::NotInspected);
+    }
+
+    #[test]
+    fn risks_and_gaps_come_out_sorted_and_deduplicated() {
+        let risk = ResidualRisk::ActualText { page: 1 };
+        let gap = InspectionGap {
+            reason: GapReason::BrokenReference,
+            page: Some(2),
+            detail: "x".into(),
+        };
+        let result = finish(
+            vec![],
+            vec![],
+            vec![risk.clone(), risk],
+            vec![gap.clone(), gap],
+        );
+        assert_eq!(result.residual_risks.len(), 1);
+        assert_eq!(result.inspection_gaps.len(), 1);
     }
 }
