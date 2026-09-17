@@ -19,6 +19,7 @@ use lopdf::{dictionary, Document, Object, ObjectId, Stream, StringFormat};
 use crate::error::{EditError, LimitKind};
 use crate::inspect::{GapReason, InspectionGap, Inspector, ResidualRisk};
 use crate::options::{BudgetMeter, EditOptions};
+use crate::signature::SignatureIndicators;
 use crate::stream_read::{read_page_content_bounded, StreamReadError};
 use crate::text_geometry::{interpret_content, Glyph, PageText};
 
@@ -144,13 +145,19 @@ pub struct RemovalResult {
     pub inspection_incomplete: bool,
     /// Motivos y ubicaciones que no pudieron inspeccionarse.
     pub inspection_gaps: Vec<InspectionGap>,
+    /// `true` si el documento fue reescrito.
+    pub modified: bool,
+    /// Indicios de firma digital.
+    pub signature: SignatureIndicators,
 }
 
 fn finish(
     output: Vec<u8>,
     regions: Vec<RegionReport>,
+    modified: bool,
     mut risks: Vec<ResidualRisk>,
     mut gaps: Vec<InspectionGap>,
+    signature: SignatureIndicators,
 ) -> RemovalResult {
     risks.sort();
     risks.dedup();
@@ -162,6 +169,8 @@ fn finish(
         inspection_incomplete: !gaps.is_empty(),
         residual_risks: risks,
         inspection_gaps: gaps,
+        modified,
+        signature,
     }
 }
 
@@ -222,12 +231,14 @@ fn remove_text_glyphs_inner(
         return Ok(finish(
             input.to_vec(),
             reports,
+            false,
             vec![],
             vec![InspectionGap {
                 reason: GapReason::NotInspected,
                 page: None,
                 detail: "no regions requested".into(),
             }],
+            SignatureIndicators::default(),
         ));
     }
 
@@ -239,12 +250,14 @@ fn remove_text_glyphs_inner(
         return Ok(finish(
             input.to_vec(),
             reports,
+            false,
             vec![],
             vec![InspectionGap {
                 reason: GapReason::Encrypted,
                 page: None,
                 detail: "encrypted".into(),
             }],
+            SignatureIndicators::default(),
         ));
     }
 
@@ -331,16 +344,24 @@ fn remove_text_glyphs_inner(
         }
         inspector.inspect_shared_content(original, *page, &pages);
     }
+    let signature = crate::signature::detect(&mut inspector);
     let mut gaps = inspector.gaps;
     gaps.extend(read_gaps);
     let risks = inspector.risks;
     if !changed {
-        return Ok(finish(input.to_vec(), reports, risks, gaps));
+        return Ok(finish(
+            input.to_vec(),
+            reports,
+            false,
+            risks,
+            gaps,
+            signature,
+        ));
     }
     let mut output = Vec::new();
     doc.save_to(&mut output)
         .map_err(|e| EditError::Io(e.to_string()))?;
-    Ok(finish(output, reports, risks, gaps))
+    Ok(finish(output, reports, true, risks, gaps, signature))
 }
 
 struct PageOutcome {
@@ -399,6 +420,7 @@ fn erase_on_page(
         return Ok(untouched(RemovalStatus::SkippedContent));
     };
     if content.operations.len() > opts.max_content_operations {
+        // Sin content: clonar más de max_content_operations operadores no aporta a la inspección.
         return Ok(untouched(RemovalStatus::SkippedContent));
     }
     if content
@@ -825,7 +847,7 @@ fn is_referenced(doc: &Document, target: ObjectId) -> bool {
 mod tests {
     use lopdf::{dictionary, Dictionary, Document, Object, Stream};
 
-    use super::{finish, remove_text_glyphs, RemovalStatus, TextRegion};
+    use super::{finish, remove_text_glyphs, RemovalStatus, SignatureIndicators, TextRegion};
     use crate::inspect::{GapReason, InspectionGap, ResidualRisk};
     use crate::text_geometry::{interpret_page_text, Glyph};
 
@@ -1346,10 +1368,39 @@ mod tests {
         let result = finish(
             vec![],
             vec![],
+            false,
             vec![risk.clone(), risk],
             vec![gap.clone(), gap],
+            SignatureIndicators::default(),
         );
         assert_eq!(result.residual_risks.len(), 1);
         assert_eq!(result.inspection_gaps.len(), 1);
+    }
+
+    #[test]
+    fn modified_is_true_only_when_the_output_was_rewritten() {
+        let pdf = build(&[b"BT /F1 12 Tf 10 10 Td (hola) Tj ET"], None, vec![]);
+        let hit = remove_text_glyphs(&pdf, &[region(0, 0.0, 0.0, 612.0, 792.0)]).unwrap();
+        assert!(hit.modified);
+        assert_ne!(hit.output, pdf);
+        let miss = remove_text_glyphs(&pdf, &[region(0, 500.0, 700.0, 1.0, 1.0)]).unwrap();
+        assert_eq!(miss.regions[0].status, RemovalStatus::NothingFound);
+        assert!(!miss.modified);
+        assert_eq!(miss.output, pdf);
+        assert!(!hit.signature.any());
+    }
+
+    #[test]
+    fn signed_document_is_still_written_and_flagged() {
+        use crate::test_support::{Fixture, HOLA};
+        let mut fx = Fixture::new();
+        fx.text_page(HOLA);
+        fx.set_catalog("AcroForm", lopdf::dictionary! { "SigFlags" => 1 });
+        let pdf = fx.bytes();
+        let r = remove_text_glyphs(&pdf, &[region(0, 0.0, 0.0, 612.0, 792.0)]).unwrap();
+        assert_eq!(r.regions[0].status, RemovalStatus::Removed);
+        assert!(r.signature.sig_flags);
+        assert!(r.modified);
+        assert_ne!(r.output, pdf);
     }
 }

@@ -195,6 +195,14 @@ pub(crate) struct Inspector<'a> {
 }
 
 impl<'a> Inspector<'a> {
+    pub(crate) fn doc(&self) -> &'a Document {
+        self.doc
+    }
+
+    pub(crate) fn check_depth(&self, depth: usize) -> Result<(), crate::LimitKind> {
+        self.meter.check_depth(depth)
+    }
+
     pub(crate) fn new(doc: &'a Document, meter: &'a mut BudgetMeter) -> Self {
         Inspector {
             doc,
