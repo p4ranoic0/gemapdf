@@ -34,9 +34,11 @@ All notable changes to GemaPDF are documented in this file. The project follows
 - Text removal preserves the rest of a line with equivalent `TJ` displacement,
   never rewrites glyphs outside a requested region, and restores the original
   page if re-interpretation finds an unrelated glyph move or code change.
-  Shared streams, Form XObjects, signatures, unsupported text, metadata, and
-  XMP are reported according to the documented inspection boundary; this is
-  not a redaction primitive.
+  Shared streams, Form XObjects, annotations, optional content, `ActualText`,
+  and signature indicators are reported. Document metadata, XMP and the other
+  surfaces listed in `not_inspected` are never inspected, so an empty
+  `residual_risks` does not mean the document is clean; this is not a
+  redaction primitive.
 - `gema-cli`: `remove-text <in> <out> --region [<id>@]<page>:<x>,<y>,<w>,<h>
   [--json]`.
 - The compression and editing engines are separate crates; the WebAssembly
@@ -44,17 +46,24 @@ All notable changes to GemaPDF are documented in this file. The project follows
 
 ### Measured
 
-- WASM release package (`wasm-pack build --target web`): **1,413,929 → 1,519,364
-  bytes (+105 KB)**. A first version that decoded fonts through lopdf's
+- WASM release package (`wasm-pack build --target web`): **1,413,929 → 1,430,909
+  bytes (+17 KB)** against 0.5.0. Link-time optimization, never configured
+  before, removes about 151 KB; text editing and residual-risk inspection add
+  the rest (per-commit breakdown in `scripts/wasm-size-gate.sh`). A first
+  version of the editor that decoded fonts through lopdf's
   `get_font_encoding` pulled in its glyph-name `match` (thousands of arms):
   +889 KB, and the debug module was rejected by V8 with "too many locals".
   Own static tables replace it.
 
 ### Verified
 
-- Byte-identidad de compresión contra `d9d2c77` sobre el corpus: 0 bytes de diferencia, 12/12 idénticos (corrida `20260917T115728Z-96453c9e`). El código de edición no tocó `gema-compress`.
-- Compatibilidad del lector acotado: 2139 páginas iguales, 0 distintas, 0 errores.
-- Tamaño del `.wasm`: 1430909 bytes crudos (+46539, +3,4 %) y 569305 en gzip-9 (+18134) contra `d9d2c77`; techo ratificado. El grueso viene de conectar la inspección residual.
+- Compression output is byte-identical to `d9d2c77` (before the editing work)
+  on the real corpus: 0 bytes of difference, 12/12 identical outputs.
+- The bounded stream reader matches lopdf on every page of that corpus: 2,139
+  identical pages, 0 different, 0 errors.
+- The editing work adds 46,539 raw bytes (+3.4 %) and 18,134 gzip-9 bytes to
+  the `.wasm` against `d9d2c77`; the ceiling of 1,430,909 bytes was measured
+  and ratified.
 
 ## 0.5.0 — 2026-08-29
 
