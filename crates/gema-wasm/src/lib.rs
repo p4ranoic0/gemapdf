@@ -2,7 +2,7 @@ use gema_compress::{
     compress as core_compress, compress_with_progress, CompressOptions, Phase, Profile, Report,
     ReportJson, SignaturePolicy,
 };
-use gema_edit::EraseRegion;
+use gema_edit::TextRegion;
 use serde_wasm_bindgen::Serializer;
 use wasm_bindgen::prelude::*;
 
@@ -120,17 +120,17 @@ pub fn compress_with_report(
 ///   height }` en puntos, espacio de página PDF (origen abajo a la izquierda).
 ///
 /// Devuelve `{ output: Uint8Array, report: { regions: [{ id, page,
-/// erased_glyphs, status }] } }`. `status` ∈ "erased" | "erased_unverified" |
+/// removed_glyphs, status }] } }`. `status` ∈ "removed" | "removed_unverified" |
 /// "nothing_found" | "skipped_encrypted" | "skipped_invalid_region" |
 /// "skipped_page_geometry" | "skipped_content" | "skipped_unsupported_text" |
-/// "skipped_verification". Sólo "erased" garantiza que en la región ya no queda
+/// "skipped_verification". Sólo "removed" garantiza que en la región ya no queda
 /// texto; en cualquier otro caso el llamador debe seguir tapando la región.
 #[wasm_bindgen]
-pub fn erase_text(input: &[u8], regions: JsValue) -> Result<JsValue, JsError> {
-    let regions: Vec<EraseRegion> = serde_wasm_bindgen::from_value(regions)
+pub fn remove_text_glyphs(input: &[u8], regions: JsValue) -> Result<JsValue, JsError> {
+    let regions: Vec<TextRegion> = serde_wasm_bindgen::from_value(regions)
         .map_err(|e| JsError::new(&format!("regiones inválidas: {e}")))?;
     let result =
-        gema_edit::erase_text(input, &regions).map_err(|e| JsError::new(&e.to_string()))?;
+        gema_edit::remove_text_glyphs(input, &regions).map_err(|e| JsError::new(&e.to_string()))?;
 
     let report = js_sys::Object::new();
     js_sys::Reflect::set(

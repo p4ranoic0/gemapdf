@@ -573,6 +573,7 @@ version = "0.6.0"
 dependencies = [
  "lopdf",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 

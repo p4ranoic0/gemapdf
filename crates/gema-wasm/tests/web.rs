@@ -118,7 +118,7 @@ fn pdf_with_text(content: &[u8]) -> Vec<u8> {
 /// El contrato que consume el editor: regiones como objetos JS planos, salida
 /// `Uint8Array` y estados en snake_case con el `id` devuelto tal cual.
 #[wasm_bindgen_test]
-fn erase_text_speaks_plain_js() {
+fn remove_text_glyphs_speaks_plain_js() {
     let input = pdf_with_text(b"BT /F1 12 Tf 1 0 0 1 100 700 Tm (Secreto) Tj ET");
     let region = js_sys::Object::new();
     for (key, value) in [
@@ -133,7 +133,7 @@ fn erase_text_speaks_plain_js() {
     js_sys::Reflect::set(&region, &"id".into(), &"bloque-7".into()).unwrap();
     let regions = js_sys::Array::of1(&region);
 
-    let result = gema_wasm::erase_text(&input, regions.into()).unwrap();
+    let result = gema_wasm::remove_text_glyphs(&input, regions.into()).unwrap();
     let output = js_sys::Reflect::get(&result, &"output".into()).unwrap();
     let bytes = js_sys::Uint8Array::new(&output).to_vec();
     let doc = Document::load_mem(&bytes).unwrap();
@@ -146,12 +146,12 @@ fn erase_text_speaks_plain_js() {
     let first = js_sys::Array::from(&reported).get(0);
     let field = |name: &str| js_sys::Reflect::get(&first, &name.into()).unwrap();
     assert_eq!(field("id").as_string().as_deref(), Some("bloque-7"));
-    assert_eq!(field("status").as_string().as_deref(), Some("erased"));
-    assert_eq!(field("erased_glyphs").as_f64(), Some(7.0));
+    assert_eq!(field("status").as_string().as_deref(), Some("removed"));
+    assert_eq!(field("removed_glyphs").as_f64(), Some(7.0));
 }
 
 #[wasm_bindgen_test]
-fn erase_text_rejects_malformed_regions() {
+fn remove_text_glyphs_rejects_malformed_regions() {
     let input = pdf_with_text(b"BT /F1 12 Tf 1 0 0 1 100 700 Tm (Hola) Tj ET");
-    assert!(gema_wasm::erase_text(&input, JsValue::from_str("no es un array")).is_err());
+    assert!(gema_wasm::remove_text_glyphs(&input, JsValue::from_str("no es un array")).is_err());
 }

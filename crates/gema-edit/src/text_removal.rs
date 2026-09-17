@@ -31,7 +31,7 @@ const MAX_PAGE_OPERATIONS: usize = 1_000_000;
 /// abajo a la izquierda, puntos).
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize))]
-pub struct EraseRegion {
+pub struct TextRegion {
     /// Identificador del llamador; se devuelve tal cual en el informe.
     pub id: String,
     /// Página, base 0.
@@ -46,7 +46,7 @@ pub struct EraseRegion {
     pub height: f64,
 }
 
-impl EraseRegion {
+impl TextRegion {
     fn is_valid(&self) -> bool {
         [self.x, self.y, self.width, self.height]
             .iter()
@@ -65,13 +65,21 @@ impl EraseRegion {
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[non_exhaustive]
-pub enum EraseStatus {
-    /// Se borraron glifos y la página no tiene texto que no se pudiera medir:
-    /// dentro de la región ya no queda texto.
-    Erased,
+pub enum RemovalStatus {
+    /// Los códigos de glifo seleccionados dejaron de ser emitidos por el
+    /// content stream directo de esa página. **No afirma que la región quedó
+    /// limpia**: el texto puede sobrevivir en streams compartidos, Form
+    /// XObjects, anotaciones, contenido opcional o `ActualText`; ver
+    /// `RemovalResult::residual_risks`.
+    ///
+    /// Alcance real: glifos upright, sin recorte y reescribibles. El guard
+    /// rechaza `render_mode >= 4`, glifos girados y texto sin ajuste `TJ`.
+    /// No se eliminan operadores: se reescriben operandos y cada glifo se
+    /// sustituye por el desplazamiento `TJ` equivalente.
+    Removed,
     /// Se borraron glifos, pero en la página hay texto sin medir (otra fuente,
     /// un Form XObject…) que podría caer dentro de la región.
-    ErasedUnverified,
+    RemovedUnverified,
     /// La página se entendió entera y en la región no había texto.
     NothingFound,
     /// El documento está cifrado.
@@ -89,6 +97,26 @@ pub enum EraseStatus {
     SkippedVerification,
 }
 
+impl RemovalStatus {
+    /// Nombre estable de la variante, idéntico al que produce serde.
+    ///
+    /// Es lo que el CLI imprime y lo que un consumidor puede comparar; `Debug`
+    /// no forma parte del contrato.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Removed => "removed",
+            Self::RemovedUnverified => "removed_unverified",
+            Self::NothingFound => "nothing_found",
+            Self::SkippedEncrypted => "skipped_encrypted",
+            Self::SkippedInvalidRegion => "skipped_invalid_region",
+            Self::SkippedPageGeometry => "skipped_page_geometry",
+            Self::SkippedContent => "skipped_content",
+            Self::SkippedUnsupportedText => "skipped_unsupported_text",
+            Self::SkippedVerification => "skipped_verification",
+        }
+    }
+}
+
 /// Informe por región, en el mismo orden en que se pidieron.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -98,14 +126,14 @@ pub struct RegionReport {
     /// Página, base 0.
     pub page: u32,
     /// Glifos retirados del content stream.
-    pub erased_glyphs: usize,
+    pub removed_glyphs: usize,
     /// Qué pasó.
-    pub status: EraseStatus,
+    pub status: RemovalStatus,
 }
 
-/// Salida de [`erase_text`].
+/// Salida de [`remove_text_glyphs`].
 #[derive(Debug, Clone)]
-pub struct EraseResult {
+pub struct RemovalResult {
     /// PDF resultante. Idéntico byte a byte a la entrada si no se borró nada.
     pub output: Vec<u8>,
     /// Un informe por región.
@@ -119,18 +147,21 @@ pub struct EraseResult {
 /// interlineado y no entra.
 ///
 /// Un documento cifrado no es un error: se devuelve intacto con
-/// [`EraseStatus::SkippedEncrypted`].
-pub fn erase_text(input: &[u8], regions: &[EraseRegion]) -> Result<EraseResult, EditError> {
+/// [`RemovalStatus::SkippedEncrypted`].
+pub fn remove_text_glyphs(
+    input: &[u8],
+    regions: &[TextRegion],
+) -> Result<RemovalResult, EditError> {
     let mut reports: Vec<RegionReport> = regions
         .iter()
         .map(|region| RegionReport {
             id: region.id.clone(),
             page: region.page,
-            erased_glyphs: 0,
-            status: EraseStatus::NothingFound,
+            removed_glyphs: 0,
+            status: RemovalStatus::NothingFound,
         })
         .collect();
-    let unchanged = |reports| EraseResult {
+    let unchanged = |reports| RemovalResult {
         output: input.to_vec(),
         regions: reports,
     };
@@ -141,7 +172,7 @@ pub fn erase_text(input: &[u8], regions: &[EraseRegion]) -> Result<EraseResult, 
     let mut doc = Document::load_mem(input).map_err(|e| EditError::Parse(e.to_string()))?;
     if doc.is_encrypted() {
         for report in &mut reports {
-            report.status = EraseStatus::SkippedEncrypted;
+            report.status = RemovalStatus::SkippedEncrypted;
         }
         return Ok(unchanged(reports));
     }
@@ -156,7 +187,7 @@ pub fn erase_text(input: &[u8], regions: &[EraseRegion]) -> Result<EraseResult, 
         if region.is_valid() && exists {
             by_page.entry(region.page).or_default().push(index);
         } else {
-            reports[index].status = EraseStatus::SkippedInvalidRegion;
+            reports[index].status = RemovalStatus::SkippedInvalidRegion;
         }
     }
 
@@ -164,8 +195,8 @@ pub fn erase_text(input: &[u8], regions: &[EraseRegion]) -> Result<EraseResult, 
     for (page, indices) in by_page {
         let page_id = pages[&(page + 1)];
         let outcome = erase_on_page(&mut doc, page_id, regions, &indices);
-        for (index, erased_glyphs, status) in outcome.regions {
-            reports[index].erased_glyphs = erased_glyphs;
+        for (index, removed_glyphs, status) in outcome.regions {
+            reports[index].removed_glyphs = removed_glyphs;
             reports[index].status = status;
         }
         changed |= outcome.changed;
@@ -177,14 +208,14 @@ pub fn erase_text(input: &[u8], regions: &[EraseRegion]) -> Result<EraseResult, 
     let mut output = Vec::new();
     doc.save_to(&mut output)
         .map_err(|e| EditError::Io(e.to_string()))?;
-    Ok(EraseResult {
+    Ok(RemovalResult {
         output,
         regions: reports,
     })
 }
 
 struct PageOutcome {
-    regions: Vec<(usize, usize, EraseStatus)>,
+    regions: Vec<(usize, usize, RemovalStatus)>,
     changed: bool,
 }
 
@@ -198,7 +229,7 @@ fn key(glyph: &Glyph) -> GlyphKey {
 fn erase_on_page(
     doc: &mut Document,
     page_id: ObjectId,
-    regions: &[EraseRegion],
+    regions: &[TextRegion],
     indices: &[usize],
 ) -> PageOutcome {
     let untouched = |status| PageOutcome {
@@ -206,10 +237,10 @@ fn erase_on_page(
         changed: false,
     };
     if !page_geometry_is_plain(doc, page_id) {
-        return untouched(EraseStatus::SkippedPageGeometry);
+        return untouched(RemovalStatus::SkippedPageGeometry);
     }
     let Ok(content) = doc.get_and_decode_page_content(page_id) else {
-        return untouched(EraseStatus::SkippedContent);
+        return untouched(RemovalStatus::SkippedContent);
     };
     if content.operations.len() > MAX_PAGE_OPERATIONS
         || content
@@ -217,10 +248,10 @@ fn erase_on_page(
             .iter()
             .any(|operation| operation.operator == "BI")
     {
-        return untouched(EraseStatus::SkippedContent);
+        return untouched(RemovalStatus::SkippedContent);
     }
     let Ok(before) = interpret_page_text(doc, page_id) else {
-        return untouched(EraseStatus::SkippedContent);
+        return untouched(RemovalStatus::SkippedContent);
     };
     let page_has_unsupported = !before.unsupported.is_empty();
 
@@ -252,24 +283,24 @@ fn erase_on_page(
     let mut statuses = Vec::with_capacity(indices.len());
     for (slot, &region_index) in indices.iter().enumerate() {
         if blocked[slot] {
-            statuses.push((region_index, 0, EraseStatus::SkippedUnsupportedText));
+            statuses.push((region_index, 0, RemovalStatus::SkippedUnsupportedText));
             continue;
         }
         let count = hits[slot].len();
         if count == 0 {
             let status = if page_has_unsupported {
-                EraseStatus::SkippedUnsupportedText
+                RemovalStatus::SkippedUnsupportedText
             } else {
-                EraseStatus::NothingFound
+                RemovalStatus::NothingFound
             };
             statuses.push((region_index, 0, status));
             continue;
         }
         erase.extend(hits[slot].iter().map(|&index| key(&before.glyphs[index])));
         let status = if page_has_unsupported {
-            EraseStatus::ErasedUnverified
+            RemovalStatus::RemovedUnverified
         } else {
-            EraseStatus::Erased
+            RemovalStatus::Removed
         };
         statuses.push((region_index, count, status));
     }
@@ -280,7 +311,7 @@ fn erase_on_page(
         };
     }
 
-    let failed = |statuses: Vec<(usize, usize, EraseStatus)>, status| PageOutcome {
+    let failed = |statuses: Vec<(usize, usize, RemovalStatus)>, status| PageOutcome {
         regions: statuses
             .into_iter()
             .map(|(index, count, previous)| {
@@ -295,10 +326,10 @@ fn erase_on_page(
     };
 
     let Some(operations) = rewrite_operations(&content.operations, &before, &erase) else {
-        return failed(statuses, EraseStatus::SkippedContent);
+        return failed(statuses, RemovalStatus::SkippedContent);
     };
     let Ok(bytes) = (Content { operations }).encode() else {
-        return failed(statuses, EraseStatus::SkippedContent);
+        return failed(statuses, RemovalStatus::SkippedContent);
     };
 
     let old_streams = doc.get_page_contents(page_id);
@@ -308,7 +339,7 @@ fn erase_on_page(
         .and_then(|page| page.get(b"Contents").ok())
         .cloned()
     else {
-        return failed(statuses, EraseStatus::SkippedContent);
+        return failed(statuses, RemovalStatus::SkippedContent);
     };
     let mut stream = Stream::new(dictionary! {}, bytes);
     let _ = stream.compress();
@@ -316,11 +347,11 @@ fn erase_on_page(
     set_contents(doc, page_id, Object::Reference(new_stream));
 
     let verified = interpret_page_text(doc, page_id)
-        .is_ok_and(|after| unerased_glyphs_unchanged(&before, &after, &erase));
+        .is_ok_and(|after| unremoved_glyphs_unchanged(&before, &after, &erase));
     if !verified {
         set_contents(doc, page_id, previous_contents);
         doc.objects.remove(&new_stream);
-        return failed(statuses, EraseStatus::SkippedVerification);
+        return failed(statuses, RemovalStatus::SkippedVerification);
     }
 
     // El stream viejo sigue conteniendo el texto borrado. Si ninguna otra página
@@ -563,7 +594,7 @@ fn rebuild_string(
     Some(())
 }
 
-fn unerased_glyphs_unchanged(
+fn unremoved_glyphs_unchanged(
     before: &PageText,
     after: &PageText,
     erase: &HashSet<GlyphKey>,
@@ -612,7 +643,7 @@ fn is_referenced(doc: &Document, target: ObjectId) -> bool {
 mod tests {
     use lopdf::{dictionary, Dictionary, Document, Object, Stream};
 
-    use super::{erase_text, EraseRegion, EraseStatus};
+    use super::{remove_text_glyphs, RemovalStatus, TextRegion};
     use crate::text_geometry::{interpret_page_text, Glyph};
 
     fn close(actual: f64, expected: f64) -> bool {
@@ -668,8 +699,8 @@ mod tests {
         out
     }
 
-    fn region(page: u32, x: f64, y: f64, width: f64, height: f64) -> EraseRegion {
-        EraseRegion {
+    fn region(page: u32, x: f64, y: f64, width: f64, height: f64) -> TextRegion {
+        TextRegion {
             id: format!("r{page}-{x}-{y}"),
             page,
             x,
@@ -714,10 +745,10 @@ mod tests {
             None,
             vec![],
         );
-        let result = erase_text(&input, &[region(0, 99.0, 695.0, 11.0, 17.0)]).unwrap();
+        let result = remove_text_glyphs(&input, &[region(0, 99.0, 695.0, 11.0, 17.0)]).unwrap();
 
-        assert_eq!(result.regions[0].status, EraseStatus::Erased);
-        assert_eq!(result.regions[0].erased_glyphs, 2);
+        assert_eq!(result.regions[0].status, RemovalStatus::Removed);
+        assert_eq!(result.regions[0].removed_glyphs, 2);
         let after = glyphs(&result.output, 0);
         let codes: Vec<u32> = after.iter().map(|glyph| glyph.code).collect();
         assert_eq!(codes, vec![32, 67, 68]);
@@ -736,9 +767,9 @@ mod tests {
         );
         let before = glyphs(&input, 0);
         // AB está en y=688 (primer '), CD en y=676 con Tc=2 que persiste en EF.
-        let result = erase_text(&input, &[region(0, 95.0, 684.0, 20.0, 10.0)]).unwrap();
-        assert_eq!(result.regions[0].status, EraseStatus::Erased);
-        assert_eq!(result.regions[0].erased_glyphs, 2);
+        let result = remove_text_glyphs(&input, &[region(0, 95.0, 684.0, 20.0, 10.0)]).unwrap();
+        assert_eq!(result.regions[0].status, RemovalStatus::Removed);
+        assert_eq!(result.regions[0].removed_glyphs, 2);
 
         let after = glyphs(&result.output, 0);
         let kept: Vec<&Glyph> = before
@@ -762,10 +793,13 @@ mod tests {
             region(0, 58.0, 715.0, 400.0, 15.0),
         ];
         let before = glyphs(input, 0);
-        let result = erase_text(input, &regions).unwrap();
-        assert_eq!(result.regions[0].status, EraseStatus::Erased);
-        assert_eq!(result.regions[0].erased_glyphs, "Frase que se cambia".len());
-        assert_eq!(result.regions[1].status, EraseStatus::Erased);
+        let result = remove_text_glyphs(input, &regions).unwrap();
+        assert_eq!(result.regions[0].status, RemovalStatus::Removed);
+        assert_eq!(
+            result.regions[0].removed_glyphs,
+            "Frase que se cambia".len()
+        );
+        assert_eq!(result.regions[1].status, RemovalStatus::Removed);
 
         let after = glyphs(&result.output, 0);
         let line = |set: &[Glyph], y: f64| -> Vec<(u32, f64)> {
@@ -792,8 +826,8 @@ mod tests {
             None,
             vec![],
         );
-        let result = erase_text(&input, &[region(0, 300.0, 300.0, 50.0, 20.0)]).unwrap();
-        assert_eq!(result.regions[0].status, EraseStatus::NothingFound);
+        let result = remove_text_glyphs(&input, &[region(0, 300.0, 300.0, 50.0, 20.0)]).unwrap();
+        assert_eq!(result.regions[0].status, RemovalStatus::NothingFound);
         assert_eq!(result.output, input);
     }
 
@@ -804,8 +838,8 @@ mod tests {
             Some(("Rotate", Object::Integer(90))),
             vec![],
         );
-        let result = erase_text(&rotated, &[region(0, 99.0, 695.0, 11.0, 17.0)]).unwrap();
-        assert_eq!(result.regions[0].status, EraseStatus::SkippedPageGeometry);
+        let result = remove_text_glyphs(&rotated, &[region(0, 99.0, 695.0, 11.0, 17.0)]).unwrap();
+        assert_eq!(result.regions[0].status, RemovalStatus::SkippedPageGeometry);
         assert_eq!(result.output, rotated);
 
         let inline = build(
@@ -813,8 +847,8 @@ mod tests {
             None,
             vec![],
         );
-        let result = erase_text(&inline, &[region(0, 99.0, 695.0, 11.0, 17.0)]).unwrap();
-        assert_eq!(result.regions[0].status, EraseStatus::SkippedContent);
+        let result = remove_text_glyphs(&inline, &[region(0, 99.0, 695.0, 11.0, 17.0)]).unwrap();
+        assert_eq!(result.regions[0].status, RemovalStatus::SkippedContent);
         assert_eq!(result.output, inline);
 
         let plain = build(
@@ -822,7 +856,7 @@ mod tests {
             None,
             vec![],
         );
-        let result = erase_text(
+        let result = remove_text_glyphs(
             &plain,
             &[
                 region(3, 99.0, 695.0, 11.0, 17.0),
@@ -833,7 +867,7 @@ mod tests {
         assert!(result
             .regions
             .iter()
-            .all(|report| report.status == EraseStatus::SkippedInvalidRegion));
+            .all(|report| report.status == RemovalStatus::SkippedInvalidRegion));
         assert_eq!(result.output, plain);
     }
 
@@ -844,10 +878,10 @@ mod tests {
             None,
             vec![],
         );
-        let result = erase_text(&clip, &[region(0, 99.0, 695.0, 11.0, 17.0)]).unwrap();
+        let result = remove_text_glyphs(&clip, &[region(0, 99.0, 695.0, 11.0, 17.0)]).unwrap();
         assert_eq!(
             result.regions[0].status,
-            EraseStatus::SkippedUnsupportedText
+            RemovalStatus::SkippedUnsupportedText
         );
         assert_eq!(result.output, clip);
 
@@ -861,10 +895,10 @@ mod tests {
             None,
             vec![("NM", custom)],
         );
-        let result = erase_text(&tainted, &[region(0, 90.0, 690.0, 300.0, 30.0)]).unwrap();
+        let result = remove_text_glyphs(&tainted, &[region(0, 90.0, 690.0, 300.0, 30.0)]).unwrap();
         assert_eq!(
             result.regions[0].status,
-            EraseStatus::SkippedUnsupportedText
+            RemovalStatus::SkippedUnsupportedText
         );
         assert_eq!(result.output, tainted);
     }
@@ -879,9 +913,9 @@ mod tests {
             None,
             vec![("NM", custom)],
         );
-        let result = erase_text(&input, &[region(0, 99.0, 695.0, 11.0, 17.0)]).unwrap();
-        assert_eq!(result.regions[0].status, EraseStatus::ErasedUnverified);
-        assert_eq!(result.regions[0].erased_glyphs, 2);
+        let result = remove_text_glyphs(&input, &[region(0, 99.0, 695.0, 11.0, 17.0)]).unwrap();
+        assert_eq!(result.regions[0].status, RemovalStatus::RemovedUnverified);
+        assert_eq!(result.regions[0].removed_glyphs, 2);
     }
 
     #[test]
@@ -910,9 +944,38 @@ mod tests {
         let mut input = Vec::new();
         doc.save_to(&mut input).unwrap();
 
-        let result = erase_text(&input, &[region(0, 99.0, 695.0, 11.0, 17.0)]).unwrap();
-        assert_eq!(result.regions[0].status, EraseStatus::Erased);
+        let result = remove_text_glyphs(&input, &[region(0, 99.0, 695.0, 11.0, 17.0)]).unwrap();
+        assert_eq!(result.regions[0].status, RemovalStatus::Removed);
         assert!(glyphs(&result.output, 0).is_empty());
         assert_eq!(glyphs(&result.output, 1).len(), 2);
+    }
+
+    #[test]
+    fn status_as_str_matches_serde_names() {
+        let all = [
+            (RemovalStatus::Removed, "removed"),
+            (RemovalStatus::RemovedUnverified, "removed_unverified"),
+            (RemovalStatus::NothingFound, "nothing_found"),
+            (RemovalStatus::SkippedEncrypted, "skipped_encrypted"),
+            (
+                RemovalStatus::SkippedInvalidRegion,
+                "skipped_invalid_region",
+            ),
+            (RemovalStatus::SkippedPageGeometry, "skipped_page_geometry"),
+            (RemovalStatus::SkippedContent, "skipped_content"),
+            (
+                RemovalStatus::SkippedUnsupportedText,
+                "skipped_unsupported_text",
+            ),
+            (RemovalStatus::SkippedVerification, "skipped_verification"),
+        ];
+        for (status, expected) in all {
+            assert_eq!(status.as_str(), expected);
+            #[cfg(feature = "serde")]
+            assert_eq!(
+                serde_json::to_value(status).unwrap(),
+                serde_json::Value::String(expected.to_string())
+            );
+        }
     }
 }
