@@ -856,6 +856,32 @@ mod tests {
     }
 
     #[test]
+    fn truncated_content_stream_is_skipped_and_the_original_survives() {
+        use crate::test_support::Fixture;
+        use std::io::Write;
+        let ops = b"BT /F1 12 Tf 10 10 Td (hola) Tj ET ".repeat(2_000);
+        let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(&ops).unwrap();
+        let packed = enc.finish().unwrap();
+        let cut = packed[..packed.len() / 2].to_vec();
+        let mut fx = Fixture::new();
+        let c = fx.doc.add_object(lopdf::Stream::new(
+            lopdf::dictionary! { "Filter" => "FlateDecode" },
+            cut,
+        ));
+        let page = fx.add_page(c, Some(Fixture::default_resources()), vec![]);
+        let prefix = fx.doc.get_and_decode_page_content(page).unwrap();
+        assert!(
+            !prefix.operations.is_empty()
+                && fx.doc.get_page_content(page).unwrap().len() < ops.len()
+        );
+        let pdf = fx.bytes();
+        let r = remove_text_glyphs(&pdf, &[region(0, 0.0, 0.0, 612.0, 792.0)]).unwrap();
+        assert_eq!(r.regions[0].status, RemovalStatus::SkippedContent);
+        assert_eq!(r.output, pdf, "sin cambios, el output es el input");
+    }
+
+    #[test]
     fn erases_one_word_and_keeps_the_rest_of_the_line_in_place() {
         // A@100 B@105 espacio@110 (2.5) C@112.5 D@117.5; centro de A = (102.5, 703).
         let input = build(

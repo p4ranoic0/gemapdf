@@ -122,7 +122,7 @@ impl BudgetMeter {
     }
 
     /// `Err` si `depth` supera `max_reference_depth`.
-    #[allow(dead_code)] // se consume desde la Task 5
+    #[allow(dead_code)] // se consume desde la Task 7
     pub(crate) fn check_depth(&self, depth: usize) -> Result<(), crate::LimitKind> {
         if depth > self.limits.max_reference_depth {
             return Err(crate::LimitKind::ReferenceDepth);

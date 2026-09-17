@@ -29,8 +29,13 @@ pub use error::{EditError, LimitKind};
 pub mod options;
 pub use options::{EditOptions, ObjectBudget};
 
+mod inspect;
 pub(crate) mod matrix;
 mod stream_read;
+#[cfg(test)]
+pub(crate) mod test_support;
+
+pub use inspect::{GapReason, InspectionGap, ResidualRisk};
 pub(crate) mod text_geometry;
 
 mod text_removal;
