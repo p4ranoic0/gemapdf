@@ -20,8 +20,24 @@
 # entre crates es gratis quedó refutada por medición. Segunda: activar LTO
 # saca 151 KB, así que el bundle queda más chico que antes de que existiera
 # el borrado de texto.
+#
+# Medido el 2026-09-17, contrato de edición (plan 2026-09-16-contrato-y-semantica-edicion);
+# ratificado por HG el 2026-09-17:
+#
+#   commit    tarea                                      wasm crudo   Δ     gzip-9   Δ gzip
+#   d9d2c77   baseline                                   1384370      —     551171   —
+#   a805f25   4 lector acotado + flate2                  1391670   +7300     554237  +3066
+#   8ecc4c4   5 tipos de inspección (código muerto)      1391670      0     554237      0
+#   bf561bf   7 inspección cableada                      1425868  +34198     567704 +13467
+#   434a7ac   8 firmas + modified                       1427678   +1810     568083   +379
+#   f7be4f9   9 informe serializable en WASM             1430906   +3228     569280  +1197
+#   96453c9   10 CLI (no entra al wasm)                  1430906      0     569280      0
+#   4b0e917   11 separador por índice                    1430909      3     569305    +25
+#
+# El grueso (+34198) entra cuando la inspección se conecta al borrado en la Task 7;
+# en la Task 5 el compilador la descartaba por código muerto.
 set -euo pipefail
-CEILING="${1:-1384370}"
+CEILING="${1:-1430909}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/crates/gema-wasm"
 wasm-pack build --target web >/dev/null 2>&1

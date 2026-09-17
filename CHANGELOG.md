@@ -11,7 +11,6 @@ All notable changes to GemaPDF are documented in this file. The project follows
 - `gema-edit`: `EditError` habla inglés y gana `LimitExceeded(LimitKind)`.
 - `gema-edit`: `RemovalResult` gana `residual_risks`, `inspection_incomplete`, `inspection_gaps`, `signature`, `modified` y `not_inspected`. Informe JSON versionado (`schema_version = 1`) vía `RemovalResult::report()`.
 - `gema-wasm`: `erase_text` → `remove_text_glyphs`; el objeto devuelto incluye el informe v1. El portfolio queda incompatible hasta su migración.
-
 - `gema-cli`: los errores de **uso** de `compress` y `analyze` salen con código 1 en vez del 2 de `clap` (`main` usa `try_parse`); el 2 queda reservado para "escrito pero no garantizado" de `remove-text`.
 - `gema-edit`: `ResidualRisk::FormXObject` se serializa como `form_xobject` (igual que `kind()`).
 
@@ -25,6 +24,7 @@ All notable changes to GemaPDF are documented in this file. The project follows
 
 - Byte-identidad de compresión contra `d9d2c77` sobre el corpus: 0 bytes de diferencia, 12/12 idénticos (corrida `20260917T115728Z-96453c9e`). El código de edición no tocó `gema-compress`.
 - Compatibilidad del lector acotado: 2139 páginas iguales, 0 distintas, 0 errores.
+- Tamaño del `.wasm`: 1430909 bytes crudos (+46539, +3,4 %) y 569305 en gzip-9 (+18134) contra `d9d2c77`; techo ratificado. El grueso viene de conectar la inspección residual.
 
 ## 0.6.0 — 2026-09-15
 
