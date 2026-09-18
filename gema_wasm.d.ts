@@ -38,6 +38,23 @@ export function compress(input: Uint8Array, profile: string): Uint8Array;
  */
 export function compress_with_report(input: Uint8Array, profile: string, options: any, on_phase?: Function | null): any;
 
+/**
+ * Borra de verdad el texto que cae dentro de unas regiones.
+ *
+ * - `regions`: array de `{ id: string, page: number (base 0), x, y, width,
+ *   height }` en puntos, espacio de página PDF (origen abajo a la izquierda).
+ *
+ * Devuelve `{ output: Uint8Array, report: { schema_version, modified, regions,
+ * residual_risks, inspection_incomplete, inspection_gaps, signature,
+ * not_inspected } }`. `status` ∈ "removed" | "removed_unverified" |
+ * "nothing_found" | "skipped_encrypted" | "skipped_invalid_region" |
+ * "skipped_page_geometry" | "skipped_content" | "skipped_unsupported_text" |
+ * "skipped_verification". `removed` significa que el content stream directo ya
+ * no emite esos glifos, no que la región quedó limpia: mirar `residual_risks`,
+ * `inspection_incomplete` y `not_inspected`.
+ */
+export function remove_text_glyphs(input: Uint8Array, regions: any): any;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
@@ -45,6 +62,7 @@ export interface InitOutput {
     readonly analyze: (a: number, b: number) => [number, number, number];
     readonly compress: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly compress_with_report: (a: number, b: number, c: number, d: number, e: any, f: number) => [number, number, number];
+    readonly remove_text_glyphs: (a: number, b: number, c: any) => [number, number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

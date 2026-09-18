@@ -4,6 +4,7 @@ export const memory: WebAssembly.Memory;
 export const analyze: (a: number, b: number) => [number, number, number];
 export const compress: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const compress_with_report: (a: number, b: number, c: number, d: number, e: any, f: number) => [number, number, number];
+export const remove_text_glyphs: (a: number, b: number, c: any) => [number, number, number];
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
 export const __wbindgen_exn_store: (a: number) => void;
