@@ -3,6 +3,27 @@
 All notable changes to GemaPDF are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- README: the WASM bundle size quoted 1,519,364 bytes, which was an
+  intermediate build without LTO. The `gema_wasm_bg.wasm` published as
+  `wasm-v0.6.0` measures 1,430,909 bytes (569,305 with `gzip -9`).
+
+### Medido y descartado
+
+- **Exporting `max_pages` / `max_objects` / `max_total_work_bytes` /
+  `max_stream_bytes` and cancellation through `gema-wasm`.** Cancellation in the
+  browser already works by terminating the worker (a synchronous `.wasm` call
+  cannot poll a flag without `SharedArrayBuffer`). For the limits, four
+  synthetic adversarial PDFs were run through the deployed site build: 20,000
+  pages (OK, 1.5 s), 500,000 objects (OK, 144 s), a 205 KB file whose content
+  stream inflates to 200 MB (OK, 1.0 s) and 300 flat 4000×4000 images, about
+  14 GB decoded (OK, 115 s, renderer under 1 GB thanks to the 256 MiB batches).
+  None crashed or hung, and the real corpus already reaches 375 pages and
+  31,483 objects, so a tight limit would reject real documents. No 0.7.0.
+
 ## 0.6.0 — 2026-09-17
 
 ### Changed (breaking)

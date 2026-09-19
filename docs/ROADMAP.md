@@ -13,7 +13,10 @@ Ramas vivas: `main` (código) y `npm` (distribución generada por `wasm-pack`,
 sin fuente). `v2.0-levers`, `v2.0-portable` y `exp/save-modern` son anclas
 históricas: no se les commitea.
 
-Qué corre hoy en el Beta — **gema-wasm 0.3.0** (tag `wasm-v0.3.0`, rama `npm`):
+Qué corre hoy en **henrrygarcia.com** — **gema-wasm 0.6.0** (tag `wasm-v0.6.0`,
+rama `npm`), **único motor** desde el 2026-09-17: Ghostscript salió del sitio
+(queda sólo en `scripts/gs-reference.mjs` del portfolio, para el benchmark). El
+editor usa además `remove_text_glyphs` y el informe v1.
 
 - **Levers v2.0**: A (cadena Flate→DCT), B (encoder 4:2:0), C (/SMask),
   `reflate_streams`.
@@ -126,6 +129,34 @@ Calibración real sobre `doc-C`: 512 MiB redujo RSS máximo de
 ~1.98 GB a ~804 MB, con costo de wall-clock 1.37→4.20 s. Por ese tradeoff,
 core/CLI quedan opt-in. WASM usa 256 MiB por default: allí el loop ya es serial,
 así que los lotes reducen retención sin quitar paralelismo.
+
+### Límites y cancelación en el navegador — medido, sin caso (2026-09-19)
+
+`max_pages`, `max_objects`, `max_total_work_bytes`, `max_stream_bytes` y
+`CancelSignal` existen en core pero **no se exportan en gema-wasm, a propósito**:
+
+- **Cancelación:** el `.wasm` corre síncrono dentro del worker y no puede leer
+  una bandera sin `SharedArrayBuffer` (exige aislamiento cross-origin). El
+  portfolio cancela matando el worker, y eso ya funciona.
+- **Límites:** corpus real, máximos medidos con `compress_with_control` y un
+  solo límite en 0 (el `LimitExceeded` trae el observado exacto): **375
+  páginas, 31 483 objetos, 21,1 GB de trabajo estimado** — y todo se comprime
+  en el sitio. Cuatro PDFs adversariales sintéticos contra el build desplegado
+  (Playwright local, RSS del renderer muestreado por segundo):
+
+  | caso | navegador | pico renderer | nativo |
+  |---|---|---|---|
+  | 20 000 páginas | OK 1,5 s | 491 MB | 0,7 s · 222 MB |
+  | 500 000 objetos | OK 144 s | 721 MB | 66 s · 533 MB |
+  | content de 205 KB que se infla a 200 MB | OK 1,0 s | 3 063 MB | 0,2 s · 267 MB |
+  | 300 imágenes 4000×4000 (~14 GB decodificados) | OK 115 s | 968 MB | 5,7 s · 2 212 MB |
+
+  Ninguno cae. El pico de 3 GB del caso del content es muy probablemente pdf.js
+  dibujando las vistas previas en el mismo proceso (gema nativo usa 267 MB ahí);
+  **no se aisló**. Si alguna vez se ataca, el lugar es la vista previa del
+  portfolio, no un límite en gema-wasm.
+
+**Reabrir sólo con un PDF real que cuelgue o tire la pestaña.**
 
 ### Deduplicación conservadora de imágenes (2026-08-07)
 
