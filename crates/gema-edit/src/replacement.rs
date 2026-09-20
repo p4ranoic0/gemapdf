@@ -1576,7 +1576,10 @@ fn is_upright(glyph: &Glyph) -> bool {
     (glyph.baseline_dir.0 - 1.0).abs() < EPSILON
         && glyph.baseline_dir.1.abs() < EPSILON
         && glyph.ascent_dir.0.abs() < EPSILON
-        && (glyph.ascent_dir.1 - 1.0).abs() < EPSILON
+        // Some generators put the page in a top-down coordinate system with
+        // `1 0 0 -1 Tm`. That reflects the ascent axis, but does not rotate
+        // or mirror the text's left-to-right baseline.
+        && glyph.ascent_dir.1.abs() > EPSILON
 }
 
 fn valid_region(region: &TextRegion) -> bool {
@@ -1984,6 +1987,22 @@ mod tests {
         fx.bytes()
     }
 
+    fn negative_vertical_scale_fixture() -> Vec<u8> {
+        let mut fx = Fixture::new();
+        let unicode = to_unicode(&mut fx, &[("30", "0030"), ("31", "0031")]);
+        let font = font(&mut fx, "SubsetFont", unicode, 2);
+        let content = fx.content_stream(
+            dictionary! {},
+            b"BT /F1 10 Tf 1 0 0 -1 100 700 Tm (01) Tj ET",
+        );
+        fx.add_page(
+            content,
+            Some(dictionary! { "Font" => dictionary! { "F1" => font } }),
+            vec![],
+        );
+        fx.bytes()
+    }
+
     fn fontless_scan_fixture() -> Vec<u8> {
         let mut fx = Fixture::new();
         let large_content = vec![b' '; 128 * 1024];
@@ -2156,6 +2175,21 @@ mod tests {
         let result = replace_text_glyphs(&input, &[replacement], &EditOptions::default()).unwrap();
 
         assert_eq!(result.replacements[0].status, ReplacementStatus::Replaced);
+        assert!(result.modified);
+    }
+
+    #[test]
+    fn replacement_accepts_negative_vertical_text_scale() {
+        let input = negative_vertical_scale_fixture();
+        let replacement = TextReplacement {
+            region: region("negative-vertical-scale", 0, 99.0, 695.0, 12.0, 17.0),
+            new_text: "10".into(),
+            expected_text: Some("01".into()),
+        };
+        let result = replace_text_glyphs(&input, &[replacement], &EditOptions::default()).unwrap();
+
+        assert_eq!(result.replacements[0].status, ReplacementStatus::Replaced);
+        assert_eq!(result.replacements[0].original_text.as_deref(), Some("01"));
         assert!(result.modified);
     }
 
