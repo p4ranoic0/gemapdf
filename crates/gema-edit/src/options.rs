@@ -1,7 +1,7 @@
 //! Límites de trabajo de una edición.
 
 /// Límites que acotan cuánto trabajo hace una llamada de edición.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EditOptions {
     /// Tamaño máximo del PDF de entrada, en bytes.
     pub max_input_bytes: usize,
@@ -11,6 +11,11 @@ pub struct EditOptions {
     pub max_decompressed_bytes: usize,
     /// Operadores máximos en el contenido de una página.
     pub max_content_operations: usize,
+    /// Máximo de páginas que se recorren buscando códigos reutilizables.
+    pub max_scan_pages: usize,
+    /// Diferencia máxima de avance tolerada, expresada en em. Es un límite
+    /// provisional que debe calibrarse con renders de fechas e importes.
+    pub max_width_delta_em: f64,
     /// Presupuesto de resolución de objetos.
     pub budget: ObjectBudget,
 }
@@ -52,6 +57,8 @@ impl Default for EditOptions {
             max_regions: DEFAULT_MAX_REGIONS,
             max_decompressed_bytes: DEFAULT_MAX_DECOMPRESSED_BYTES,
             max_content_operations: DEFAULT_MAX_CONTENT_OPERATIONS,
+            max_scan_pages: 8,
+            max_width_delta_em: 0.10,
             budget: ObjectBudget::default(),
         }
     }

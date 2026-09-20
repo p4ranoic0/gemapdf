@@ -40,6 +40,15 @@ pub(crate) struct Glyph {
     /// Número de `TJ` que desplaza exactamente lo mismo que este glifo, incluidos
     /// `Tc` y `Tw`. `None` si `Tfs·Th` es cero y no hay número equivalente.
     pub tj_adjustment: Option<f64>,
+    /// Ancho declarado por la fuente, en unidades de milésimas de em.
+    pub font_width: f64,
+    /// Avance en el espacio de texto, antes de la matriz de página.
+    pub text_advance: f64,
+    /// Parámetros de texto necesarios para medir un código reutilizado.
+    pub font_size: f64,
+    pub horizontal_scale: f64,
+    pub char_spacing: f64,
+    pub word_spacing: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -716,6 +725,12 @@ fn show_string(
             baseline_dir: unit(combined.a, combined.b),
             ascent_dir: unit(combined.c, combined.d),
             tj_adjustment,
+            font_width: width,
+            text_advance: advance_text,
+            font_size: state.params.font_size,
+            horizontal_scale: state.params.horizontal_scale,
+            char_spacing: state.params.char_spacing,
+            word_spacing: state.params.word_spacing,
         });
         move_text(&mut state.matrix, advance_text);
     }

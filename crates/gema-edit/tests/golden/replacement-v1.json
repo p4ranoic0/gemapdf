@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "modified": true,
+  "replacements": [
+    {
+      "id": "ok",
+      "page": 0,
+      "status": "replaced",
+      "replaced_glyphs": 2,
+      "original_text": "01",
+      "new_text": "10",
+      "original_advance": 10.0,
+      "new_advance": 10.0,
+      "tj_delta": 0.0,
+      "scanned_pages": 1,
+      "scan_incomplete": false
+    },
+    {
+      "id": "missing",
+      "page": 0,
+      "status": "skipped_no_reusable_code",
+      "replaced_glyphs": 0,
+      "original_text": "01",
+      "new_text": "2",
+      "original_advance": null,
+      "new_advance": null,
+      "tj_delta": null,
+      "scanned_pages": 8,
+      "scan_incomplete": true
+    },
+    {
+      "id": "semantic",
+      "page": 3,
+      "status": "skipped_semantics",
+      "replaced_glyphs": 0,
+      "original_text": null,
+      "new_text": "10",
+      "original_advance": null,
+      "new_advance": null,
+      "tj_delta": null,
+      "scanned_pages": 0,
+      "scan_incomplete": false
+    }
+  ],
+  "residual_risks": [],
+  "inspection_incomplete": false,
+  "inspection_gaps": [],
+  "signature": {
+    "sig_flags": false,
+    "sig_field": false,
+    "perms": false
+  }
+}

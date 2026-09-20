@@ -31,6 +31,7 @@ pub use options::{EditOptions, ObjectBudget};
 
 mod inspect;
 pub(crate) mod matrix;
+mod replacement;
 mod report;
 mod signature;
 mod stream_read;
@@ -43,6 +44,10 @@ pub use signature::SignatureIndicators;
 pub(crate) mod text_geometry;
 
 mod text_removal;
+pub use replacement::{
+    replace_text_glyphs, ReplacementDocumentReport, ReplacementReport, ReplacementResult,
+    ReplacementStatus, TextReplacement, REPLACEMENT_REPORT_SCHEMA_VERSION,
+};
 pub use text_removal::{
     remove_text_glyphs, remove_text_glyphs_with, RegionReport, RemovalResult, RemovalStatus,
     TextRegion,

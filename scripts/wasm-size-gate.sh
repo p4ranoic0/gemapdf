@@ -33,11 +33,12 @@
 #   f7be4f9   9 informe serializable en WASM             1430906   +3228     569280  +1197
 #   96453c9   10 CLI (no entra al wasm)                  1430906      0     569280      0
 #   4b0e917   11 separador por índice                    1430909      3     569305    +25
+#   uncommitted reemplazo por reuso de códigos (Fase 1)  1489459  +58550     595009 +25704
 #
 # El grueso (+34198) entra cuando la inspección se conecta al borrado en la Task 7;
 # en la Task 5 el compilador la descartaba por código muerto.
 set -euo pipefail
-CEILING="${1:-1430909}"
+CEILING="${1:-1489459}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/crates/gema-wasm"
 wasm-pack build --target web >/dev/null 2>&1

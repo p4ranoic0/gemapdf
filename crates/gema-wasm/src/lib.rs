@@ -2,7 +2,7 @@ use gema_compress::{
     compress as core_compress, compress_with_progress, CompressOptions, Phase, Profile, Report,
     ReportJson, SignaturePolicy,
 };
-use gema_edit::TextRegion;
+use gema_edit::{TextRegion, TextReplacement};
 use serde_wasm_bindgen::Serializer;
 use wasm_bindgen::prelude::*;
 
@@ -133,6 +133,37 @@ pub fn remove_text_glyphs(input: &[u8], regions: JsValue) -> Result<JsValue, JsE
         .map_err(|e| JsError::new(&format!("regiones inválidas: {e}")))?;
     let result =
         gema_edit::remove_text_glyphs(input, &regions).map_err(|e| JsError::new(&e.to_string()))?;
+
+    let report = to_js_object(&result.report())?;
+    let out = js_sys::Object::new();
+    js_sys::Reflect::set(
+        &out,
+        &JsValue::from_str("output"),
+        &js_sys::Uint8Array::from(&result.output[..]),
+    )
+    .map_err(|_| JsError::new("no se pudo construir el objeto resultado"))?;
+    js_sys::Reflect::set(&out, &JsValue::from_str("report"), &report)
+        .map_err(|_| JsError::new("no se pudo construir el objeto resultado"))?;
+    Ok(out.into())
+}
+
+/// Reemplaza texto reutilizando códigos ya dibujados por la misma fuente.
+///
+/// `replacements`: array de `{ region, new_text, expected_text? }`. Devuelve
+/// `{ output: Uint8Array, report: {...} }`. `status` puede ser `replaced`,
+/// `nothing_found`, `skipped_no_reusable_code`, `skipped_ambiguous_mapping`,
+/// `skipped_unsupported_font`, `skipped_semantics`, `skipped_layout`,
+/// `skipped_stale_selection`, `skipped_encrypted`, `skipped_invalid_region`,
+/// `skipped_page_geometry`, `skipped_content`, `skipped_unsupported_text` o
+/// `skipped_verification`. `replaced` no afirma que el texto viejo desapareció
+/// de todas las superficies del PDF.
+#[wasm_bindgen]
+pub fn replace_text_glyphs(input: &[u8], replacements: JsValue) -> Result<JsValue, JsError> {
+    let replacements: Vec<TextReplacement> = serde_wasm_bindgen::from_value(replacements)
+        .map_err(|e| JsError::new(&format!("reemplazos inválidos: {e}")))?;
+    let result =
+        gema_edit::replace_text_glyphs(input, &replacements, &gema_edit::EditOptions::default())
+            .map_err(|e| JsError::new(&e.to_string()))?;
 
     let report = to_js_object(&result.report())?;
     let out = js_sys::Object::new();
