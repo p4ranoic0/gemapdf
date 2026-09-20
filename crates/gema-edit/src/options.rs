@@ -13,8 +13,11 @@ pub struct EditOptions {
     pub max_content_operations: usize,
     /// Máximo de páginas que se recorren buscando códigos reutilizables.
     pub max_scan_pages: usize,
-    /// Diferencia máxima de avance tolerada, expresada en em. Es un límite
-    /// provisional que debe calibrarse con renders de fechas e importes.
+    /// Tope relativo de seguridad para ensanches cuando no se puede medir el
+    /// espacio hasta el siguiente glifo, expresado como fracción del avance
+    /// original. El texto igual o más angosto no se rechaza por layout; cuando
+    /// existe un glifo siguiente en la misma línea se compara contra el hueco
+    /// real antes de aplicar este tope.
     pub max_width_delta_em: f64,
     /// Presupuesto de resolución de objetos.
     pub budget: ObjectBudget,

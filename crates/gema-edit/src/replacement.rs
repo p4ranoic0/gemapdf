@@ -106,7 +106,8 @@ pub enum ReplacementStatus {
     SkippedUnsupportedFont,
     /// La operación podría dejar texto visible o semántico anterior.
     SkippedSemantics,
-    /// El avance del texto nuevo supera el límite configurado.
+    /// El texto nuevo más ancho invadiría el glifo siguiente o superaría el
+    /// tope relativo de seguridad cuando no se puede medir ese espacio.
     SkippedLayout,
     /// La selección no coincide con el texto esperado.
     SkippedStaleSelection,
@@ -199,7 +200,6 @@ struct FontDefinition {
     /// valores aparentes, que no son reutilizables entre sí en Fase 1.
     key: usize,
     mapping: HashMap<Vec<u8>, String>,
-    ambiguous: HashSet<char>,
 }
 
 #[derive(Debug, Clone)]
@@ -645,7 +645,17 @@ fn attempt_replacement(
         })
         .sum();
     let delta = new_advance - original_advance;
-    if delta.abs() > opts.max_width_delta_em * context.font_size.abs() {
+    let page = cache.pages[page_index]
+        .as_ref()
+        .expect("page was inserted or cached");
+    if layout_overflows(
+        page,
+        &selected,
+        delta,
+        original_advance,
+        context,
+        opts.max_width_delta_em,
+    ) {
         return Ok(Attempt {
             status: ReplacementStatus::SkippedLayout,
             report: AttemptReport {
@@ -871,7 +881,7 @@ fn select_sequence(
         let Some(ch) = chars.next() else {
             return Err(ReplacementStatus::SkippedAmbiguousMapping);
         };
-        if chars.next().is_some() || font.ambiguous.contains(&ch) {
+        if chars.next().is_some() {
             return Err(ReplacementStatus::SkippedAmbiguousMapping);
         }
         text.push(ch);
@@ -920,7 +930,7 @@ fn inventory_codes(
         let Some(ch) = chars.next() else {
             continue;
         };
-        if chars.next().is_some() || font.ambiguous.contains(&ch) {
+        if chars.next().is_some() {
             continue;
         }
         let values = inventory.entry(ch).or_default();
@@ -989,6 +999,44 @@ fn selected_original_advance(content: &Content, glyphs: &[Glyph]) -> f64 {
         }
     }
     advance
+}
+
+/// Returns whether a wider replacement would overlap the next glyph.
+///
+/// Narrower or equal text is always safe: the compensating `TJ` keeps the
+/// following glyph at its original position. For wider text, a same-line next
+/// glyph gives us the actual available gap and is the primary criterion. If
+/// there is no such glyph, `max_width_delta_em` remains only a relative safety
+/// fallback against the original run advance, rather than an absolute em
+/// threshold.
+fn layout_overflows(
+    page: &PageInfo,
+    selected: &Selected,
+    delta: f64,
+    original_advance: f64,
+    context: &Glyph,
+    max_width_delta_em: f64,
+) -> bool {
+    if delta <= 0.0 {
+        return false;
+    }
+    let Some(last) = selected.glyphs.last() else {
+        return false;
+    };
+    let page_scale = if context.text_advance.abs() > f64::EPSILON {
+        context.advance.abs() / context.text_advance.abs()
+    } else {
+        0.0
+    };
+    let extra = delta * page_scale;
+    if let Some(next) = page.text.glyphs.get(selected.end + 1) {
+        let same_line = (next.origin.1 - last.origin.1).abs() <= 0.01;
+        if same_line {
+            let available = (next.origin.0 - last.origin.0 - last.advance).max(0.0);
+            return extra > available + 0.01;
+        }
+    }
+    delta > max_width_delta_em * original_advance.abs()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1192,28 +1240,8 @@ fn font_definitions(
         {
             mapping = simple_mapping(doc, dict);
         }
-        let mut by_char: HashMap<char, Vec<Vec<u8>>> = HashMap::new();
-        for (code, text) in &mapping {
-            let mut chars = text.chars();
-            if let Some(ch) = chars.next() {
-                if chars.next().is_none() {
-                    by_char.entry(ch).or_default().push(code.clone());
-                }
-            }
-        }
-        let ambiguous = by_char
-            .into_iter()
-            .filter_map(|(ch, codes)| (codes.len() > 1).then_some(ch))
-            .collect();
         let key = std::ptr::from_ref(dict) as usize;
-        output.insert(
-            name,
-            FontDefinition {
-                key,
-                mapping,
-                ambiguous,
-            },
-        );
+        output.insert(name, FontDefinition { key, mapping });
     }
     Ok(output)
 }
@@ -1940,7 +1968,7 @@ mod tests {
         });
         let content = fx.content_stream(
             dictionary! {},
-            b"BT /F1 10 Tf 1 0 0 1 100 700 Tm [(01) 40 (1)] TJ ET",
+            b"BT /F1 10 Tf 1 0 0 1 100 700 Tm [(01) -100 (1)] TJ ET",
         );
         fx.add_page(
             content,
@@ -1971,7 +1999,7 @@ mod tests {
         });
         let content = fx.content_stream(
             dictionary! {},
-            b"BT /F1 10 Tf 1 0 0 1 100 700 Tm [(0) 40 (1) -20 (2)] TJ ET",
+            b"BT /F1 10 Tf 1 0 0 1 100 700 Tm [(0) 40 (1) -100 (2)] TJ ET",
         );
         fx.add_page(
             content,
@@ -2048,6 +2076,22 @@ mod tests {
         let content = fx.content_stream(
             dictionary! {},
             b"BT /F1 10 Tf 1 0 0 1 100 700 Tm (01) Tj ET",
+        );
+        fx.add_page(
+            content,
+            Some(dictionary! { "Font" => dictionary! { "F1" => font } }),
+            vec![],
+        );
+        fx.bytes()
+    }
+
+    fn ambiguous_mapping_fixture() -> Vec<u8> {
+        let mut fx = Fixture::new();
+        let unicode = to_unicode(&mut fx, &[("30", "0030"), ("31", "0030"), ("32", "0031")]);
+        let font = font(&mut fx, "SubsetFont", unicode, 3);
+        let content = fx.content_stream(
+            dictionary! {},
+            b"BT /F1 10 Tf 1 0 0 1 100 700 Tm (0) Tj ET BT /F1 10 Tf 1 0 0 1 200 700 Tm (1) Tj ET",
         );
         fx.add_page(
             content,
@@ -2151,7 +2195,7 @@ mod tests {
             .any(|value| (*value + 50.0).abs() <= f64::EPSILON));
         assert!(numbers
             .iter()
-            .any(|value| (*value - 40.0).abs() <= f64::EPSILON));
+            .any(|value| (*value + 100.0).abs() <= f64::EPSILON));
     }
 
     #[test]
@@ -2210,7 +2254,7 @@ mod tests {
             .any(|value| (*value - 90.0).abs() <= f64::EPSILON));
         assert!(numbers
             .iter()
-            .any(|value| (*value + 20.0).abs() <= f64::EPSILON));
+            .any(|value| (*value + 100.0).abs() <= f64::EPSILON));
         assert!(before_doc
             .get_page_content(before_doc.get_pages()[&1])
             .unwrap()
@@ -2282,13 +2326,25 @@ mod tests {
     }
 
     #[test]
-    fn layout_limit_rejects_over_threshold() {
+    fn layout_limit_allows_narrower_text() {
         let input = varying_width_fixture();
         let options = EditOptions {
             max_width_delta_em: 0.04,
             ..EditOptions::default()
         };
         let result = replace_text_glyphs(&input, &[varying_replacement("1")], &options).unwrap();
+        assert_eq!(result.replacements[0].status, ReplacementStatus::Replaced);
+        assert!(result.modified);
+    }
+
+    #[test]
+    fn layout_limit_rejects_wider_text_that_would_hit_next_glyph() {
+        let input = varying_width_fixture();
+        let options = EditOptions {
+            max_width_delta_em: 100.0,
+            ..EditOptions::default()
+        };
+        let result = replace_text_glyphs(&input, &[varying_replacement("11")], &options).unwrap();
         assert_eq!(
             result.replacements[0].status,
             ReplacementStatus::SkippedLayout
@@ -2298,16 +2354,35 @@ mod tests {
     }
 
     #[test]
-    fn layout_limit_accepts_just_below_threshold() {
+    fn layout_limit_accepts_wider_text_within_measured_gap() {
         let input = varying_width_fixture();
         let options = EditOptions {
-            max_width_delta_em: 0.06,
+            max_width_delta_em: 0.04,
             ..EditOptions::default()
         };
-        let result = replace_text_glyphs(&input, &[varying_replacement("1")], &options).unwrap();
+        let result = replace_text_glyphs(&input, &[varying_replacement("010")], &options).unwrap();
         assert_eq!(result.replacements[0].status, ReplacementStatus::Replaced);
-        assert_eq!(result.replacements[0].tj_delta, Some(-50.0));
+        assert_eq!(result.replacements[0].tj_delta, Some(50.0));
         assert!(result.modified);
+    }
+
+    #[test]
+    fn ambiguous_mapping_is_readable_but_not_writable() {
+        let input = ambiguous_mapping_fixture();
+        let replacement = TextReplacement {
+            region: region("ambiguous", 0, 99.0, 695.0, 12.0, 17.0),
+            new_text: "0".into(),
+            expected_text: Some("0".into()),
+        };
+        let result = replace_text_glyphs(&input, &[replacement], &EditOptions::default()).unwrap();
+
+        assert_eq!(
+            result.replacements[0].status,
+            ReplacementStatus::SkippedAmbiguousMapping
+        );
+        assert_eq!(result.replacements[0].original_text.as_deref(), Some("0"));
+        assert_eq!(result.output, input);
+        assert!(!result.modified);
     }
 
     #[test]
