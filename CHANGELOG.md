@@ -5,6 +5,42 @@ All notable changes to GemaPDF are documented in this file. The project follows
 
 ## Unreleased
 
+## 0.7.0 — 2026-09-20
+
+### Added
+
+- `replace_text_glyphs` in `gema-edit`: replaces text **inside the content stream** by reusing
+  codes that the same font already draws, preserving the original typography. New types:
+  `TextReplacement`, `ReplacementResult`, `ReplacementReport`, `ReplacementStatus`, and
+  `REPLACEMENT_REPORT_SCHEMA_VERSION` (a dedicated schema, v1, independent of the removal
+  report).
+- New `EditOptions` fields: `max_scan_pages` (default 8) and `max_width_delta_em` (default 0.10).
+- New `replace_text_glyphs` export in `gema-wasm`, with the same shape as `remove_text_glyphs`.
+
+### Limitations
+
+- Only reuses codes that the font **already draws** in a visible run of the document. It does not
+  read the font program, so it cannot discover new glyphs: when it cannot prove that a glyph
+  exists, it rejects with `skipped_no_reusable_code`, which **does not** claim that the glyph is
+  missing.
+- Measured on the real corpus of scanned case files: 0 of 971 embedded fonts can write a complete
+  Spanish alphabet, because 80.9% are subsets. Per real editing operation the picture is
+  different: 16 of 23 regions in one case file and 15 of 22 in another end in `replaced`. Free-form
+  text replacement is out of scope.
+- One line per replacement. Rejects content marked with `/ActualText` or `/Alt`, text inside Form
+  XObjects, and selections that mix lines or fonts.
+- A narrower replacement leaves a gap: `TJ` compensation preserves the position of subsequent
+  text, and the text is not compressed with internal adjustments.
+
+### Unchanged
+
+- `remove_text_glyphs`, its v1 report schema, and its statuses are unchanged.
+
+### Measured
+
+- The `.wasm` ceiling rises from 1,430,909 to 1,492,639 bytes, measured and ratified in
+  `scripts/wasm-size-gate.sh`.
+
 ### Fixed
 
 - README: the WASM bundle size quoted 1,519,364 bytes, which was an

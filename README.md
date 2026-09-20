@@ -11,12 +11,14 @@ A pure-Rust, portable PDF compression engine. It ships as four crates:
 - **`gema-compress`** — the compression engine itself. Pure Rust, no C bindings,
   no system dependencies. Compiles to both WebAssembly and native code from
   the same source.
-- **`gema-edit`** — regional text editing: removes glyphs from requested regions
-  and reports what may survive; it is not a redaction primitive.
+- **`gema-edit`** — regional text editing: removes glyphs from requested regions,
+  replaces text inside content streams, and reports what may survive; it is not a
+  redaction primitive.
 - **`gema-cli`** — a command-line tool (`gema`) built on `gema-compress` and
   `gema-edit`.
 - **`gema-wasm`** — WebAssembly bindings (via `wasm-bindgen`) so the same
-  engine runs in a browser tab, client-side, with no server round-trip.
+  engine runs in a browser tab, client-side, with no server round-trip, including
+  `replace_text_glyphs`.
 
 Project license: **MIT OR Apache-2.0** (see [`LICENSE-MIT`](LICENSE-MIT) and
 [`LICENSE-APACHE`](LICENSE-APACHE)) — **no AGPL, anywhere in the dependency
@@ -39,10 +41,11 @@ GemaPDF takes a different approach: implement the actual PDF image-compression
 pipeline (parse, decode, downsample, re-encode, rewrite) in pure Rust, with no
 GPL/AGPL code anywhere in the tree. The payoff:
 
-- **WASM bundle size:** 1.36 MB pre-gzip (1,430,909 bytes), 0.54 MB with
-  `gzip -9` (569,305 bytes), versus ~14 MB for `ghostscript-wasm` (measured on
-  the `wasm-pack build --target web` output of `crates/gema-wasm` at 0.6.0 —
-  `pkg/gema_wasm_bg.wasm`, the artifact published as `wasm-v0.6.0`; MB here
+- **WASM bundle size:** 1.42 MB pre-gzip (1,488,322 bytes), 0.57 MB with
+  `gzip -9` (594,706 bytes), versus ~14 MB for
+  `ghostscript-wasm` (measured on the `wasm-pack build --target web` output of
+  `crates/gema-wasm` at 0.7.0 — `pkg/gema_wasm_bg.wasm`, the artifact published
+  as `wasm-v0.7.0`; MB here
   means MiB; there is no Ghostscript in the dependency graph to
   compare against, so the 14 MB figure is the published size of AGPL
   ghostscript-wasm builds).
@@ -109,9 +112,9 @@ design rationale
 | Crate | What it is | Targets |
 |---|---|---|
 | [`gema-compress`](crates/gema-compress) | The compression engine: PDF parsing (via `lopdf`), image decode/downsample/recompress pipeline, progress reporting. | `wasm32-unknown-unknown` + native |
-| [`gema-edit`](crates/gema-edit) | Removes glyphs in requested regions and reports residual risks and inspection gaps; it is not a redaction primitive. | native + `wasm32-unknown-unknown` |
+| [`gema-edit`](crates/gema-edit) | Removes glyphs, replaces text inside content streams, and reports residual risks and inspection gaps; it is not a redaction primitive. | native + `wasm32-unknown-unknown` |
 | [`gema-cli`](crates/gema-cli) | `gema` binary: compress/analyze a PDF and run `remove-text` from the command line. | native |
-| [`gema-wasm`](crates/gema-wasm) | `wasm-bindgen` bindings exposing `compress`, `analyze`, `compress_with_report` to JS. | `wasm32-unknown-unknown` |
+| [`gema-wasm`](crates/gema-wasm) | `wasm-bindgen` bindings exposing `compress`, `analyze`, `compress_with_report`, and `replace_text_glyphs` to JS. | `wasm32-unknown-unknown` |
 
 ## Usage
 
