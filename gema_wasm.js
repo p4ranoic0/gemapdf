@@ -104,6 +104,31 @@ export function remove_text_glyphs(input, regions) {
     }
     return takeFromExternrefTable0(ret[0]);
 }
+
+/**
+ * Reemplaza texto reutilizando códigos ya dibujados por la misma fuente.
+ *
+ * `replacements`: array de `{ region, new_text, expected_text? }`. Devuelve
+ * `{ output: Uint8Array, report: {...} }`. `status` puede ser `replaced`,
+ * `nothing_found`, `skipped_no_reusable_code`, `skipped_ambiguous_mapping`,
+ * `skipped_unsupported_font`, `skipped_semantics`, `skipped_layout`,
+ * `skipped_stale_selection`, `skipped_encrypted`, `skipped_invalid_region`,
+ * `skipped_page_geometry`, `skipped_content`, `skipped_unsupported_text` o
+ * `skipped_verification`. `replaced` no afirma que el texto viejo desapareció
+ * de todas las superficies del PDF.
+ * @param {Uint8Array} input
+ * @param {any} replacements
+ * @returns {any}
+ */
+export function replace_text_glyphs(input, replacements) {
+    const ptr0 = passArray8ToWasm0(input, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.replace_text_glyphs(ptr0, len0, replacements);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,

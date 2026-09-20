@@ -1,43 +1,399 @@
-# gema-wasm — rama de distribución (generada)
+# GemaPDF
 
-**Esta rama NO tiene código fuente.** Es el paquete npm de GemaPDF: exactamente
-la salida de `wasm-pack build --target web`, con el `package.json` en la raíz
-para que se pueda instalar como dependencia de git.
+[![crates.io](https://img.shields.io/crates/v/gema-compress.svg)](https://crates.io/crates/gema-compress)
+[![docs.rs](https://docs.rs/gema-compress/badge.svg)](https://docs.rs/gema-compress)
+[![CI](https://github.com/p4ranoic0/gemapdf/actions/workflows/ci.yml/badge.svg)](https://github.com/p4ranoic0/gemapdf/actions/workflows/ci.yml)
+[![license](https://img.shields.io/crates/l/gema-compress.svg)](https://github.com/p4ranoic0/gemapdf)
+[![MSRV](https://img.shields.io/crates/msrv/gema-compress.svg)](https://github.com/p4ranoic0/gemapdf)
 
-El código fuente vive en `main` (Rust). Esta rama existe para que los
-consumidores (p. ej. el portfolio) traten a GemaPDF como una librería de
-terceros, sin copiar artefactos entre carpetas hermanas.
+A pure-Rust, portable PDF compression engine. It ships as four crates:
 
-## Consumir
+- **`gema-compress`** — the compression engine itself. Pure Rust, no C bindings,
+  no system dependencies. Compiles to both WebAssembly and native code from
+  the same source.
+- **`gema-edit`** — regional text editing: removes glyphs from requested regions,
+  replaces text inside content streams, and reports what may survive; it is not a
+  redaction primitive.
+- **`gema-cli`** — a command-line tool (`gema`) built on `gema-compress` and
+  `gema-edit`.
+- **`gema-wasm`** — WebAssembly bindings (via `wasm-bindgen`) so the same
+  engine runs in a browser tab, client-side, with no server round-trip, including
+  `replace_text_glyphs`.
 
-```json
-{ "dependencies": { "gema-wasm": "github:p4ranoic0/gemapdf#wasm-v0.1.0" } }
+Project license: **MIT OR Apache-2.0** (see [`LICENSE-MIT`](LICENSE-MIT) and
+[`LICENSE-APACHE`](LICENSE-APACHE)) — **no AGPL, anywhere in the dependency
+tree.** That's a deliberate design constraint, not an accident: it's what lets
+`gema-compress` run client-side in a browser and be embedded in commercial or
+closed-source products without copyleft obligations.
+
+`gema-core` was renamed to `gema-compress` in 0.6.0; `gema-core` 0.5.0 is the
+last version published under that name.
+
+## Why this exists
+
+Most PDF compression on the web is a thin wrapper around Ghostscript, either
+shelled out to on a server or compiled to WebAssembly. Ghostscript is AGPL-3.0
+— any service built on it that's reachable over a network has to offer its
+own source under the AGPL too, and its `ghostscript-wasm` builds run **~14 MB**
+of compiled Postscript interpreter in the browser.
+
+GemaPDF takes a different approach: implement the actual PDF image-compression
+pipeline (parse, decode, downsample, re-encode, rewrite) in pure Rust, with no
+GPL/AGPL code anywhere in the tree. The payoff:
+
+- **WASM bundle size:** 1.42 MB pre-gzip (1,488,322 bytes), 0.57 MB with
+  `gzip -9` (594,706 bytes), versus ~14 MB for
+  `ghostscript-wasm` (measured on the `wasm-pack build --target web` output of
+  `crates/gema-wasm` at 0.7.0 — `pkg/gema_wasm_bg.wasm`, the artifact published
+  as `wasm-v0.7.0`; MB here
+  means MiB; there is no Ghostscript in the dependency graph to
+  compare against, so the 14 MB figure is the published size of AGPL
+  ghostscript-wasm builds).
+- **License-clean:** permissive dependencies only (enforced with `cargo-deny`),
+  safe to embed anywhere, including closed-source and commercial products,
+  without triggering AGPL network-use clauses.
+- **One codebase, two targets:** the same `gema-compress` crate compiles to
+  `wasm32-unknown-unknown` for the browser and to native for the CLI/server,
+  with no `#[cfg]`-gated fork of the compression logic.
+
+## What it actually does (honest, measured claims)
+
+GemaPDF compresses the *images* inside a PDF — that's where nearly all the
+recoverable size lives in real-world documents (scans, reports, forms). It
+does **not** currently touch page-level content (fonts, glyph outlines,
+non-image content streams beyond `save_modern`'s object/xref-stream packing).
+
+Measured on a real corpus (see `docs/USAGE-ANALYSIS.md` for the full v1
+report, `docs/USAGE-ANALYSIS-v2.md` for the v2.0 measurement, and
+`crates/gema-compress/examples/usage_report.rs`, the harness used to produce
+these numbers):
+
+- **v1** (recompress-only, no real DPI downsampling, DCT/PNG images only):
+  ~3.7–8.1% size reduction on a 31-PDF / ~283 MB real-document corpus. The
+  95% of images that stayed untouched were split between "already efficient"
+  (`Kept`) and formats the decoder couldn't open yet — 16.8% were `Skipped`
+  (FlateDecode-raw scans, CCITT/JBIG2, JPX).
+- **v2.0** (this codebase today) adds: a real CTM-based effective-DPI
+  downsampler (v1's DPI estimate was inert — 0 downsamples in 5,799 images;
+  v2.0 actually fires), FlateDecode image decoding (raw zlib pixel data with
+  PNG/TIFF predictor de-filtering, plus `ASCIIHex`/`ASCII85`/`RunLength`
+  de-chaining), `Indexed`/`ICCBased`/`DeviceCMYK` colorspace support, and
+  gray→luma JPEG output (grayscale scans no longer get inflated to 3-channel
+  RGB before re-encoding). Measured on a 37-PDF real-document corpus (see
+  [`docs/USAGE-ANALYSIS-v2.md`](docs/USAGE-ANALYSIS-v2.md) — a different,
+  newer corpus than the v1 analysis, so the two numbers aren't a strict
+  apples-to-apples before/after) this brings the *global* output/input ratio
+  to **64.7%** (~35% reduction) — a large jump from v1's single-digit
+  percentages, driven mostly by downsampling actually firing on high-DPI
+  scanned content (1,842 images downsampled in that corpus).
+- **Visible signature preservation:** `SignaturePolicy::Flatten` is the product
+  default. It embeds visible signatures and seals into page content so they
+  remain visible in the compressed PDF; cryptographic validity is lost because
+  the document changes. `SignaturePolicy::Strict` is available explicitly when
+  validity matters: it returns a signed PDF byte-for-byte unchanged and reports
+  the requested transformation as blocked.
+- **SMask (soft-mask) preservation:** images with an attached transparency
+  mask (`/SMask`) are left untouched rather than recompressed, since
+  recompressing the color data without also handling the mask would either
+  discard the alpha channel or orphan the mask XObject.
+
+What it doesn't do yet — CCITT/JBIG2/JPX decoding, a document-level JBIG2
+symbol dictionary for repeated letterheads/stamps, Form XObject DPI recursion —
+is tracked honestly in
+[`TODO-v2.md`](TODO-v2.md). Perceptual (JND) quality selection is available as
+an experimental, native-only CLI feature via `--quality-target`. The fuller
+design rationale
+(why DPI and codec choice are the two big levers, and what the v2.1
+"high-compression" native-only mode looks like) is in
+[`docs/V2-DESIGN.md`](docs/V2-DESIGN.md).
+
+## The four crates
+
+| Crate | What it is | Targets |
+|---|---|---|
+| [`gema-compress`](crates/gema-compress) | The compression engine: PDF parsing (via `lopdf`), image decode/downsample/recompress pipeline, progress reporting. | `wasm32-unknown-unknown` + native |
+| [`gema-edit`](crates/gema-edit) | Removes glyphs, replaces text inside content streams, and reports residual risks and inspection gaps; it is not a redaction primitive. | native + `wasm32-unknown-unknown` |
+| [`gema-cli`](crates/gema-cli) | `gema` binary: compress/analyze a PDF and run `remove-text` from the command line. | native |
+| [`gema-wasm`](crates/gema-wasm) | `wasm-bindgen` bindings exposing `compress`, `analyze`, `compress_with_report`, and `replace_text_glyphs` to JS. | `wasm32-unknown-unknown` |
+
+## Usage
+
+### Rust (`gema-compress`)
+
+```rust
+use gema_compress::{compress, CompressOptions, Profile};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let input = std::fs::read("input.pdf")?;
+
+    let opts = CompressOptions {
+        profile: Profile::Ebook, // Screen | Ebook | Printer | Custom
+        ..Default::default()
+    };
+
+    let result = compress(&input, &opts)?;
+    std::fs::write("output.pdf", &result.output)?;
+
+    println!(
+        "{} -> {} bytes ({:.1}% of original, {} images touched)",
+        input.len(),
+        result.output.len(),
+        result.report.ratio.unwrap_or(1.0) * 100.0,
+        result.report.images.len(),
+    );
+    Ok(())
+}
 ```
+
+`CompressOptions` lets you override the per-profile defaults
+(`image_dpi`, `jpeg_quality`), choose the signature policy
+(`SignaturePolicy::Flatten` — the default —, `Strict`, or the advanced
+`Ignore` policy), and toggle
+`downsample`/`recompress_streams`/`remove_metadata`. The opt-in
+`dedupe_images` flag collapses byte-identical image XObjects when their render
+semantics match; signature/seal images and transparency masks are excluded.
+See
+`crates/gema-compress/src/options.rs` for the full set and their profile
+defaults (Screen 72dpi/q40, Ebook 150dpi/q65, Printer 300dpi/q80).
+
+Native callers that process untrusted or very large PDFs can bound image work
+with `max_memory_bytes`, `max_parallel_images`, and `max_image_bytes`, and can
+reject whole documents with `max_pages`, `max_objects`, or
+`max_total_work_bytes`. `max_stream_bytes` controls the per-stream inflation
+ceiling; streams above it are preserved and reported instead of rejecting the
+document. The document-wide limits and cancellation control are currently core
+API features; the CLI does not expose flags for them. The WASM binding uses a
+256 MiB scheduling budget by default because its image loop is serial.
+
+For progress reporting during a long compression, use
+`compress_with_progress(&input, &opts, &mut |phase| { .. })`, which calls
+back with `Phase::{Analyzing, OptimizingImages { done, total }, Rewriting, Done}`.
+
+Callers that also need cancellation can implement `CancelSignal` and pass it to
+`compress_with_control(&input, &opts, &mut |phase| { .. }, &cancel)`. The signal
+is checked cooperatively between phases and image batches, never midway through
+encoding an image. Cancellation returns `GemaError::Cancelled`; no partial
+output is returned as a successful result.
+
+### CLI (`gema-cli`)
+
+```sh
+cargo install --path crates/gema-cli
+# or, from a release build:
+gema compress in.pdf out.pdf --profile ebook
+
+# Preserve cryptographic validity by leaving signed PDFs unchanged:
+gema compress in.pdf out.pdf --profile ebook --signatures strict
+
+# Bound concurrent image work and reject single images over 256 MiB:
+gema compress in.pdf out.pdf --max-memory-mib 512 --max-parallel-images 4 \
+  --max-image-mib 256
+
+# Collapse repeated byte-identical letterheads/stamps when safe:
+gema compress in.pdf out.pdf --dedupe-images
+
+gema analyze in.pdf
+```
+
+`gema remove-text in.pdf out.pdf --region <page>:<x>,<y>,<w>,<h>` removes glyphs
+from selected regions and reports what may survive; it is not a redaction primitive.
+
+Profiles: `screen` | `ebook` | `printer` | `custom` (default `ebook`; `custom`
+takes Ebook's base values and expects `--image-dpi` / `--jpeg-quality` on top).
+Signature policies: `flatten` (default, preserves the visible appearance) |
+`strict` (returns signed PDFs unchanged) | `ignore`. Both sets are parsed by
+`gema-compress` itself (`Profile: FromStr`, `SignaturePolicy: FromStr`), so the CLI
+and the WASM binding accept exactly the same names.
+
+### Web (`gema-wasm`)
+
+Build the WASM package:
+
+```sh
+cd crates/gema-wasm
+wasm-pack build --target web
+```
+
+**If you consume `gema-wasm` as a crate from crates.io and build for
+`wasm32-unknown-unknown`, you must set this rustflag yourself**, in your own
+`.cargo/config.toml`:
+
+```toml
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
+```
+
+`getrandom` reaches the tree through `lopdf -> rand` and requires an explicit
+backend on that target; enabling its `wasm_js` feature alone is not enough.
+The published crate ships its own `.cargo/config.toml` with this flag, but that
+does **not** help you: Cargo discovers configuration from the directory it is
+invoked in and from your workspace root, never from a dependency's source
+directory. Without the flag the build fails inside `getrandom`, with an error
+that never mentions GemaPDF.
+
+None of this applies if you only want to call it from JavaScript. That path is
+the prebuilt package on the `npm` branch
+(`github:p4ranoic0/gemapdf#wasm-v0.X.0`), which already carries the compiled
+`.wasm` and its JS glue.
+
+Then, in JS (reading the real exported API from
+`crates/gema-wasm/src/lib.rs` — `compress_with_report` returns
+`{ output: Uint8Array, report }` and takes an optional progress callback):
 
 ```js
-import init, { compress_with_report } from 'gema-wasm'
-await init()
+import init, { compress_with_report } from "./pkg/gema_wasm.js";
+
+await init(); // loads the .wasm module
+
+const input = new Uint8Array(await file.arrayBuffer());
+
+const { output, report } = compress_with_report(
+  input,
+  "ebook", // "screen" | "ebook" | "printer"
+  { image_dpi: 150, jpeg_quality: 65, max_memory_bytes: 268435456,
+    dedupe_images: true,
+    signatures: "flatten" }, // optional, or null
+  ({ phase, done, total }) => {
+    // phase: "analyzing" | "optimizing" | "rewriting" | "done"
+    // done/total only present during "optimizing"
+    console.log(phase, done, total);
+  },
+);
+
+console.log(report.ratio, report.images_recompressed, report.warnings);
+// `output` is a Uint8Array of the compressed PDF — download or upload it directly.
 ```
 
-Pinear siempre un **tag** (`#wasm-v0.1.0`), no la rama: la rama se mueve en cada
-release.
+Reports include `has_scanned_pages`, a conservative estimate that becomes true
+when at least one large raster covers most of a page with little painted text.
+It is detection metadata, not an OCR result. Skipped images include a typed
+`skip_reason`, while `image_skip_summary` aggregates image counts and input
+bytes by reason so unsupported-format opportunities can be measured directly.
 
-## Publicar un release nuevo
+There's also a plain `compress(input, profile)` (returns just the output
+bytes, no report/options/progress — kept for a simpler v1-style call) and
+`analyze(input)` (inspects a PDF without compressing it, e.g. to show page
+count and signature status before the user commits to compressing).
 
-Desde la raíz del repo, en la rama fuente que se quiera liberar (normalmente
-`main`, que es la que corre en producción):
+### JSON report
 
-```bash
-cd crates/gema-wasm && wasm-pack build --target web && cd ../..
-git worktree add -B npm /tmp/gema-npm main
-cd /tmp/gema-npm
-git rm -rq .
-cp ../../crates/gema-wasm/pkg/{gema_wasm.js,gema_wasm.d.ts,gema_wasm_bg.wasm,gema_wasm_bg.wasm.d.ts,package.json} .
-# (volver a copiar este README)
-git add -A && git commit --no-verify -m "release: gema-wasm vX.Y.Z desde <sha>"
-git tag wasm-vX.Y.Z && git push origin npm --force && git push origin wasm-vX.Y.Z
-cd - && git worktree remove /tmp/gema-npm
+`gema compress --json` and `gema analyze --json` print the report to stdout as
+JSON. The WASM binding emits this same versioned schema since 0.4.0. Human
+output stays the default.
+
+Add `--json-images` to `compress` for a per-image `images.detail` array. It is
+opt-in because `object_id` refers to the *input* document.
+
+```json
+{
+  "report_schema_version": 1,
+  "input": {
+    "bytes": 7917380,
+    "pages": 113
+  },
+  "output": {
+    "bytes": 7872133,
+    "ratio": 0.9942851
+  },
+  "document": {
+    "is_signed": false,
+    "has_scanned_pages": true,
+    "signature_policy": "flatten",
+    "flattened_signatures": 0,
+    "visual_appearance_preserved": true,
+    "cryptographic_validity_preserved": true,
+    "operation_blocked": false,
+    "document_modified": false
+  },
+  "images": {
+    "total": 162,
+    "by_action": {
+      "recompressed": 3,
+      "downsampled": 0,
+      "kept": 74,
+      "skipped": 0,
+      "preserved": 85
+    },
+    "deduplicated": 0,
+    "deduplicated_bytes": 0,
+    "skipped_by_reason": []
+  },
+  "warnings": [
+    {
+      "kind": "other",
+      "message": "85 firma(s)/sello(s) preservados sin recomprimir"
+    }
+  ]
+}
 ```
 
-El commit usa `--no-verify` a propósito: el hook `pre-commit` corre gates de
-Rust (fmt/tests/clippy) que no aplican en una rama sin Cargo.toml.
+`analyze --json` emits the same shape, but without the `output` key or per-image
+statistics, because it does not compress anything.
+
+`report_schema_version` only increases when the JSON stops being backward
+compatible — a key renamed, removed, or retyped. **Adding** a key or an enum
+variant does not bump it, so consumers must ignore unknown keys. `warnings[].kind`
+is the stable discriminant; `warnings[].message` is prose and may be reworded.
+
+### API stability
+
+The supported surface is what `gema-compress` re-exports; implementation modules are
+private.
+
+- Enums the pipeline grows are `#[non_exhaustive]` — `ImageSkipReason`,
+  `Warning`, `GemaError`, `LimitKind`, `Phase`, `ImageAction`. Match them with a
+  `_` arm.
+- `Profile` and `SignaturePolicy` are deliberately exhaustive: closed product
+  concepts, and you want the compiler to tell you when they change.
+- Structs are exhaustive because callers build `CompressOptions` and tests build
+  report fixtures with struct literals. `#[non_exhaustive]` on a struct forbids
+  the literal from another crate *even with* `..Default::default()`, so it is not
+  used. Adding a field is a breaking change.
+
+Version 0.5.0 adds the exhaustive `CompressOptions` fields `max_pages`,
+`max_objects`, `max_stream_bytes`, and `max_total_work_bytes`; this is the
+release's incompatible Rust API change.
+
+There is no error variant for "this document is signed": `SignaturePolicy::Strict`
+does not fail, it returns the document untouched. Observe it through
+`Report::is_signed` plus an output identical to the input.
+
+## Regression benchmarking
+
+To compare the current working tree with a Git revision over a local corpus
+of PDFs. The corpus directory and the results root are arguments, so point
+them wherever your files live:
+
+```sh
+scripts/compare-revisions.sh HEAD ebook 3 /path/to/corpus /path/to/results
+```
+
+Then validate rendered output against the immutable originals:
+
+```sh
+scripts/compare-visuals.py /path/to/results/<run-id> \
+  --against original
+
+# A strict visual-regression gate between the two compressed revisions:
+scripts/compare-visuals.py /path/to/results/<run-id> \
+  --against baseline --max-changed-pct 0
+```
+
+The default `--pages auto` samples the document uniformly, adds the pages with
+the largest raster footprint, and includes signature-widget pages discovered
+with qpdf. Reports include pixel-change rate, MAE, RMS, PSNR, heatmaps, and
+side-by-side sheets. Explicit page/range selection remains available.
+
+The corpus is read-only. Derived PDFs, timings, validation logs, checksums and
+the summary are written to a timestamped directory under the results root you
+pass, which is expected to live outside the repository; nothing from the corpus
+is copied into this repository. Run `scripts/compare-revisions.sh --help` to override the
+baseline, profile, repetitions, corpus or results root.
+
+## Roadmap
+
+See [`docs/V2-DESIGN.md`](docs/V2-DESIGN.md) for the design rationale (why
+DPI and per-content codec choice are the two highest-impact levers, and what
+the native-only "high compression" mode looks like), and
+[`TODO-v2.md`](TODO-v2.md) for the itemized, kept-honest list of what's
+shipped versus what's still open.

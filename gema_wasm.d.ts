@@ -55,6 +55,20 @@ export function compress_with_report(input: Uint8Array, profile: string, options
  */
 export function remove_text_glyphs(input: Uint8Array, regions: any): any;
 
+/**
+ * Reemplaza texto reutilizando códigos ya dibujados por la misma fuente.
+ *
+ * `replacements`: array de `{ region, new_text, expected_text? }`. Devuelve
+ * `{ output: Uint8Array, report: {...} }`. `status` puede ser `replaced`,
+ * `nothing_found`, `skipped_no_reusable_code`, `skipped_ambiguous_mapping`,
+ * `skipped_unsupported_font`, `skipped_semantics`, `skipped_layout`,
+ * `skipped_stale_selection`, `skipped_encrypted`, `skipped_invalid_region`,
+ * `skipped_page_geometry`, `skipped_content`, `skipped_unsupported_text` o
+ * `skipped_verification`. `replaced` no afirma que el texto viejo desapareció
+ * de todas las superficies del PDF.
+ */
+export function replace_text_glyphs(input: Uint8Array, replacements: any): any;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
@@ -63,6 +77,7 @@ export interface InitOutput {
     readonly compress: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly compress_with_report: (a: number, b: number, c: number, d: number, e: any, f: number) => [number, number, number];
     readonly remove_text_glyphs: (a: number, b: number, c: any) => [number, number, number];
+    readonly replace_text_glyphs: (a: number, b: number, c: any) => [number, number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
