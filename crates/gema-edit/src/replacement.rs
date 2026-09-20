@@ -435,7 +435,7 @@ fn attempt_replacement(
             .as_ref()
             .expect("page was inserted or cached");
         let (risks, gaps) = inspect_page(doc, page_id, replacement, &page.content, meter);
-        let semantic_risk = has_semantic_risk(doc, &page.content, &risks);
+        let semantic_risk = has_semantic_risk(&risks);
         let form_risk = risks
             .iter()
             .any(|risk| matches!(risk, ResidualRisk::FormXObject { .. }));
@@ -491,6 +491,30 @@ fn attempt_replacement(
     {
         return Ok(Attempt {
             status: ReplacementStatus::SkippedStaleSelection,
+            report: AttemptReport {
+                original_text,
+                ..AttemptReport::default()
+            },
+            risks,
+            gaps,
+        });
+    }
+
+    if selected_has_actual_text(
+        doc,
+        page_id,
+        &cache.pages[page_index]
+            .as_ref()
+            .expect("page was inserted or cached")
+            .content,
+        selected
+            .glyphs
+            .first()
+            .expect("selection is non-empty")
+            .op_index,
+    ) {
+        return Ok(Attempt {
+            status: ReplacementStatus::SkippedSemantics,
             report: AttemptReport {
                 original_text,
                 ..AttemptReport::default()
@@ -593,13 +617,19 @@ fn attempt_replacement(
         chosen.push(candidates[0].clone());
     }
 
-    let original_advance: f64 = selected.glyphs.iter().map(|glyph| glyph.text_advance).sum();
     let Some(context) = selected.glyphs.first() else {
         return Ok(rejected(
             ReplacementStatus::NothingFound,
             AttemptReport::default(),
         ));
     };
+    let original_advance = selected_original_advance(
+        &cache.pages[page_index]
+            .as_ref()
+            .expect("page was inserted or cached")
+            .content,
+        &selected.glyphs,
+    );
     if context.font_size.abs() <= f64::EPSILON || context.horizontal_scale.abs() <= f64::EPSILON {
         return Ok(Attempt {
             status: ReplacementStatus::SkippedUnsupportedText,
@@ -642,41 +672,24 @@ fn attempt_replacement(
     let tj_delta = delta * 1000.0 / (context.font_size * context.horizontal_scale);
     let first = selected.glyphs.first().unwrap();
     let last = selected.glyphs.last().unwrap();
-    let first_key = (first.op_index, first.operand_index);
-    if selected
-        .glyphs
-        .iter()
-        .any(|glyph| (glyph.op_index, glyph.operand_index) != first_key)
-    {
-        return Ok(Attempt {
-            status: ReplacementStatus::SkippedUnsupportedText,
-            report: AttemptReport {
-                original_text,
-                original_advance: Some(original_advance),
-                new_advance: Some(new_advance),
-                tj_delta: Some(tj_delta),
-                scanned_pages: scan.scanned_pages,
-                scan_incomplete: scan.incomplete,
-                ..AttemptReport::default()
-            },
-            risks,
-            gaps,
-        });
-    }
     let new_bytes = chosen
         .iter()
         .flat_map(|c| c.bytes.clone())
         .collect::<Vec<_>>();
+    let span = SelectionSpan {
+        op_index: first.op_index,
+        first_operand_index: first.operand_index,
+        first_start: first.byte_offset,
+        last_operand_index: last.operand_index,
+        last_end: last.byte_offset + usize::from(last.code_len),
+    };
     let Some(rewritten) = rewrite_selected(
         &cache.pages[page_index]
             .as_ref()
             .expect("page was inserted or cached")
             .content
             .operations,
-        first.op_index,
-        first.operand_index,
-        first.byte_offset,
-        last.byte_offset + usize::from(last.code_len),
+        span,
         &new_bytes,
         tj_delta,
     ) else {
@@ -842,9 +855,8 @@ fn select_sequence(
     }) {
         return Err(ReplacementStatus::SkippedUnsupportedText);
     }
-    if glyphs
-        .iter()
-        .any(|glyph| glyph.op_index != first.op_index || glyph.operand_index != first.operand_index)
+    if glyphs.iter().any(|glyph| glyph.op_index != first.op_index)
+        || !selected_operands_are_contiguous(&page.content, first, last)
     {
         return Err(ReplacementStatus::SkippedUnsupportedText);
     }
@@ -920,18 +932,82 @@ fn inventory_codes(
     }
 }
 
+fn selected_operands_are_contiguous(content: &Content, first: &Glyph, last: &Glyph) -> bool {
+    let Some(operation) = content.operations.get(first.op_index) else {
+        return false;
+    };
+    if first.op_index != last.op_index {
+        return false;
+    }
+    match operation.operator.as_str() {
+        "Tj" => first.operand_index == 0 && last.operand_index == 0,
+        "TJ" => {
+            let Some(Object::Array(items)) = operation.operands.first() else {
+                return false;
+            };
+            if first.operand_index > last.operand_index
+                || last.operand_index >= items.len()
+                || !matches!(items.get(first.operand_index), Some(Object::String(..)))
+                || !matches!(items.get(last.operand_index), Some(Object::String(..)))
+            {
+                return false;
+            }
+            first.operand_index == last.operand_index
+                || items[first.operand_index + 1..last.operand_index]
+                    .iter()
+                    .all(|item| is_tj_number(item) || matches!(item, Object::String(..)))
+        }
+        _ => false,
+    }
+}
+
+fn selected_original_advance(content: &Content, glyphs: &[Glyph]) -> f64 {
+    let mut advance: f64 = glyphs.iter().map(|glyph| glyph.text_advance).sum();
+    let Some(first) = glyphs.first() else {
+        return advance;
+    };
+    let Some(last) = glyphs.last() else {
+        return advance;
+    };
+    if first.op_index != last.op_index {
+        return advance;
+    }
+    let Some(operation) = content.operations.get(first.op_index) else {
+        return advance;
+    };
+    let Some(Object::Array(items)) = operation.operands.first() else {
+        return advance;
+    };
+    if operation.operator != "TJ" || first.operand_index >= last.operand_index {
+        return advance;
+    }
+    let context = first;
+    for item in &items[first.operand_index + 1..last.operand_index] {
+        if let Some(value) = tj_number(item) {
+            advance += -value / 1000.0 * context.font_size * context.horizontal_scale;
+        }
+    }
+    advance
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SelectionSpan {
+    op_index: usize,
+    first_operand_index: usize,
+    first_start: usize,
+    last_operand_index: usize,
+    last_end: usize,
+}
+
 fn rewrite_selected(
     operations: &[Operation],
-    op_index: usize,
-    operand_index: usize,
-    start: usize,
-    end: usize,
+    span: SelectionSpan,
     new_bytes: &[u8],
     tj_delta: f64,
 ) -> Option<Vec<Operation>> {
     let mut output = Vec::with_capacity(operations.len());
     for (index, operation) in operations.iter().enumerate() {
-        if index != op_index {
+        if index != span.op_index {
             output.push(operation.clone());
             continue;
         }
@@ -943,37 +1019,64 @@ fn rewrite_selected(
                 let Object::String(bytes, format) = operation.operands.first()? else {
                     return None;
                 };
-                if operand_index != 0 || end > bytes.len() {
+                if span.first_operand_index != 0
+                    || span.last_operand_index != 0
+                    || span.last_end > bytes.len()
+                    || span.first_start > span.last_end
+                {
                     return None;
                 }
                 let mut array = Vec::new();
-                push_string(&mut array, &bytes[..start], *format);
+                push_string(&mut array, &bytes[..span.first_start], *format);
                 array.push(Object::String(new_bytes.to_vec(), *format));
                 push_delta(&mut array, tj_delta);
-                push_string(&mut array, &bytes[end..], *format);
+                push_string(&mut array, &bytes[span.last_end..], *format);
                 output.push(Operation::new("TJ", vec![Object::Array(array)]));
             }
             "TJ" => {
                 let Object::Array(items) = operation.operands.first()? else {
                     return None;
                 };
-                let Object::String(bytes, format) = items.get(operand_index)? else {
-                    return None;
-                };
-                if end > bytes.len() {
+                if span.first_operand_index > span.last_operand_index
+                    || span.last_operand_index >= items.len()
+                {
                     return None;
                 }
-                let mut replacement = Vec::new();
-                push_string(&mut replacement, &bytes[..start], *format);
-                replacement.push(Object::String(new_bytes.to_vec(), *format));
-                push_delta(&mut replacement, tj_delta);
-                push_string(&mut replacement, &bytes[end..], *format);
+                let Object::String(first_bytes, first_format) =
+                    items.get(span.first_operand_index)?
+                else {
+                    return None;
+                };
+                let Object::String(last_bytes, last_format) = items.get(span.last_operand_index)?
+                else {
+                    return None;
+                };
+                if span.first_start > first_bytes.len()
+                    || span.last_end > last_bytes.len()
+                    || (span.first_operand_index == span.last_operand_index
+                        && span.first_start > span.last_end)
+                    || (span.first_operand_index < span.last_operand_index
+                        && !items[span.first_operand_index + 1..span.last_operand_index]
+                            .iter()
+                            .all(|item| is_tj_number(item) || matches!(item, Object::String(..))))
+                {
+                    return None;
+                }
                 let mut array = Vec::new();
                 for (i, item) in items.iter().enumerate() {
-                    if i == operand_index {
-                        array.extend(replacement.iter().cloned());
-                    } else {
+                    if i < span.first_operand_index || i > span.last_operand_index {
                         array.push(item.clone());
+                    } else if i == span.first_operand_index {
+                        push_string(&mut array, &first_bytes[..span.first_start], *first_format);
+                        array.push(Object::String(new_bytes.to_vec(), *first_format));
+                        push_delta(&mut array, tj_delta);
+                        if span.first_operand_index == span.last_operand_index {
+                            push_string(&mut array, &first_bytes[span.last_end..], *first_format);
+                        }
+                    } else if i == span.last_operand_index {
+                        push_string(&mut array, &last_bytes[span.last_end..], *last_format);
+                    } else {
+                        debug_assert!(is_tj_number(item) || matches!(item, Object::String(..)));
                     }
                 }
                 output.push(Operation::new("TJ", vec![Object::Array(array)]));
@@ -982,6 +1085,18 @@ fn rewrite_selected(
         }
     }
     Some(output)
+}
+
+fn is_tj_number(object: &Object) -> bool {
+    matches!(object, Object::Integer(_) | Object::Real(_))
+}
+
+fn tj_number(object: &Object) -> Option<f64> {
+    match object {
+        Object::Integer(value) => Some(*value as f64),
+        Object::Real(value) => Some(f64::from(*value)),
+        _ => None,
+    }
 }
 
 fn push_string(array: &mut Vec<Object>, bytes: &[u8], format: StringFormat) {
@@ -1498,35 +1613,102 @@ fn inspect_page(
     (inspector.risks, inspector.gaps)
 }
 
-fn has_semantic_risk(doc: &Document, content: &Content, risks: &[ResidualRisk]) -> bool {
+fn page_resource_dicts(doc: &Document, page_id: ObjectId) -> Vec<&lopdf::Dictionary> {
+    let mut resources = Vec::new();
+    let mut current = Some(page_id);
+    let mut seen = HashSet::new();
+    while let Some(id) = current {
+        if !seen.insert(id) {
+            break;
+        }
+        let Ok(page) = doc.get_dictionary(id) else {
+            break;
+        };
+        if let Ok(value) = page.get(b"Resources") {
+            let resolved = doc.dereference(value).ok().map(|(_, object)| object);
+            if let Some(dict) = resolved.and_then(|object| object.as_dict().ok()) {
+                resources.push(dict);
+            }
+        }
+        current = page
+            .get(b"Parent")
+            .ok()
+            .and_then(|object| object.as_reference().ok());
+    }
+    resources
+}
+
+fn properties_dictionary<'a>(
+    doc: &'a Document,
+    resources: &[&'a lopdf::Dictionary],
+    name: &[u8],
+) -> Option<&'a lopdf::Dictionary> {
+    for resource in resources {
+        let Ok(properties) = resource.get(b"Properties") else {
+            continue;
+        };
+        let Some(properties) = doc
+            .dereference(properties)
+            .ok()
+            .and_then(|(_, object)| object.as_dict().ok())
+        else {
+            continue;
+        };
+        let Ok(value) = properties.get(name) else {
+            continue;
+        };
+        let Some(value) = doc.dereference(value).ok().map(|(_, object)| object) else {
+            continue;
+        };
+        if let Ok(dict) = value.as_dict() {
+            return Some(dict);
+        }
+    }
+    None
+}
+
+fn selected_has_actual_text(
+    doc: &Document,
+    page_id: ObjectId,
+    content: &Content,
+    selected_op_index: usize,
+) -> bool {
+    let resources = page_resource_dicts(doc, page_id);
+    let mut actual_stack = Vec::new();
+    for (index, operation) in content.operations.iter().enumerate() {
+        if index == selected_op_index {
+            return actual_stack.iter().any(|actual| *actual);
+        }
+        match operation.operator.as_str() {
+            "BMC" => actual_stack.push(false),
+            "BDC" => {
+                let actual = match operation.operands.get(1) {
+                    Some(Object::Dictionary(dict)) => dict.has(b"ActualText") || dict.has(b"Alt"),
+                    Some(Object::Name(name)) => properties_dictionary(doc, &resources, name)
+                        .is_some_and(|dict| dict.has(b"ActualText") || dict.has(b"Alt")),
+                    _ => false,
+                };
+                actual_stack.push(actual);
+            }
+            "EMC" => {
+                actual_stack.pop();
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn has_semantic_risk(risks: &[ResidualRisk]) -> bool {
     if risks.iter().any(|risk| {
         matches!(
             risk,
-            ResidualRisk::ActualText { .. }
-                | ResidualRisk::Annotation { .. }
-                | ResidualRisk::OptionalContent { .. }
+            ResidualRisk::Annotation { .. } | ResidualRisk::OptionalContent { .. }
         )
     }) {
         return true;
     }
-    if content
-        .operations
-        .iter()
-        .any(|operation| matches!(operation.operator.as_str(), "BMC" | "BDC"))
-    {
-        return true;
-    }
-    let Some(root) = doc
-        .trailer
-        .get(b"Root")
-        .ok()
-        .and_then(|root| doc.dereference(root).ok().map(|(_, value)| value))
-    else {
-        return false;
-    };
-    root.as_dict()
-        .ok()
-        .is_some_and(|catalog| catalog.has(b"StructTreeRoot"))
+    false
 }
 
 fn scan_order(page: u32, page_count: u32) -> Vec<u32> {
@@ -1759,6 +1941,49 @@ mod tests {
         }
     }
 
+    fn kerning_fixture() -> Vec<u8> {
+        let mut fx = Fixture::new();
+        let unicode = to_unicode(&mut fx, &[("30", "0030"), ("31", "0031"), ("32", "0032")]);
+        let font = fx.doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "TrueType",
+            "BaseFont" => "SubsetFont",
+            "FirstChar" => 48,
+            "Widths" => vec![500.into(), 500.into(), 550.into()],
+            "ToUnicode" => unicode,
+        });
+        let content = fx.content_stream(
+            dictionary! {},
+            b"BT /F1 10 Tf 1 0 0 1 100 700 Tm [(0) 40 (1) -20 (2)] TJ ET",
+        );
+        fx.add_page(
+            content,
+            Some(dictionary! { "Font" => dictionary! { "F1" => font } }),
+            vec![],
+        );
+        fx.bytes()
+    }
+
+    fn tagged_without_actual_text_fixture() -> Vec<u8> {
+        let mut fx = Fixture::new();
+        let unicode = to_unicode(&mut fx, &[("30", "0030"), ("31", "0031")]);
+        let font = font(&mut fx, "SubsetFont", unicode, 2);
+        let content = fx.content_stream(
+            dictionary! {},
+            b"BT /F1 10 Tf 1 0 0 1 100 700 Tm (01) Tj ET",
+        );
+        fx.add_page(
+            content,
+            Some(dictionary! { "Font" => dictionary! { "F1" => font } }),
+            vec![],
+        );
+        let struct_tree = fx
+            .doc
+            .add_object(dictionary! { "Type" => "StructTreeRoot" });
+        fx.set_catalog("StructTreeRoot", struct_tree);
+        fx.bytes()
+    }
+
     fn fontless_scan_fixture() -> Vec<u8> {
         let mut fx = Fixture::new();
         let large_content = vec![b' '; 128 * 1024];
@@ -1880,6 +2105,58 @@ mod tests {
         assert!(numbers
             .iter()
             .any(|value| (*value - 50.0).abs() <= f64::EPSILON));
+    }
+
+    #[test]
+    fn replacement_rewrites_multiple_tj_operands_and_keeps_external_kerning() {
+        let input = kerning_fixture();
+        let replacement = TextReplacement {
+            region: region("kerning", 0, 99.0, 695.0, 11.0, 17.0),
+            new_text: "12".into(),
+            expected_text: Some("01".into()),
+        };
+        let result = replace_text_glyphs(&input, &[replacement], &EditOptions::default()).unwrap();
+
+        assert_eq!(result.replacements[0].status, ReplacementStatus::Replaced);
+        assert_eq!(result.replacements[0].original_advance, Some(9.6));
+        assert_eq!(result.replacements[0].new_advance, Some(10.5));
+        assert!((result.replacements[0].tj_delta.unwrap() - 90.0).abs() < 1e-9);
+
+        let (before_doc, before) = first_page_text(&input);
+        let (after_doc, after) = first_page_text(&result.output);
+        assert!((before.glyphs[2].origin.0 - after.glyphs[2].origin.0).abs() <= 0.01);
+        let output_content = Content::decode(
+            &after_doc
+                .get_page_content(after_doc.get_pages()[&1])
+                .unwrap(),
+        )
+        .unwrap();
+        let numbers = tj_numbers(&output_content);
+        assert!(numbers
+            .iter()
+            .any(|value| (*value - 90.0).abs() <= f64::EPSILON));
+        assert!(numbers
+            .iter()
+            .any(|value| (*value + 20.0).abs() <= f64::EPSILON));
+        assert!(before_doc
+            .get_page_content(before_doc.get_pages()[&1])
+            .unwrap()
+            .windows(3)
+            .any(|bytes| bytes == b"(2)"));
+    }
+
+    #[test]
+    fn tagged_document_without_actual_text_can_replace() {
+        let input = tagged_without_actual_text_fixture();
+        let replacement = TextReplacement {
+            region: region("tagged", 0, 99.0, 695.0, 12.0, 17.0),
+            new_text: "11".into(),
+            expected_text: Some("01".into()),
+        };
+        let result = replace_text_glyphs(&input, &[replacement], &EditOptions::default()).unwrap();
+
+        assert_eq!(result.replacements[0].status, ReplacementStatus::Replaced);
+        assert!(result.modified);
     }
 
     #[test]

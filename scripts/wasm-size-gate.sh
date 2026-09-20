@@ -35,11 +35,12 @@
 #   4b0e917   11 separador por índice                    1430909      3     569305    +25
 #   uncommitted reemplazo por reuso de códigos (Fase 1)  1489459  +58550     595009 +25704
 #   uncommitted caché y filtro del barrido                 1490035    +576     595092    +83
+#   selección TJ multioperando + riesgo semántico          1492639   +2604     596304  +1212
 #
 # El grueso (+34198) entra cuando la inspección se conecta al borrado en la Task 7;
 # en la Task 5 el compilador la descartaba por código muerto.
 set -euo pipefail
-CEILING="${1:-1490035}"
+CEILING="${1:-1492639}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/crates/gema-wasm"
 wasm-pack build --target web >/dev/null 2>&1
