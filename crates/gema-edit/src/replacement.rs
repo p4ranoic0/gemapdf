@@ -430,16 +430,13 @@ fn attempt_replacement(
         }
     };
 
-    let (risks, gaps, semantic_risk, form_risk) = {
+    let (risks, gaps, semantic_risk) = {
         let page = cache.pages[page_index]
             .as_ref()
             .expect("page was inserted or cached");
         let (risks, gaps) = inspect_page(doc, page_id, replacement, &page.content, meter);
         let semantic_risk = has_semantic_risk(&risks);
-        let form_risk = risks
-            .iter()
-            .any(|risk| matches!(risk, ResidualRisk::FormXObject { .. }));
-        (risks, gaps, semantic_risk, form_risk)
+        (risks, gaps, semantic_risk)
     };
     if semantic_risk {
         return Ok(Attempt {
@@ -449,15 +446,9 @@ fn attempt_replacement(
             gaps,
         });
     }
-    if form_risk {
-        return Ok(Attempt {
-            status: ReplacementStatus::SkippedUnsupportedText,
-            report: AttemptReport::default(),
-            risks,
-            gaps,
-        });
-    }
-
+    // A Form XObject elsewhere on the page is a residual risk, not proof that
+    // this selection came from the form. `select_sequence` rejects only an
+    // unsupported operation overlapping the selected glyph range.
     let selected = match select_sequence(
         cache.pages[page_index]
             .as_ref()
@@ -2003,6 +1994,30 @@ mod tests {
         fx.bytes()
     }
 
+    fn direct_text_with_form_fixture() -> Vec<u8> {
+        let mut fx = Fixture::new();
+        let unicode = to_unicode(&mut fx, &[("30", "0030"), ("31", "0031")]);
+        let font = font(&mut fx, "SubsetFont", unicode, 2);
+        let form = fx.doc.add_object(lopdf::Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Form",
+                "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()]
+            },
+            b"BT /F1 10 Tf (form text) Tj ET".to_vec(),
+        ));
+        let content = fx.content_stream(
+            dictionary! {},
+            b"q /Fx1 Do Q BT /F1 10 Tf 1 0 0 1 100 700 Tm (01) Tj ET",
+        );
+        let resources = dictionary! {
+            "Font" => dictionary! { "F1" => font },
+            "XObject" => dictionary! { "Fx1" => form },
+        };
+        fx.add_page(content, Some(resources), vec![]);
+        fx.bytes()
+    }
+
     fn fontless_scan_fixture() -> Vec<u8> {
         let mut fx = Fixture::new();
         let large_content = vec![b' '; 128 * 1024];
@@ -2190,6 +2205,25 @@ mod tests {
 
         assert_eq!(result.replacements[0].status, ReplacementStatus::Replaced);
         assert_eq!(result.replacements[0].original_text.as_deref(), Some("01"));
+        assert!(result.modified);
+    }
+
+    #[test]
+    fn replacement_keeps_direct_text_editable_beside_form_xobject() {
+        let input = direct_text_with_form_fixture();
+        let replacement = TextReplacement {
+            region: region("direct-beside-form", 0, 99.0, 695.0, 12.0, 17.0),
+            new_text: "10".into(),
+            expected_text: Some("01".into()),
+        };
+        let result = replace_text_glyphs(&input, &[replacement], &EditOptions::default()).unwrap();
+
+        assert_eq!(result.replacements[0].status, ReplacementStatus::Replaced);
+        assert_eq!(result.replacements[0].original_text.as_deref(), Some("01"));
+        assert!(result
+            .residual_risks
+            .iter()
+            .any(|risk| matches!(risk, ResidualRisk::FormXObject { name, .. } if name == "Fx1")));
         assert!(result.modified);
     }
 
