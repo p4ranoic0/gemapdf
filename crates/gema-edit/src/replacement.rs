@@ -703,10 +703,20 @@ fn attempt_replacement(
         operations: rewritten,
     };
     let Ok(encoded_bytes) = encoded.encode() else {
-        return Ok(rejected(
-            ReplacementStatus::SkippedContent,
-            AttemptReport::default(),
-        ));
+        return Ok(Attempt {
+            status: ReplacementStatus::SkippedContent,
+            report: AttemptReport {
+                original_text,
+                original_advance: Some(original_advance),
+                new_advance: Some(new_advance),
+                tj_delta: Some(tj_delta),
+                scanned_pages: scan.scanned_pages,
+                scan_incomplete: scan.incomplete,
+                ..AttemptReport::default()
+            },
+            risks,
+            gaps,
+        });
     };
     let old_contents = doc.get_page_contents(page_id);
     let old_contents_object = doc
@@ -1169,7 +1179,10 @@ fn font_definitions(
         let mut mapping = HashMap::new();
         if let Ok(tounicode) = dict.get(b"ToUnicode") {
             if let Ok((_, Object::Stream(stream))) = doc.dereference(tounicode) {
-                mapping = parse_tounicode(&stream.content);
+                let content = stream
+                    .decompressed_content()
+                    .unwrap_or_else(|_| stream.content.clone());
+                mapping = parse_tounicode(&content);
             }
         }
         let has_declared_encoding = dict.get(b"Encoding").is_ok();
@@ -1805,7 +1818,7 @@ fn dedup_sort<T: Ord>(values: &mut Vec<T>) {
 mod tests {
     use super::*;
     use crate::test_support::Fixture;
-    use lopdf::{dictionary, Object};
+    use lopdf::{dictionary, Object, Stream};
 
     fn region(id: &str, page: u32, x: f64, y: f64, width: f64, height: f64) -> TextRegion {
         TextRegion {
@@ -1818,15 +1831,25 @@ mod tests {
         }
     }
 
-    fn to_unicode(fx: &mut Fixture, entries: &[(&str, &str)]) -> Object {
+    fn unicode_body(entries: &[(&str, &str)]) -> Vec<u8> {
         let mut body = format!("{} beginbfchar\n", entries.len()).into_bytes();
         for (code, unicode) in entries {
             body.extend_from_slice(format!(" <{code}> <{unicode}>\n").as_bytes());
         }
         body.extend_from_slice(b"endbfchar\n");
+        body
+    }
+
+    fn to_unicode(fx: &mut Fixture, entries: &[(&str, &str)]) -> Object {
         fx.doc
-            .add_object(lopdf::Stream::new(dictionary! {}, body))
+            .add_object(Stream::new(dictionary! {}, unicode_body(entries)))
             .into()
+    }
+
+    fn compressed_to_unicode(fx: &mut Fixture, entries: &[(&str, &str)]) -> Object {
+        let mut stream = Stream::new(dictionary! {}, unicode_body(entries));
+        let _ = stream.compress();
+        fx.doc.add_object(stream).into()
     }
 
     fn font(fx: &mut Fixture, base: &str, unicode: Object, width_count: usize) -> Object {
@@ -2015,6 +2038,22 @@ mod tests {
             "XObject" => dictionary! { "Fx1" => form },
         };
         fx.add_page(content, Some(resources), vec![]);
+        fx.bytes()
+    }
+
+    fn compressed_tounicode_fixture() -> Vec<u8> {
+        let mut fx = Fixture::new();
+        let unicode = compressed_to_unicode(&mut fx, &[("30", "0030"), ("31", "0031")]);
+        let font = font(&mut fx, "SubsetFont", unicode, 2);
+        let content = fx.content_stream(
+            dictionary! {},
+            b"BT /F1 10 Tf 1 0 0 1 100 700 Tm (01) Tj ET",
+        );
+        fx.add_page(
+            content,
+            Some(dictionary! { "Font" => dictionary! { "F1" => font } }),
+            vec![],
+        );
         fx.bytes()
     }
 
@@ -2224,6 +2263,21 @@ mod tests {
             .residual_risks
             .iter()
             .any(|risk| matches!(risk, ResidualRisk::FormXObject { name, .. } if name == "Fx1")));
+        assert!(result.modified);
+    }
+
+    #[test]
+    fn replacement_reads_compressed_tounicode_streams() {
+        let input = compressed_tounicode_fixture();
+        let replacement = TextReplacement {
+            region: region("compressed-tounicode", 0, 99.0, 695.0, 12.0, 17.0),
+            new_text: "10".into(),
+            expected_text: Some("01".into()),
+        };
+        let result = replace_text_glyphs(&input, &[replacement], &EditOptions::default()).unwrap();
+
+        assert_eq!(result.replacements[0].status, ReplacementStatus::Replaced);
+        assert_eq!(result.replacements[0].original_text.as_deref(), Some("01"));
         assert!(result.modified);
     }
 
