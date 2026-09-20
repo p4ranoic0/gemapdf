@@ -218,7 +218,6 @@ struct PageInfo {
 #[derive(Debug)]
 struct Attempt {
     status: ReplacementStatus,
-    content: Option<Content>,
     report: AttemptReport,
     risks: Vec<ResidualRisk>,
     gaps: Vec<InspectionGap>,
@@ -272,7 +271,6 @@ pub fn replace_text_glyphs(
     for (index, replacement) in replacements.iter().enumerate() {
         let mut candidate = doc.clone();
         let result = attempt_replacement(&mut candidate, replacement, opts, &mut meter)?;
-        let _ = result.content.as_ref();
         reports[index].status = result.status;
         reports[index].replaced_glyphs = result.report.replaced_glyphs;
         reports[index].original_text = result.report.original_text;
@@ -384,7 +382,6 @@ fn attempt_replacement(
     if has_semantic_risk(doc, &content, &risks) {
         return Ok(Attempt {
             status: ReplacementStatus::SkippedSemantics,
-            content: None,
             report: AttemptReport::default(),
             risks,
             gaps,
@@ -396,7 +393,6 @@ fn attempt_replacement(
     {
         return Ok(Attempt {
             status: ReplacementStatus::SkippedUnsupportedText,
-            content: None,
             report: AttemptReport::default(),
             risks,
             gaps,
@@ -416,7 +412,6 @@ fn attempt_replacement(
         Ok(None) => {
             return Ok(Attempt {
                 status: ReplacementStatus::NothingFound,
-                content: None,
                 report: AttemptReport::default(),
                 risks,
                 gaps,
@@ -425,7 +420,6 @@ fn attempt_replacement(
         Err(status) => {
             return Ok(Attempt {
                 status,
-                content: None,
                 report: AttemptReport::default(),
                 risks,
                 gaps,
@@ -441,7 +435,6 @@ fn attempt_replacement(
     {
         return Ok(Attempt {
             status: ReplacementStatus::SkippedStaleSelection,
-            content: None,
             report: AttemptReport {
                 original_text,
                 ..AttemptReport::default()
@@ -498,7 +491,6 @@ fn attempt_replacement(
     if !scan.complete {
         return Ok(Attempt {
             status: ReplacementStatus::SkippedNoReusableCode,
-            content: None,
             report: AttemptReport {
                 original_text,
                 scanned_pages: scan.scanned_pages,
@@ -517,7 +509,6 @@ fn attempt_replacement(
         if unique.len() > 1 {
             return Ok(Attempt {
                 status: ReplacementStatus::SkippedAmbiguousMapping,
-                content: None,
                 report: AttemptReport {
                     original_text,
                     scanned_pages: scan.scanned_pages,
@@ -541,7 +532,6 @@ fn attempt_replacement(
     if context.font_size.abs() <= f64::EPSILON || context.horizontal_scale.abs() <= f64::EPSILON {
         return Ok(Attempt {
             status: ReplacementStatus::SkippedUnsupportedText,
-            content: None,
             report: AttemptReport {
                 original_text,
                 scanned_pages: scan.scanned_pages,
@@ -566,7 +556,6 @@ fn attempt_replacement(
     if delta.abs() > opts.max_width_delta_em * context.font_size.abs() {
         return Ok(Attempt {
             status: ReplacementStatus::SkippedLayout,
-            content: None,
             report: AttemptReport {
                 original_text,
                 original_advance: Some(original_advance),
@@ -590,7 +579,6 @@ fn attempt_replacement(
     {
         return Ok(Attempt {
             status: ReplacementStatus::SkippedUnsupportedText,
-            content: None,
             report: AttemptReport {
                 original_text,
                 original_advance: Some(original_advance),
@@ -618,7 +606,6 @@ fn attempt_replacement(
     ) else {
         return Ok(Attempt {
             status: ReplacementStatus::SkippedUnsupportedText,
-            content: None,
             report: AttemptReport {
                 original_text,
                 original_advance: Some(original_advance),
@@ -673,7 +660,6 @@ fn attempt_replacement(
         doc.objects.remove(&new_stream);
         return Ok(Attempt {
             status: ReplacementStatus::SkippedVerification,
-            content: None,
             report: AttemptReport {
                 replaced_glyphs: selected.glyphs.len(),
                 original_text,
@@ -692,10 +678,8 @@ fn attempt_replacement(
             doc.objects.remove(&old);
         }
     }
-    let _ = old_contents;
     Ok(Attempt {
         status: ReplacementStatus::Replaced,
-        content: Some(encoded),
         report: AttemptReport {
             replaced_glyphs: selected.glyphs.len(),
             original_text,
@@ -713,7 +697,6 @@ fn attempt_replacement(
 fn rejected(status: ReplacementStatus, report: AttemptReport) -> Attempt {
     Attempt {
         status,
-        content: None,
         report,
         risks: Vec::new(),
         gaps: Vec::new(),
@@ -1665,10 +1648,169 @@ mod tests {
         }
     }
 
+    fn varying_width_fixture() -> Vec<u8> {
+        let mut fx = Fixture::new();
+        let unicode = to_unicode(&mut fx, &[("30", "0030"), ("31", "0031")]);
+        let font = fx.doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "TrueType",
+            "BaseFont" => "SubsetFont",
+            "FirstChar" => 48,
+            "Widths" => vec![50.into(), 500.into()],
+            "ToUnicode" => unicode,
+        });
+        let content = fx.content_stream(
+            dictionary! {},
+            b"BT /F1 10 Tf 1 0 0 1 100 700 Tm [(01) 40 (1)] TJ ET",
+        );
+        fx.add_page(
+            content,
+            Some(dictionary! { "Font" => dictionary! { "F1" => font } }),
+            vec![],
+        );
+        fx.bytes()
+    }
+
+    fn varying_replacement(new_text: &str) -> TextReplacement {
+        TextReplacement {
+            region: region("varying", 0, 99.0, 695.0, 5.0, 17.0),
+            new_text: new_text.into(),
+            expected_text: Some("01".into()),
+        }
+    }
+
+    fn first_page_text(bytes: &[u8]) -> (Document, PageText) {
+        let doc = Document::load_mem(bytes).unwrap();
+        let page = doc.get_pages()[&1];
+        let content = Content::decode(&doc.get_page_content(page).unwrap()).unwrap();
+        let text = interpret_content(&doc, page, &content).unwrap();
+        (doc, text)
+    }
+
+    fn tj_numbers(content: &Content) -> Vec<f64> {
+        content
+            .operations
+            .iter()
+            .filter(|operation| operation.operator == "TJ")
+            .flat_map(|operation| operation.operands.iter())
+            .filter_map(|operand| match operand {
+                Object::Array(items) => Some(items),
+                _ => None,
+            })
+            .flat_map(|items| items.iter())
+            .filter_map(|item| match item {
+                Object::Integer(value) => Some(*value as f64),
+                Object::Real(value) => Some(f64::from(*value)),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
     fn cmap_parser_reads_bfchar() {
         let map = parse_tounicode(b"1 beginbfchar <0001> <0031> endbfchar");
         assert_eq!(map.get(&vec![0, 1]), Some(&"1".to_string()));
+    }
+
+    #[test]
+    fn replacement_emits_negative_tj_for_shorter_text() {
+        let input = varying_width_fixture();
+        let result =
+            replace_text_glyphs(&input, &[varying_replacement("1")], &EditOptions::default())
+                .unwrap();
+        assert_eq!(result.replacements[0].status, ReplacementStatus::Replaced);
+        assert_eq!(result.replacements[0].original_advance, Some(5.5));
+        assert_eq!(result.replacements[0].new_advance, Some(5.0));
+        assert_eq!(result.replacements[0].tj_delta, Some(-50.0));
+
+        let (_, before) = first_page_text(&input);
+        let (output_doc, after) = first_page_text(&result.output);
+        assert!((before.glyphs[2].origin.0 - after.glyphs[1].origin.0).abs() <= 0.01);
+        let output_content = Content::decode(
+            &output_doc
+                .get_page_content(output_doc.get_pages()[&1])
+                .unwrap(),
+        )
+        .unwrap();
+        let numbers = tj_numbers(&output_content);
+        assert!(numbers
+            .iter()
+            .any(|value| (*value + 50.0).abs() <= f64::EPSILON));
+        assert!(numbers
+            .iter()
+            .any(|value| (*value - 40.0).abs() <= f64::EPSILON));
+    }
+
+    #[test]
+    fn replacement_emits_positive_tj_for_longer_text() {
+        let input = varying_width_fixture();
+        let result = replace_text_glyphs(
+            &input,
+            &[varying_replacement("010")],
+            &EditOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(result.replacements[0].status, ReplacementStatus::Replaced);
+        assert_eq!(result.replacements[0].original_advance, Some(5.5));
+        assert_eq!(result.replacements[0].new_advance, Some(6.0));
+        assert_eq!(result.replacements[0].tj_delta, Some(50.0));
+        let output_doc = Document::load_mem(&result.output).unwrap();
+        let output_content = Content::decode(
+            &output_doc
+                .get_page_content(output_doc.get_pages()[&1])
+                .unwrap(),
+        )
+        .unwrap();
+        let numbers = tj_numbers(&output_content);
+        assert!(numbers
+            .iter()
+            .any(|value| (*value - 50.0).abs() <= f64::EPSILON));
+    }
+
+    #[test]
+    fn layout_limit_rejects_over_threshold() {
+        let input = varying_width_fixture();
+        let options = EditOptions {
+            max_width_delta_em: 0.04,
+            ..EditOptions::default()
+        };
+        let result = replace_text_glyphs(&input, &[varying_replacement("1")], &options).unwrap();
+        assert_eq!(
+            result.replacements[0].status,
+            ReplacementStatus::SkippedLayout
+        );
+        assert_eq!(result.output, input);
+        assert!(!result.modified);
+    }
+
+    #[test]
+    fn layout_limit_accepts_just_below_threshold() {
+        let input = varying_width_fixture();
+        let options = EditOptions {
+            max_width_delta_em: 0.06,
+            ..EditOptions::default()
+        };
+        let result = replace_text_glyphs(&input, &[varying_replacement("1")], &options).unwrap();
+        assert_eq!(result.replacements[0].status, ReplacementStatus::Replaced);
+        assert_eq!(result.replacements[0].tj_delta, Some(-50.0));
+        assert!(result.modified);
+    }
+
+    #[test]
+    fn stale_selection_is_byte_identical() {
+        let input = varying_width_fixture();
+        let replacement = TextReplacement {
+            expected_text: Some("00".into()),
+            ..varying_replacement("1")
+        };
+        let result = replace_text_glyphs(&input, &[replacement], &EditOptions::default()).unwrap();
+        assert_eq!(
+            result.replacements[0].status,
+            ReplacementStatus::SkippedStaleSelection
+        );
+        assert_eq!(result.replacements[0].original_text, Some("01".into()));
+        assert_eq!(result.output, input);
+        assert!(!result.modified);
     }
 
     #[test]
