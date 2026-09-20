@@ -208,7 +208,7 @@ struct CodeCandidate {
     font_width: f64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct PageInfo {
     content: Content,
     text: PageText,
@@ -234,6 +234,19 @@ struct AttemptReport {
     scan_incomplete: bool,
 }
 
+#[derive(Debug, Default)]
+struct ScanCache {
+    fonts: HashMap<ObjectId, HashMap<Vec<u8>, FontDefinition>>,
+    page_indices: HashMap<ObjectId, usize>,
+    pages: Vec<Option<PageInfo>>,
+}
+
+#[derive(Debug)]
+enum PageLoadError {
+    Budget(LimitKind),
+    Content,
+}
+
 /// Reemplaza texto reutilizando códigos ya observados en runs visibles.
 pub fn replace_text_glyphs(
     input: &[u8],
@@ -253,6 +266,7 @@ pub fn replace_text_glyphs(
     let mut gaps = Vec::new();
     let mut modified = false;
     let mut meter = BudgetMeter::new(&opts.budget);
+    let mut scan_cache = ScanCache::default();
 
     if doc.is_encrypted() {
         for report in &mut reports {
@@ -269,8 +283,7 @@ pub fn replace_text_glyphs(
     }
 
     for (index, replacement) in replacements.iter().enumerate() {
-        let mut candidate = doc.clone();
-        let result = attempt_replacement(&mut candidate, replacement, opts, &mut meter)?;
+        let result = attempt_replacement(&mut doc, replacement, opts, &mut meter, &mut scan_cache)?;
         reports[index].status = result.status;
         reports[index].replaced_glyphs = result.report.replaced_glyphs;
         reports[index].original_text = result.report.original_text;
@@ -282,8 +295,14 @@ pub fn replace_text_glyphs(
         risks.extend(result.risks);
         gaps.extend(result.gaps);
         if result.status == ReplacementStatus::Replaced {
-            doc = candidate;
             modified = true;
+            if let Some(page_number) = replacement.region.page.checked_add(1) {
+                if let Some(page_id) = doc.get_pages().get(&page_number).copied() {
+                    if let Some(page_index) = scan_cache.page_indices.remove(&page_id) {
+                        scan_cache.pages[page_index] = None;
+                    }
+                }
+            }
         }
     }
 
@@ -327,11 +346,53 @@ fn finish(
     }
 }
 
+fn cached_fonts(
+    doc: &Document,
+    page_id: ObjectId,
+    cache: &mut ScanCache,
+) -> Result<HashMap<Vec<u8>, FontDefinition>, PageLoadError> {
+    if let Some(fonts) = cache.fonts.get(&page_id) {
+        return Ok(fonts.clone());
+    }
+    let fonts = font_definitions(doc, page_id).map_err(|_| PageLoadError::Content)?;
+    cache.fonts.insert(page_id, fonts.clone());
+    Ok(fonts)
+}
+
+fn cached_page_info(
+    doc: &Document,
+    page_id: ObjectId,
+    opts: &EditOptions,
+    meter: &mut BudgetMeter,
+    cache: &mut ScanCache,
+) -> Result<usize, PageLoadError> {
+    if let Some(&page_index) = cache.page_indices.get(&page_id) {
+        return Ok(page_index);
+    }
+    let fonts = cached_fonts(doc, page_id, cache)?;
+    let content_bytes =
+        read_page_content_bounded(doc, page_id, opts, meter).map_err(|error| match error {
+            StreamReadError::Budget(kind) => PageLoadError::Budget(kind),
+            _ => PageLoadError::Content,
+        })?;
+    let content = Content::decode(&content_bytes).map_err(|_| PageLoadError::Content)?;
+    let text = interpret_content(doc, page_id, &content).map_err(|_| PageLoadError::Content)?;
+    let page_index = cache.pages.len();
+    cache.pages.push(Some(PageInfo {
+        content,
+        text,
+        fonts,
+    }));
+    cache.page_indices.insert(page_id, page_index);
+    Ok(page_index)
+}
+
 fn attempt_replacement(
     doc: &mut Document,
     replacement: &TextReplacement,
     opts: &EditOptions,
     meter: &mut BudgetMeter,
+    cache: &mut ScanCache,
 ) -> Result<Attempt, EditError> {
     let invalid = !valid_region(&replacement.region) || replacement.new_text.is_empty();
     let Some(page_id) = replacement
@@ -358,19 +419,10 @@ fn attempt_replacement(
         ));
     }
 
-    let content_bytes = match read_page_content_bounded(doc, page_id, opts, meter) {
-        Ok(bytes) => bytes,
-        Err(StreamReadError::Budget(kind)) => return Err(EditError::LimitExceeded(kind)),
-        Err(_) => {
-            return Ok(rejected(
-                ReplacementStatus::SkippedContent,
-                AttemptReport::default(),
-            ))
-        }
-    };
-    let content = match Content::decode(&content_bytes) {
-        Ok(content) => content,
-        Err(_) => {
+    let page_index = match cached_page_info(doc, page_id, opts, meter, cache) {
+        Ok(page_index) => page_index,
+        Err(PageLoadError::Budget(kind)) => return Err(EditError::LimitExceeded(kind)),
+        Err(PageLoadError::Content) => {
             return Ok(rejected(
                 ReplacementStatus::SkippedContent,
                 AttemptReport::default(),
@@ -378,8 +430,18 @@ fn attempt_replacement(
         }
     };
 
-    let (risks, gaps) = inspect_page(doc, page_id, replacement, &content, meter);
-    if has_semantic_risk(doc, &content, &risks) {
+    let (risks, gaps, semantic_risk, form_risk) = {
+        let page = cache.pages[page_index]
+            .as_ref()
+            .expect("page was inserted or cached");
+        let (risks, gaps) = inspect_page(doc, page_id, replacement, &page.content, meter);
+        let semantic_risk = has_semantic_risk(doc, &page.content, &risks);
+        let form_risk = risks
+            .iter()
+            .any(|risk| matches!(risk, ResidualRisk::FormXObject { .. }));
+        (risks, gaps, semantic_risk, form_risk)
+    };
+    if semantic_risk {
         return Ok(Attempt {
             status: ReplacementStatus::SkippedSemantics,
             report: AttemptReport::default(),
@@ -387,10 +449,7 @@ fn attempt_replacement(
             gaps,
         });
     }
-    if risks
-        .iter()
-        .any(|risk| matches!(risk, ResidualRisk::FormXObject { .. }))
-    {
+    if form_risk {
         return Ok(Attempt {
             status: ReplacementStatus::SkippedUnsupportedText,
             report: AttemptReport::default(),
@@ -399,15 +458,12 @@ fn attempt_replacement(
         });
     }
 
-    let page_text =
-        interpret_content(doc, page_id, &content).map_err(|e| EditError::Parse(e.to_string()))?;
-    let fonts = font_definitions(doc, page_id)?;
-    let page = PageInfo {
-        content: content.clone(),
-        text: page_text,
-        fonts,
-    };
-    let selected = match select_sequence(&page, &replacement.region) {
+    let selected = match select_sequence(
+        cache.pages[page_index]
+            .as_ref()
+            .expect("page was inserted or cached"),
+        &replacement.region,
+    ) {
         Ok(Some(selected)) => selected,
         Ok(None) => {
             return Ok(Attempt {
@@ -446,34 +502,49 @@ fn attempt_replacement(
 
     let mut scan = ScanResult::default();
     let order = scan_order(replacement.region.page, doc.get_pages().len() as u32);
-    for page_number in order.into_iter().take(opts.max_scan_pages) {
-        scan.scanned_pages += 1;
+    for page_number in order {
+        if scan.scanned_pages >= opts.max_scan_pages {
+            scan.incomplete = true;
+            break;
+        }
         let Some(other_id) = doc.get_pages().get(&(page_number + 1)).copied() else {
             continue;
         };
-        let bytes = match read_page_content_bounded(doc, other_id, opts, meter) {
-            Ok(bytes) => bytes,
-            Err(StreamReadError::Budget(kind)) => return Err(EditError::LimitExceeded(kind)),
-            Err(_) => {
+        let other_fonts = match cached_fonts(doc, other_id, cache) {
+            Ok(fonts) => fonts,
+            Err(PageLoadError::Budget(_)) => {
+                scan.incomplete = true;
+                break;
+            }
+            Err(PageLoadError::Content) => {
                 scan.incomplete = true;
                 continue;
             }
         };
-        let Ok(other_content) = Content::decode(&bytes) else {
-            scan.incomplete = true;
+        if !other_fonts
+            .values()
+            .any(|font| font.key == selected.font_key)
+        {
             continue;
+        }
+        scan.scanned_pages += 1;
+        let other_page_index = match cached_page_info(doc, other_id, opts, meter, cache) {
+            Ok(page_index) => page_index,
+            Err(PageLoadError::Budget(_)) => {
+                scan.incomplete = true;
+                break;
+            }
+            Err(PageLoadError::Content) => {
+                scan.incomplete = true;
+                continue;
+            }
         };
-        let Ok(other_text) = interpret_content(doc, other_id, &other_content) else {
-            scan.incomplete = true;
-            continue;
-        };
-        let Ok(other_fonts) = font_definitions(doc, other_id) else {
-            scan.incomplete = true;
-            continue;
-        };
+        let other_page = cache.pages[other_page_index]
+            .as_ref()
+            .expect("page was inserted or cached");
         inventory_codes(
-            &other_content,
-            &other_text,
+            &other_page.content,
+            &other_page.text,
             &other_fonts,
             selected.font_key,
             &mut scan.codes,
@@ -592,16 +663,21 @@ fn attempt_replacement(
             gaps,
         });
     }
+    let new_bytes = chosen
+        .iter()
+        .flat_map(|c| c.bytes.clone())
+        .collect::<Vec<_>>();
     let Some(rewritten) = rewrite_selected(
-        &content.operations,
+        &cache.pages[page_index]
+            .as_ref()
+            .expect("page was inserted or cached")
+            .content
+            .operations,
         first.op_index,
         first.operand_index,
         first.byte_offset,
         last.byte_offset + usize::from(last.code_len),
-        &chosen
-            .iter()
-            .flat_map(|c| c.bytes.clone())
-            .collect::<Vec<_>>(),
+        &new_bytes,
         tj_delta,
     ) else {
         return Ok(Attempt {
@@ -646,7 +722,10 @@ fn attempt_replacement(
         .and_then(|after_content| interpret_content(doc, page_id, &after_content).ok())
         .is_some_and(|after| {
             verify_suffix(
-                &page.text,
+                &cache.pages[page_index]
+                    .as_ref()
+                    .expect("page was inserted or cached")
+                    .text,
                 &after,
                 selected.start,
                 selected.end,
@@ -1118,6 +1197,7 @@ fn cmap_tokens(data: &[u8]) -> Vec<Tok> {
     let mut index = 0;
     while index < data.len() {
         match data[index] {
+            b'<' if data.get(index + 1) == Some(&b'<') => index += 2,
             b'<' if data.get(index + 1) != Some(&b'<') => {
                 let start = index + 1;
                 index = start;
@@ -1679,6 +1759,33 @@ mod tests {
         }
     }
 
+    fn fontless_scan_fixture() -> Vec<u8> {
+        let mut fx = Fixture::new();
+        let large_content = vec![b' '; 128 * 1024];
+        for _ in 0..3 {
+            let content = fx.content_stream(dictionary! {}, &large_content);
+            fx.add_page(content, None, vec![]);
+        }
+
+        let unicode = to_unicode(&mut fx, &[("30", "0030"), ("31", "0031")]);
+        let target_font = font(&mut fx, "SubsetFont", unicode, 2);
+        let target_content = fx.content_stream(
+            dictionary! {},
+            b"BT /F1 10 Tf 1 0 0 1 100 700 Tm (01) Tj ET",
+        );
+        fx.add_page(
+            target_content,
+            Some(dictionary! { "Font" => dictionary! { "F1" => target_font } }),
+            vec![],
+        );
+
+        for _ in 0..3 {
+            let content = fx.content_stream(dictionary! {}, &large_content);
+            fx.add_page(content, None, vec![]);
+        }
+        fx.bytes()
+    }
+
     fn first_page_text(bytes: &[u8]) -> (Document, PageText) {
         let doc = Document::load_mem(bytes).unwrap();
         let page = doc.get_pages()[&1];
@@ -1709,6 +1816,14 @@ mod tests {
     #[test]
     fn cmap_parser_reads_bfchar() {
         let map = parse_tounicode(b"1 beginbfchar <0001> <0031> endbfchar");
+        assert_eq!(map.get(&vec![0, 1]), Some(&"1".to_string()));
+    }
+
+    #[test]
+    fn cmap_parser_skips_dictionary_delimiters() {
+        let map = parse_tounicode(
+            b"1 beginbfchar << /Registry (Adobe) /Ordering (UCS) >> <0001> <0031> endbfchar",
+        );
         assert_eq!(map.get(&vec![0, 1]), Some(&"1".to_string()));
     }
 
@@ -1811,6 +1926,36 @@ mod tests {
         assert_eq!(result.replacements[0].original_text, Some("01".into()));
         assert_eq!(result.output, input);
         assert!(!result.modified);
+    }
+
+    #[test]
+    fn scan_skips_large_pages_without_the_selected_font_and_reuses_cache() {
+        let input = fontless_scan_fixture();
+        let replacements = (0..3)
+            .map(|index| TextReplacement {
+                region: region(&format!("missing-{index}"), 3, 99.0, 695.0, 12.0, 17.0),
+                new_text: "2".into(),
+                expected_text: Some("01".into()),
+            })
+            .collect::<Vec<_>>();
+        let options = EditOptions {
+            budget: crate::options::ObjectBudget {
+                max_streams: 1,
+                max_total_decompressed_bytes: 1024,
+                ..crate::options::ObjectBudget::default()
+            },
+            ..EditOptions::default()
+        };
+
+        let result = replace_text_glyphs(&input, &replacements, &options).unwrap();
+
+        assert_eq!(result.output, input);
+        assert!(!result.modified);
+        for report in &result.replacements {
+            assert_eq!(report.status, ReplacementStatus::SkippedNoReusableCode);
+            assert_eq!(report.scanned_pages, 1);
+            assert!(report.scan_incomplete);
+        }
     }
 
     #[test]
