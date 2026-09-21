@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 gema-compress = { path = "../crates/gema-compress" }
+gema-edit = { path = "../crates/gema-edit" }
 
 [[bin]]
 name = "analyze"
@@ -28,6 +29,13 @@ bench = false
 [[bin]]
 name = "compress_with_control"
 path = "fuzz_targets/compress_with_control.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "edit_text"
+path = "fuzz_targets/edit_text.rs"
 test = false
 doc = false
 bench = false

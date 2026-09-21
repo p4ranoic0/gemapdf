@@ -5,6 +5,27 @@ All notable changes to GemaPDF are documented in this file. The project follows
 
 ## Unreleased
 
+### Security
+
+- `crossbeam-epoch` 0.9.18 → 0.9.21 (RUSTSEC-2026-0204), reached transitively through `rayon`
+  from `gema-compress`, so it was in the published tree, not only in dev. Lockfile-only change.
+  Measured cost in the `.wasm`: +50 bytes raw, +59 gzip (A/B against the unchanged lockfile,
+  which rebuilds the published 0.7.0 artifact byte for byte at 1 488 322).
+
+### Tooling
+
+- `cargo deny` now checks `advisories`, in CI and in the pre-commit hook. It never did: both ran
+  `check bans licenses sources`, and `deny.toml` had no `[advisories]` section, which is how the
+  advisory above went unnoticed. RUSTSEC-2026-0192 (`ttf-parser` unmaintained, pinned by
+  `lopdf` 0.43, no safe upgrade) is ignored by id in `deny.toml`, with the reason and the
+  condition that lifts it.
+- New fuzz target `edit_text`, covering `remove_text_glyphs_with` and `replace_text_glyphs`.
+  `gema-edit` had no fuzz target at all, and its replacement path is the newest parser code.
+- Fuzzing runs daily in CI (all four targets, 120 s each, corpus seeded from the repo fixture and
+  kept across runs); crashes are uploaded as artifacts. It does not run on push.
+- CI caches Cargo builds and installs `wasm-pack` 0.15.0 from the official binary instead of
+  compiling it on every run (77 s measured in run 35536266044).
+
 ## 0.7.0 — 2026-09-20
 
 ### Added

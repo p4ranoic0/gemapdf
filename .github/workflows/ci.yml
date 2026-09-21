@@ -1,9 +1,17 @@
 name: ci
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  # El fuzzing no entra en el camino de cada push: se paga una vez por día.
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # El evento entra en el grupo: si no, un push a main a medianoche cancela el
+  # fuzzing diario que está corriendo sobre la misma ref.
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 jobs:
   fmt:
@@ -21,6 +29,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy
+      - uses: Swatinem/rust-cache@v2
       - run: cargo clippy -p gema-compress --all-targets --no-default-features -- -D warnings
       - run: cargo clippy -p gema-cli -p gema-wasm --all-targets -- -D warnings
       # variante con el modo perceptual (feature opcional, spec 2026-07-11)
@@ -34,6 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
       - run: cargo test -p gema-compress --no-default-features
       # variante con el modo perceptual (feature opcional, spec 2026-07-11)
       - run: cargo test -p gema-compress --features perceptual
@@ -53,6 +63,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
       # blindaje del Beta: el feature perceptual no debe colarse al árbol wasm
       - name: dependencias perceptuales fuera del árbol de gema-wasm
         run: |
@@ -60,17 +71,82 @@ jobs:
             echo "::error::gema-wasm arrastra una dependencia perceptual — el feature se coló"
             exit 1
           fi
-      - run: cargo install wasm-pack --version 0.15.0 --locked
+      # `cargo install wasm-pack` lo compila desde fuente en cada corrida:
+      # 77 s medidos en la corrida 35536266044. El release oficial trae el
+      # binario ya construido y la versión queda fijada igual.
+      - name: wasm-pack 0.15.0 (binario oficial, sin compilar)
+        run: |
+          curl -sSfL https://github.com/rustwasm/wasm-pack/releases/download/v0.15.0/wasm-pack-v0.15.0-x86_64-unknown-linux-musl.tar.gz \
+            | sudo tar xz --strip-components=1 -C /usr/local/bin 'wasm-pack-v0.15.0-x86_64-unknown-linux-musl/wasm-pack'
+          wasm-pack --version
       - run: cd crates/gema-wasm && wasm-pack build --target web
       - run: cd crates/gema-wasm && wasm-pack test --node
       # El techo sale medido, no estimado: ver la tabla en el propio script.
       - name: el .wasm no crece
         run: scripts/wasm-size-gate.sh
+  # Los targets existían desde el 2026-08-01 con un README y ningún job que los
+  # corriera. Un parser de PDF no confiables que no se fuzzea es una promesa, no
+  # una comprobación. Va por cron para no cobrarle tiempo a cada push; si un
+  # target deja de compilar, la corrida diaria lo delata. El cron corre además
+  # el resto de los jobs, y eso es a propósito: un aviso nuevo de RUSTSEC
+  # aparece sin que nadie haga push, y así el job `dependencies` lo ve al día.
+  fuzz:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      # cargo-fuzz necesita nightly; el resto del proyecto sigue fijo en 1.97.1.
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            fuzz -> fuzz/target
+      - run: cargo install cargo-fuzz --locked
+      # El corpus crece de un día al otro: sin esto cada corrida arranca de
+      # cero y los 120 s se gastan en redescubrir lo mismo.
+      - uses: actions/cache@v4
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+      # Sin semilla, el fuzzer pasa el tiempo averiguando que sus bytes no son
+      # un PDF. Con el fixture del repo, `edit_text` pasó de 1 a 754 entradas
+      # útiles en 120 s (medido en local el 2026-09-20).
+      - name: sembrar el corpus con el fixture del repo
+        run: |
+          for t in analyze compress compress_with_control edit_text; do
+            mkdir -p "fuzz/corpus/$t"
+            cp crates/gema-edit/tests/fixtures/editor-fuentes.pdf "fuzz/corpus/$t/"
+          done
+      - name: los cuatro targets compilan
+        run: cargo +nightly fuzz build
+      # 120 s por target: suficiente para que un crash reproducible aparezca en
+      # la corrida diaria sin convertir el job en una maratón.
+      - name: analyze
+        run: cargo +nightly fuzz run analyze -- -max_total_time=120
+      - name: compress
+        run: cargo +nightly fuzz run compress -- -max_total_time=120 -max_len=4194304
+      - name: compress_with_control
+        run: cargo +nightly fuzz run compress_with_control -- -max_total_time=120
+      - name: edit_text
+        run: cargo +nightly fuzz run edit_text -- -max_total_time=120
+      # Sin esto un crash queda sólo en el log y hay que adivinar la entrada.
+      - name: guardar el caso que rompió
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+
   package:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
       - run: cargo package -p gema-compress
       # Los crates dependientes solo pueden verificarse por completo después de
       # publicar gema-compress; --list sí valida ahora sus manifests y contenidos.
@@ -82,6 +158,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
       # Sin esto la separación se degrada sola y nadie se entera hasta que el
       # bundle engordó.
       - run: scripts/crate-boundary-gate.sh
@@ -92,7 +169,7 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           rust-version: "1.97.1"
-          command: check bans licenses sources
+          command: check advisories bans licenses sources
   visual-tools:
     runs-on: ubuntu-latest
     steps:

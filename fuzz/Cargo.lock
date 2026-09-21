@@ -345,8 +345,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "gema-core"
-version = "0.5.0"
+name = "gema-compress"
+version = "0.7.0"
 dependencies = [
  "flate2",
  "image",
@@ -358,10 +358,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gema-edit"
+version = "0.7.0"
+dependencies = [
+ "flate2",
+ "lopdf",
+ "thiserror",
+]
+
+[[package]]
 name = "gema-fuzz"
 version = "0.0.0"
 dependencies = [
- "gema-core",
+ "gema-compress",
+ "gema-edit",
  "libfuzzer-sys",
 ]
 

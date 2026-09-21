@@ -6,6 +6,19 @@ targets = [
 ]
 all-features = true
 
+[advisories]
+# Se revisan avisos de RUSTSEC en CI y en el hook. Toda excepción va acá, por
+# id, con motivo y con la condición que la levanta — nunca ampliando el silencio
+# en la línea de comandos, que es como esta comprobación estuvo apagada hasta el
+# 2026-09-20 (`check bans licenses sources`, sin `advisories`).
+ignore = [
+    # ttf-parser 0.25.1 declarado sin mantenimiento por su autor. Llega sólo a
+    # través de lopdf 0.43, que lo fija: no hay upgrade seguro que aplicar desde
+    # acá. No es una vulnerabilidad, es un aviso de abandono. Se levanta cuando
+    # lopdf cambie de versión; revisar en la próxima subida de lopdf.
+    "RUSTSEC-2026-0192",
+]
+
 [licenses]
 # Política permisiva compatible con el objetivo del proyecto: ninguna
 # dependencia GPL/AGPL. Las excepciones deben agregarse por crate, con motivo,

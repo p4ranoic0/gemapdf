@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Gate local automático. Usa la versión fijada en `rust-toolchain.toml`; los
 # controles que necesitan Node/wasm-pack y el empaquetado completo quedan en CI.
+# Tampoco están acá la variante `--features telemetry` ni el fuzzing: es una
+# omisión deliberada por tiempo —el gate completo corre en CI— y no un olvido.
 # Para saltarlo deliberadamente: git commit --no-verify
 set -euo pipefail
 source "$HOME/.cargo/env" 2>/dev/null || true
@@ -20,8 +22,8 @@ cargo clippy -p gema-cli -p gema-wasm --all-targets -- -D warnings 2>&1 | tail -
 cargo clippy -p gema-compress --all-targets --features perceptual -- -D warnings 2>&1 | tail -1
 cargo clippy -p gema-compress --all-targets --features serde -- -D warnings 2>&1 | tail -1
 if command -v cargo-deny >/dev/null 2>&1; then
-  cargo deny check bans licenses sources
+  cargo deny check advisories bans licenses sources
 else
-  echo "⚠️  cargo-deny no está instalado; CI ejecutará el control de licencias."
+  echo "⚠️  cargo-deny no está instalado; CI ejecutará avisos, licencias y bans."
 fi
 echo "✓ gates OK"
