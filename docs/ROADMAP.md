@@ -391,6 +391,50 @@ G4 o JBIG2 genérico, JAMÁS symbol-matching lossy.
 el corpus), CPU por página, es un subsistema entero (semanas). Reutiliza el
 arnés perceptual (§1) para controlar la calidad de sus capas JPEG.
 
+## 3.b. Quitar croma y blanquear el papel · ❌ MATADOS por medición (2026-09-22)
+
+Dos intentos de mirar el escaneo por lo que *significa* (tinta sobre papel) en vez de por lo que
+capturó el sensor. Los dos fallaron por la misma razón de fondo: **lo que parecía peso muerto ya
+lo había sacado el pipeline**. Spikes descartables, fuera del árbol; sólo quedaron números.
+
+**Croma.** El 98,6 % del peso medido está en imágenes al menos 70 % grises: los documentos sí son
+acromáticos. Pero con 4:2:0 la croma cuesta poco. Sobre 661 imágenes RGB/DCT ≥30 KB, a q45 y
+resolución nativa, pasar **todo** a L8 ahorra **9,5 %** (101,36 → 91,71 MB), y ese techo ni
+siquiera es aceptable porque mata sellos y firmas de color. Las cuatro bandas de grisura dan
+8,6-10,7 %, así que mover el umbral no esconde un premio. Confirma el descarte de julio de
+`diag_gray` (gris-como-RGB → L8) y cierra también la variante «base gris + parches de color donde
+hay tinta», que queda por debajo de ese techo y además paga los parches y el riesgo de costuras.
+Es un techo **de esa muestra y ese punto de operación**, no del PDF final.
+
+**Fondo del papel.** Hipótesis: el ~90 % de los bits es luma y buena parte sería textura y ruido
+del papel. Medido **a la resolución y la q que de verdad se codifican** (Beta `ebook`: 90/q45,
+transcodificado 110/q30), sobre las 14 526 imágenes que gema recodifica en los 12 PDF, contra la
+misma recodificación sin tocar:
+
+| variante | ahorro |
+|---|---|
+| techo agresivo (todo píxel a ≤24 niveles del blanco local y sin croma → blanco, sin proteger bordes) | **1,85 %** |
+| conservador, bloques 8×8 + halo a δ6 | 0,12 % (agranda 2 de los 12 PDF) |
+| conservador, δ12 | 0,31 % |
+
+La causa está medida: el **60 %** de los píxeles está en bloques claros uniformes, pero ahí vive
+el **0,02 %** de la energía AC. El downsampling y la cuantización previa ya se comieron el ruido
+del papel; no queda nada que blanquear. Además, blanquear puede **agrandar**: el agresivo agrandó
+2 237 de las 14 526 imágenes al crear transiciones nuevas. Y aunque ganara, una regla de «zona
+plana cerca del blanco» no puede certificar que no borra un sello tenue o una marca de agua.
+
+**Revivir sólo si** el corpus cambia a escaneos de alta resolución sin compresión previa, donde
+el ruido del papel sí llegaría al encoder. No antes.
+
+Método, comandos y tablas por documento:
+`gemapdf-internal-docs/DEVOLUCION-CODEX-2026-09-22-spike-fondo-papel-etapa1.md` y
+`CONSULTA-CODEX-2026-09-22-perspectiva-compresion.md`. Una fila (documento 12) re-corrida de cero
+dio las mismas cifras de bytes.
+
+**Medición pendiente, barata y distinta de estas dos:** el beneficio marginal de `dedupe_images`
+sobre la salida actual (ver «Deduplicación conservadora de imágenes» en §1): existe, está
+apagado por default y nunca se midió.
+
 ## 4. JPX / JPEG2000 (mejor códec dentro del estándar PDF)
 
 Wavelets, sin artefactos de bloque, ~20-30% mejor que JPEG a la misma calidad,
