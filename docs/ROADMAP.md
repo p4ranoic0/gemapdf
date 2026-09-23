@@ -169,6 +169,15 @@ bytes de stream eliminados; continúa desactivada por default hasta medir el
 beneficio marginal sobre el corpus (sin contar duplicados exactos que el
 cleanup genérico ya elimina por default).
 
+**Medido el 2026-09-23: marginal 0.** Con las perillas del Beta (`ebook`
+90/q45, transcodificado 110/q30, `--signatures flatten`), activar
+`--dedupe-images` dio salidas **byte-idénticas en 12/12 PDF** (212.424.358 B
+en total, con y sin el flag) y el reporte marca 0 objetos y 0 bytes
+deduplicados: la limpieza por default (`dedupe_streams`) ya se lleva todo lo
+que esta opción colapsaría. **Se queda apagada; no reabrir sin un corpus
+distinto.** No se midió el potencial de imágenes con píxeles idénticos pero
+bytes JPEG distintos. Detalle: `gemapdf-internal-docs/DEVOLUCION-CODEX-2026-09-23-marginal-dedupe-images.md`.
+
 ### Detección conservadora de páginas escaneadas (2026-08-07)
 
 `Report::has_scanned_pages` dejó de ser un `false` fijo. La heurística exige un
@@ -431,9 +440,8 @@ Método, comandos y tablas por documento:
 `CONSULTA-CODEX-2026-09-22-perspectiva-compresion.md`. Una fila (documento 12) re-corrida de cero
 dio las mismas cifras de bytes.
 
-**Medición pendiente, barata y distinta de estas dos:** el beneficio marginal de `dedupe_images`
-sobre la salida actual (ver «Deduplicación conservadora de imágenes» en §1): existe, está
-apagado por default y nunca se midió.
+La medición barata que quedaba al lado de estas dos, el marginal de `dedupe_images`, se hizo el
+2026-09-23 y dio **0 bytes** (ver «Deduplicación conservadora de imágenes» en §1).
 
 ## 4. JPX / JPEG2000 (mejor códec dentro del estándar PDF)
 
