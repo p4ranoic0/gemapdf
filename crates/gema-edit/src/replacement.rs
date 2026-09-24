@@ -159,7 +159,10 @@ pub struct ReplacementReport {
     pub status: ReplacementStatus,
     /// Cantidad de glifos originales reemplazados.
     pub replaced_glyphs: usize,
-    /// Texto reconstruido de la selección.
+    /// Texto reconstruido de la selección. `None` si la operación terminó antes de
+    /// seleccionar glifos —región o página inválida, contenido ilegible, riesgo
+    /// semántico de la página o nada que seleccionar—; todo rechazo posterior a la
+    /// selección lo trae.
     pub original_text: Option<String>,
     /// Texto solicitado.
     pub new_text: String,
