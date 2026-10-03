@@ -13,7 +13,7 @@ Ramas vivas: `main` (código) y `npm` (distribución generada por `wasm-pack`,
 sin fuente). `v2.0-levers`, `v2.0-portable` y `exp/save-modern` son anclas
 históricas: no se les commitea.
 
-Qué corre hoy en **henrrygarcia.com** — **gema-wasm 0.6.0** (tag `wasm-v0.6.0`,
+Qué corre hoy en **henrrygarcia.com** — **gema-wasm 0.7.0** (tag `wasm-v0.7.0`,
 rama `npm`), **único motor** desde el 2026-09-17: Ghostscript salió del sitio
 (queda sólo en `scripts/gs-reference.mjs` del portfolio, para el benchmark). El
 editor usa además `remove_text_glyphs` y el informe v1.
