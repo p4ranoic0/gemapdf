@@ -3,13 +3,23 @@
 All notable changes to GemaPDF are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.8.0 — 2026-10-04
 
-### Breaking (next 0.8.0)
+### Breaking
 
 - `CompressOptions` gains the exhaustive `subset_fonts` field (default `false`).
-  This is an incompatible Rust API change; the version bump and publication are
-  deferred to the next release. The CLI and WASM option remain opt-in.
+  Code that builds `CompressOptions` with a full struct literal must add it; code
+  that uses `..Default::default()` is unaffected. The CLI (`--subset-fonts`) and
+  WASM (`subset_fonts`) option are opt-in.
+
+### Added
+
+- Opt-in subsetting of embedded TrueType fonts in `CIDFontType2`: glyph IDs are kept,
+  unused outlines are emptied, and only the tables a PDF renderer uses are kept
+  (`head hhea maxp loca glyf hmtx cvt fpgm prep OS/2 cmap post` v3). Fonts reachable
+  from `/AcroForm/DR`, `/DA` or unresolved resources are left untouched. Measured on the
+  largest affected document of the corpus: 42.37 → 37.01 MB, with identical renders on
+  727 pages (poppler, max pixel delta 0) and identical extracted text.
 
 ### Security
 
