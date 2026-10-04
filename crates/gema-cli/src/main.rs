@@ -212,6 +212,11 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
                     skipped.original_bytes
                 );
             }
+            for warning in &r.warnings {
+                if matches!(warning, gema_compress::Warning::FontSubsetting { .. }) {
+                    println!("{warning}");
+                }
+            }
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Analyze { input, json } => {

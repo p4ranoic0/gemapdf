@@ -137,6 +137,10 @@ pub fn compress_with_control(
         return Ok(result);
     }
 
+    let font_summary = opts
+        .subset_fonts
+        .then(|| crate::font_pipeline::subset_document_fonts(&mut doc));
+
     let params = opts.resolved();
 
     // Pasada pre-flight de firmas/sellos: produce el set de imágenes XObject a
@@ -382,6 +386,9 @@ pub fn compress_with_control(
         // sólo se eliminaron en un candidato descartado.
         report.deduplicated_images = 0;
         report.deduplicated_image_bytes = 0;
+        if let Some(summary) = font_summary {
+            report.warnings.push(summary.warning(false));
+        }
         report.output_size = Some(input.len() as u64);
         report.warnings.push(Warning::Other(
             "sin mejora: se conservó el documento original".into(),
@@ -391,6 +398,9 @@ pub fn compress_with_control(
             report: report.with_ratio(),
         }
     } else {
+        if let Some(summary) = font_summary {
+            report.warnings.push(summary.warning(true));
+        }
         report.output_size = Some(output.len() as u64);
         CompressResult {
             output,

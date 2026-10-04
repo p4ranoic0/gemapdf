@@ -148,7 +148,7 @@ pub struct ImageStatJson {
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct WarningJson {
     /// Discriminante estable: `signed_document`, `image_skipped`,
-    /// `streams_skipped` u `other`.
+    /// `streams_skipped`, `font_subsetting` u `other`.
     pub kind: &'static str,
     /// Objeto afectado, cuando el aviso es sobre una imagen.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
@@ -262,6 +262,7 @@ impl ReportJson {
                         Warning::SignedDocument => "signed_document",
                         Warning::ImageSkipped(_) => "image_skipped",
                         Warning::StreamsSkipped { .. } => "streams_skipped",
+                        Warning::FontSubsetting { .. } => "font_subsetting",
                         Warning::Other(_) => "other",
                     },
                     object_id: match w {
@@ -370,6 +371,23 @@ mod tests {
         assert_eq!(j.warnings[3].kind, "other");
         assert_eq!(j.warnings[3].object_id, None);
         assert!(!j.warnings[3].message.is_empty());
+    }
+
+    #[test]
+    fn font_subsetting_warning_has_numeric_summary_and_stable_kind() {
+        let mut report = sample_report();
+        report.warnings = vec![Warning::FontSubsetting {
+            subsetted: 2,
+            before_bytes: 1000,
+            after_bytes: 300,
+            abstained_by_reason: vec![("acroform_dr", 1)],
+        }];
+        let warning = &ReportJson::from_report(&report, None).warnings[0];
+        assert_eq!(warning.kind, "font_subsetting");
+        assert_eq!(warning.object_id, None);
+        for expected in ["2", "1000", "300", "acroform_dr"] {
+            assert!(warning.message.contains(expected));
+        }
     }
 
     #[test]

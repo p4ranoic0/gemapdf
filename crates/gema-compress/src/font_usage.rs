@@ -14,9 +14,24 @@ pub(crate) enum AbstainReason {
     UntraversedResource,
 }
 
+impl AbstainReason {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::AcroForm => "acroform_dr",
+            Self::DefaultAppearance => "default_appearance",
+            Self::UnsupportedEncoding => "unsupported_encoding",
+            Self::UnsupportedCidMap => "unsupported_cid_map",
+            Self::MalformedContent => "malformed_content",
+            Self::UnresolvedResource => "unresolved_resource",
+            Self::UntraversedResource => "untraversed_resource",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct FontUse {
     pub font_id: ObjectId,
+    pub descendant_id: ObjectId,
     pub program_id: ObjectId,
     pub gids: BTreeSet<u16>,
     pub abstain: Option<AbstainReason>,
@@ -77,6 +92,7 @@ fn candidate(doc: &Document, font_id: ObjectId, font: &Dictionary) -> Option<Fon
         .as_array()
         .ok()?
         .first()?;
+    let descendant_id = descendant.as_reference().ok()?;
     let cid = resolved_dict(doc, descendant)?;
     if !name_is(cid, b"Subtype", b"CIDFontType2") {
         return None;
@@ -87,6 +103,7 @@ fn candidate(doc: &Document, font_id: ObjectId, font: &Dictionary) -> Option<Fon
     doc.get_object(program_id).ok()?.as_stream().ok()?;
     let mut result = FontUse {
         font_id,
+        descendant_id,
         program_id,
         gids: BTreeSet::from([0]),
         abstain: None,
@@ -530,11 +547,11 @@ pub(crate) fn collect_font_usage(doc: &Document) -> Vec<FontUse> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use lopdf::{dictionary, Dictionary, Object, Stream};
 
-    fn fixture(page_content: &[u8]) -> (Document, ObjectId, ObjectId, ObjectId) {
+    pub(crate) fn fixture(page_content: &[u8]) -> (Document, ObjectId, ObjectId, ObjectId) {
         let mut doc = Document::with_version("1.7");
         let program = doc.add_object(Stream::new(
             dictionary! { "Length1" => 4 },

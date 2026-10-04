@@ -127,6 +127,17 @@ pub enum Warning {
         /// Límite que motivó los saltos.
         reason: crate::LimitKind,
     },
+    /// Resumen numérico del subsetting opt-in, sin nombres de fuente ni texto.
+    FontSubsetting {
+        /// Programas TrueType reducidos y presentes en la salida final.
+        subsetted: usize,
+        /// Bytes originales de esos programas, descomprimidos.
+        before_bytes: u64,
+        /// Bytes resultantes de esos programas, descomprimidos.
+        after_bytes: u64,
+        /// Programas preservados, agrupados por motivo estable.
+        abstained_by_reason: Vec<(&'static str, usize)>,
+    },
     /// Aviso sin estructura propia; el texto ya es legible.
     Other(String),
 }
@@ -140,6 +151,18 @@ impl std::fmt::Display for Warning {
             Warning::ImageSkipped(id) => write!(f, "imagen omitida (object {id})"),
             Warning::StreamsSkipped { count, reason } => {
                 write!(f, "{count} stream(s) omitido(s) por límite de {reason}")
+            }
+            Warning::FontSubsetting {
+                subsetted,
+                before_bytes,
+                after_bytes,
+                abstained_by_reason,
+            } => {
+                write!(f, "fuentes subseteadas: {subsetted}; bytes {before_bytes}→{after_bytes}; abstenciones")?;
+                for (reason, count) in abstained_by_reason {
+                    write!(f, " [{reason}]={count}")?;
+                }
+                Ok(())
             }
             Warning::Other(msg) => f.write_str(msg),
         }

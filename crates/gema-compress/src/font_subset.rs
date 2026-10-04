@@ -205,10 +205,10 @@ pub(crate) fn subset_truetype_keep_gids(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn fixture() -> Vec<u8> {
+    pub(crate) fn fixture() -> Vec<u8> {
         let mut head = vec![0u8; 54];
         head[0..4].copy_from_slice(&0x0001_0000u32.to_be_bytes());
         head[12..16].copy_from_slice(&0x5F0F_3CF5u32.to_be_bytes());
