@@ -63,6 +63,7 @@ serde = { version = "1", features = ["derive"], optional = true }
 rayon = "1"
 
 [dev-dependencies]
+ttf-parser = "0.25.1"
 fax = "0.3.0"
 mozjpeg-rs = "0.9.2"
 serde_json = "1"

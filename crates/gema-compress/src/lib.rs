@@ -64,6 +64,9 @@ pub use options::{CompressOptions, Profile, ProfileParams, SignaturePolicy};
 mod analyze;
 pub use analyze::analyze;
 
+// Núcleo puro; se conecta al pipeline en la Tarea 4.
+#[allow(dead_code)]
+mod font_subset;
 mod image_opt;
 
 pub(crate) mod geometry;
