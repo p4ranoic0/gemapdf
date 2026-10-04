@@ -450,13 +450,26 @@ Wavelets, sin artefactos de bloque, ~20-30% mejor que JPEG a la misma calidad,
 Rust puro es pobre (los maduros son bindings a OpenJPEG, C). Revisar el
 ecosistema antes de invertir; va DETRÁS de MRC en prioridad.
 
-## 5. Subsetting de fuentes
+## 5. Subsetting de fuentes · 🟢 OPT-IN, medido (2026-10-04)
 
-Medido 2026-07-06: payoff ~1.5 MB en docs merge extremos (OS2736), factible con
-el crate `subsetter`, pero riesgo VISUAL (glifo perdido → blanco). El arnés
-render-compare ya existe (`scripts/compare-visuals.py`, 2026-08-07); antes de
-retomar fuentes falta fijar un baseline completo y umbrales de aceptación para
-texto pequeño. Mantener opt-in "máxima" hasta entonces.
+`CompressOptions::subset_fonts` (CLI `--subset-fonts`), **default false**; campo nuevo = cambio incompatible, va en
+0.8.0 (CHANGELOG «Unreleased»). Alcance: TrueType de `CIDFontType2` con `CIDToGIDMap` Identity/stream. **Conserva los
+GID** (vacía contornos no usados, arrastra componentes de compuestos) y deja sólo las tablas que el PDF usa
+(`head hhea maxp loca glyf hmtx cvt fpgm prep OS/2 cmap post` formato 3). Se abstiene ante `/AcroForm/DR`, `/DA` o
+recursos no resueltos. Commits `fded53d`…`1b416de`.
+
+Por qué la lista blanca: en `archivo muy grande de comprimir.pdf` el peso de los 100 programas era GPOS 35 %, GSUB 19 %,
+hdmx 15 % y **glyf sólo 11,7 %**; vaciar contornos solo ahorraba 0,44 MB.
+
+Medido (perfil `ebook`, 13 originales del corpus):
+- `archivo muy grande de comprimir.pdf`: **42,37 → 37,01 MB (−5,37 MB)**; Ghostscript 34,12 MB (brecha 8,3 → 2,9 MB).
+- Otros 4 documentos bajan 0,01–0,08 MB; `archivo diferencia 1` (AcroForm) se abstiene; 7 sin cambio.
+- **Render idéntico**: 727 páginas con `pdftoppm -r 72 -gray`, diferencia máxima **0**; pdf.js en 26 páginas, diferencia 0.
+- **Texto idéntico** (`pdftotext` y `getTextContent`).
+- Con la opción apagada, salida **byte a byte igual** a `main` previo en los 13 documentos. `cargo test --workspace` 391/391.
+
+Pendiente: decidir con HG si pasa a default (y en qué perfiles) y cablearla en el worker del portfolio; TrueType
+simples y CFF siguen fuera (≈0,3 MB en el corpus).
 
 ## 6. Coberturas menores (horas, no semanas)
 
