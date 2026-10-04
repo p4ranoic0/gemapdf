@@ -64,7 +64,7 @@ fn component_gids(glyph: &[u8]) -> Option<Vec<u16>> {
     Some(components)
 }
 
-/// Elimina contornos no usados conservando sus GID y todas las demás tablas.
+/// Elimina contornos no usados conservando sus GID y las tablas necesarias para PDF.
 /// `None` significa fuente inválida, no compatible o sin ahorro real.
 pub(crate) fn subset_truetype_keep_gids(
     font_bytes: &[u8],
@@ -96,6 +96,8 @@ pub(crate) fn subset_truetype_keep_gids(
         index(b"loca")?,
         index(b"glyf")?,
     );
+    index(b"hhea")?;
+    index(b"hmtx")?;
     let head = &tables[head_i].1;
     if head.len() < 54 || u32_at(head, 12)? != 0x5F0F_3CF5 {
         return None;
@@ -177,14 +179,34 @@ pub(crate) fn subset_truetype_keep_gids(
     tables[loca_i].1 = new_loca;
     tables[glyf_i].1 = new_glyf;
 
-    let mut output = font_bytes[..directory_end].to_vec();
-    for (i, (_, data)) in tables.iter().enumerate() {
+    const PDF_TABLES: [[u8; 4]; 12] = [
+        *b"head", *b"hhea", *b"maxp", *b"loca", *b"glyf", *b"hmtx", *b"cvt ", *b"fpgm", *b"prep",
+        *b"OS/2", *b"cmap", *b"post",
+    ];
+    tables.retain(|(tag, _)| PDF_TABLES.contains(tag));
+    if let Some((_, post)) = tables.iter_mut().find(|(tag, _)| tag == b"post") {
+        post.get(..32)?;
+        post.truncate(32);
+        post[..4].copy_from_slice(&0x0003_0000u32.to_be_bytes());
+    }
+
+    let count = u16::try_from(tables.len()).ok()?;
+    let mut output = vec![0u8; 12 + tables.len() * 16];
+    output[..4].copy_from_slice(&font_bytes[..4]);
+    output[4..6].copy_from_slice(&count.to_be_bytes());
+    let entry_selector = u16::try_from(15 - count.leading_zeros()).ok()?;
+    let search_range = (1u16 << entry_selector) * 16;
+    output[6..8].copy_from_slice(&search_range.to_be_bytes());
+    output[8..10].copy_from_slice(&entry_selector.to_be_bytes());
+    output[10..12].copy_from_slice(&(count * 16 - search_range).to_be_bytes());
+    for (i, (tag, data)) in tables.iter().enumerate() {
         while !output.len().is_multiple_of(4) {
             output.push(0);
         }
         let offset = u32::try_from(output.len()).ok()?;
         let length = u32::try_from(data.len()).ok()?;
         let pos = 12 + i * 16;
+        output[pos..pos + 4].copy_from_slice(tag);
         output[pos + 4..pos + 8].copy_from_slice(&checksum(data).to_be_bytes());
         output[pos + 8..pos + 12].copy_from_slice(&offset.to_be_bytes());
         output[pos + 12..pos + 16].copy_from_slice(&length.to_be_bytes());
@@ -196,6 +218,7 @@ pub(crate) fn subset_truetype_keep_gids(
     if output.len() >= font_bytes.len() {
         return None;
     }
+    let head_i = tables.iter().position(|(tag, _)| tag == b"head")?;
     let head_pos = u32_at(&output, 12 + head_i * 16 + 8)? as usize;
     let adjustment = 0xB1B0_AFBAu32.wrapping_sub(checksum(&output));
     output
@@ -296,6 +319,63 @@ pub(crate) mod tests {
         let end =
             u32::from_be_bytes(loca[(gid + 1) * 4..(gid + 1) * 4 + 4].try_into().unwrap()) as usize;
         &table(bytes, b"glyf")[start..end]
+    }
+
+    fn fixture_with_extra_tables() -> Vec<u8> {
+        let original = fixture();
+        let count = u16_at(&original, 4).unwrap() as usize;
+        let mut tables = (0..count)
+            .map(|i| {
+                let tag = original[12 + i * 16..16 + i * 16].try_into().unwrap();
+                (tag, table(&original, &tag).to_vec())
+            })
+            .collect::<Vec<([u8; 4], Vec<u8>)>>();
+        let mut post = vec![0u8; 64];
+        post[..4].copy_from_slice(&0x0002_0000u32.to_be_bytes());
+        tables.extend([
+            (*b"post", post),
+            (*b"GPOS", vec![1; 400]),
+            (*b"GSUB", vec![2; 400]),
+            (*b"hdmx", vec![3; 400]),
+            (*b"name", vec![4; 400]),
+        ]);
+        let mut bytes = vec![0u8; 12 + tables.len() * 16];
+        bytes[..4].copy_from_slice(&original[..4]);
+        bytes[4..6].copy_from_slice(&(tables.len() as u16).to_be_bytes());
+        for (i, (tag, data)) in tables.iter().enumerate() {
+            let record = 12 + i * 16;
+            let offset = bytes.len() as u32;
+            bytes[record..record + 4].copy_from_slice(tag);
+            bytes[record + 4..record + 8].copy_from_slice(&checksum(data).to_be_bytes());
+            bytes[record + 8..record + 12].copy_from_slice(&offset.to_be_bytes());
+            bytes[record + 12..record + 16].copy_from_slice(&(data.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(data);
+            while !bytes.len().is_multiple_of(4) {
+                bytes.push(0);
+            }
+        }
+        bytes
+    }
+
+    #[test]
+    fn strips_unused_tables_and_glyph_names_without_changing_used_glyphs() {
+        let original = fixture_with_extra_tables();
+        let result = subset_truetype_keep_gids(&original, &BTreeSet::from([1])).unwrap();
+        let count = u16_at(&result, 4).unwrap() as usize;
+        let tags = (0..count)
+            .map(|i| &result[12 + i * 16..16 + i * 16])
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tags,
+            [b"head", b"hhea", b"maxp", b"hmtx", b"loca", b"glyf", b"post"]
+        );
+        assert_eq!(table(&result, b"post").len(), 32);
+        assert_eq!(u32_at(table(&result, b"post"), 0), Some(0x0003_0000));
+        assert_eq!(table(&result, b"hmtx"), table(&original, b"hmtx"));
+        assert_eq!(glyph(&result, 0), glyph(&original, 0));
+        assert_eq!(glyph(&result, 1), glyph(&original, 1));
+        assert!(ttf_parser::Face::parse(&result, 0).is_ok());
+        assert_eq!(checksum(&result), 0xB1B0_AFBA);
     }
 
     #[test]
