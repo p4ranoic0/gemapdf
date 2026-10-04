@@ -49,6 +49,9 @@ enum Cmd {
         /// Deduplica imágenes byte-idénticas con semántica de render equivalente.
         #[arg(long)]
         dedupe_images: bool,
+        /// Subsetea fuentes TrueType CID conservando los GID originales.
+        #[arg(long)]
+        subset_fonts: bool,
         /// Política para PDFs firmados. `strict` conserva el archivo intacto;
         /// `flatten` preserva la apariencia visual pero invalida la firma.
         #[arg(long, default_value = "flatten", value_parser = ["strict", "ignore", "flatten"])]
@@ -126,6 +129,7 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
             max_parallel_images,
             max_image_mib,
             dedupe_images,
+            subset_fonts,
             signatures,
             json,
             json_images,
@@ -151,6 +155,7 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
                     max_parallel_images,
                     max_image_bytes: max_image_mib.map(|mib| mib.saturating_mul(1024 * 1024)),
                     dedupe_images,
+                    subset_fonts,
                     signatures,
                     ..defaults
                 },
@@ -626,6 +631,16 @@ mod tests {
             panic!("se esperaba el subcomando compress");
         };
         assert!(dedupe_images);
+    }
+
+    #[test]
+    fn compress_cli_accepts_font_subsetting() {
+        let cli = Cli::try_parse_from(["gema", "compress", "in.pdf", "out.pdf", "--subset-fonts"])
+            .unwrap();
+        let Cmd::Compress { subset_fonts, .. } = cli.cmd else {
+            panic!("se esperaba el subcomando compress");
+        };
+        assert!(subset_fonts);
     }
 
     #[test]

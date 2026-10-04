@@ -5,6 +5,12 @@ All notable changes to GemaPDF are documented in this file. The project follows
 
 ## Unreleased
 
+### Breaking (next 0.8.0)
+
+- `CompressOptions` gains the exhaustive `subset_fonts` field (default `false`).
+  This is an incompatible Rust API change; the version bump and publication are
+  deferred to the next release. The CLI and WASM option remain opt-in.
+
 ### Security
 
 - `crossbeam-epoch` 0.9.18 → 0.9.21 (RUSTSEC-2026-0204), reached transitively through `rayon`

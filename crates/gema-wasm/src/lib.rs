@@ -44,7 +44,7 @@ pub fn analyze(input: &[u8]) -> Result<JsValue, JsError> {
 /// - `profile`: "screen" | "ebook" | "printer".
 /// - `options`: objeto `{ image_dpi?, jpeg_quality?, transcode_dpi?,
 ///   transcode_quality?, max_memory_bytes?, max_parallel_images?,
-///   max_image_bytes?, dedupe_images?,
+///   max_image_bytes?, dedupe_images?, subset_fonts?,
 ///   signatures?: "strict"|"ignore"|"flatten" }`.
 ///   Las `transcode_*` sólo afectan a escaneos que llegan sin pérdida y salen
 ///   como JPEG (ver ROADMAP §2.b).
@@ -197,6 +197,7 @@ struct JsOptions {
     max_parallel_images: Option<usize>,
     max_image_bytes: Option<u64>,
     dedupe_images: Option<bool>,
+    subset_fonts: Option<bool>,
     /// "strict" | "ignore" | "flatten" (default: flatten)
     signatures: Option<String>,
 }
@@ -225,6 +226,7 @@ fn to_compress_options(profile: &str, o: &JsOptions) -> Result<CompressOptions, 
         max_parallel_images: o.max_parallel_images,
         max_image_bytes: o.max_image_bytes,
         dedupe_images: o.dedupe_images.unwrap_or(defaults.dedupe_images),
+        subset_fonts: o.subset_fonts.unwrap_or(defaults.subset_fonts),
         signatures,
         ..defaults
     })
@@ -349,6 +351,20 @@ mod tests {
             ..Default::default()
         };
         assert!(to_compress_options("ebook", &o).unwrap().dedupe_images);
+    }
+
+    #[test]
+    fn options_mapper_carries_font_subsetting() {
+        assert!(
+            !to_compress_options("ebook", &JsOptions::default())
+                .unwrap()
+                .subset_fonts
+        );
+        let o = JsOptions {
+            subset_fonts: Some(true),
+            ..Default::default()
+        };
+        assert!(to_compress_options("ebook", &o).unwrap().subset_fonts);
     }
 
     #[test]

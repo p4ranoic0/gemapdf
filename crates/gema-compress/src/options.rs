@@ -178,6 +178,9 @@ pub struct CompressOptions {
     /// equivalente. Excluye firmas/sellos preservados y máscaras de
     /// transparencia. Es opt-in para medir su beneficio sobre cada corpus.
     pub dedupe_images: bool,
+    /// Reduce programas TrueType de fuentes CID conservando sus GID. Opt-in;
+    /// false mantiene byte a byte el comportamiento anterior.
+    pub subset_fonts: bool,
     /// Qué hacer si el documento está firmado criptográficamente.
     pub signatures: SignaturePolicy,
 }
@@ -202,6 +205,7 @@ impl Default for CompressOptions {
             recompress_streams: true,
             remove_metadata: true,
             dedupe_images: false,
+            subset_fonts: false,
             // Política de producto: conservar la apariencia visible de firmas
             // y sellos dentro del PDF comprimido. La validez criptográfica se
             // pierde porque el documento cambia; `Strict` es opt-in.
@@ -248,6 +252,7 @@ mod tests {
         assert_eq!(p.image_dpi, 150);
         assert_eq!(p.jpeg_quality, 65);
         assert_eq!(opts.signatures, SignaturePolicy::Flatten);
+        assert!(!opts.subset_fonts);
     }
     #[test]
     fn override_wins_over_profile() {
