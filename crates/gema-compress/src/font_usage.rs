@@ -82,7 +82,6 @@ fn name_is(dict: &Dictionary, key: &[u8], value: &[u8]) -> bool {
         .is_ok_and(|name| name == value)
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // Se conecta al recolector en la tarea siguiente.
 fn da_font_name(bytes: &[u8]) -> Option<Vec<u8>> {
     let content = Content::decode_strict(bytes).ok()?;
     let tf = content
@@ -94,6 +93,52 @@ fn da_font_name(bytes: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     Some(tf.operands[0].as_name().ok()?.to_vec())
+}
+
+#[derive(Default)]
+struct DaNames {
+    names: BTreeSet<Vec<u8>>,
+    unreadable: bool,
+}
+
+fn collect_da_names(doc: &Document) -> DaNames {
+    fn visit(doc: &Document, object: &Object, found: &mut DaNames) {
+        let dict = match object {
+            Object::Dictionary(dict) => Some(dict),
+            Object::Stream(stream) => Some(&stream.dict),
+            _ => None,
+        };
+        if let Some(dict) = dict {
+            if let Ok(da) = dict.get(b"DA") {
+                let name = match resolved(doc, da) {
+                    Some(Object::String(bytes, _)) => da_font_name(bytes),
+                    _ => None,
+                };
+                if let Some(name) = name {
+                    found.names.insert(name);
+                } else {
+                    found.unreadable = true;
+                }
+            }
+            for (_, value) in dict {
+                if !matches!(value, Object::Reference(_)) {
+                    visit(doc, value, found);
+                }
+            }
+        } else if let Object::Array(values) = object {
+            for value in values {
+                if !matches!(value, Object::Reference(_)) {
+                    visit(doc, value, found);
+                }
+            }
+        }
+    }
+
+    let mut found = DaNames::default();
+    for object in doc.objects.values() {
+        visit(doc, object, &mut found);
+    }
+    found
 }
 
 fn candidate(doc: &Document, font_id: ObjectId, font: &Dictionary) -> Option<FontUse> {
@@ -184,6 +229,7 @@ struct Collector<'a> {
     uses: Vec<FontUse>,
     by_id: BTreeMap<ObjectId, usize>,
     visited_owners: BTreeSet<ObjectId>,
+    da_names: BTreeSet<Vec<u8>>,
 }
 
 impl Collector<'_> {
@@ -198,6 +244,14 @@ impl Collector<'_> {
     fn abstain_resources(&mut self, resources: &Resources, reason: AbstainReason) {
         for &id in resources.fonts.values() {
             self.abstain(id, reason);
+        }
+    }
+
+    fn abstain_da_resources(&mut self, resources: &Resources) {
+        for (name, &id) in &resources.fonts {
+            if self.da_names.contains(name) {
+                self.abstain(id, AbstainReason::DefaultAppearance);
+            }
         }
     }
 
@@ -231,6 +285,7 @@ impl Collector<'_> {
                 if !extend_resources(self.doc, value, &mut resources) {
                     self.abstain_resources(&resources, AbstainReason::UnresolvedResource);
                 }
+                self.abstain_da_resources(&resources);
             }
         }
         resources
@@ -252,6 +307,7 @@ impl Collector<'_> {
                 self.abstain_resources(&resources, AbstainReason::UnresolvedResource);
             }
         }
+        self.abstain_da_resources(&resources);
         resources
     }
 
@@ -429,9 +485,6 @@ impl Collector<'_> {
             let Some(annot) = resolved_dict(self.doc, annot_ref) else {
                 continue;
             };
-            if annot.get(b"DA").is_ok() {
-                self.abstain_resources(page_resources, AbstainReason::DefaultAppearance);
-            }
             let Some(ap) = annot
                 .get(b"AP")
                 .ok()
@@ -490,13 +543,6 @@ impl Collector<'_> {
                 }
             }
         }
-        if acro.get(b"DA").is_ok() {
-            for use_ in &mut self.uses {
-                if use_.abstain.is_none() {
-                    use_.abstain = Some(AbstainReason::DefaultAppearance);
-                }
-            }
-        }
     }
 
     fn untraversed_resources(&mut self) {
@@ -509,13 +555,6 @@ impl Collector<'_> {
                 Object::Stream(s) => &s.dict,
                 _ => continue,
             };
-            if dict.get(b"DA").is_ok() {
-                for use_ in &mut self.uses {
-                    if use_.abstain.is_none() {
-                        use_.abstain = Some(AbstainReason::DefaultAppearance);
-                    }
-                }
-            }
             let mut resources = Resources::default();
             let source = dict.get(b"Resources").ok().cloned().or_else(|| {
                 dict.get(b"Font")
@@ -526,6 +565,7 @@ impl Collector<'_> {
                 .as_ref()
                 .is_some_and(|obj| extend_resources(self.doc, obj, &mut resources))
             {
+                self.abstain_da_resources(&resources);
                 self.abstain_resources(&resources, AbstainReason::UntraversedResource);
             }
         }
@@ -533,6 +573,7 @@ impl Collector<'_> {
 }
 
 pub(crate) fn collect_font_usage(doc: &Document) -> Vec<FontUse> {
+    let da = collect_da_names(doc);
     let uses: Vec<_> = doc
         .objects
         .iter()
@@ -548,7 +589,15 @@ pub(crate) fn collect_font_usage(doc: &Document) -> Vec<FontUse> {
         uses,
         by_id,
         visited_owners: BTreeSet::new(),
+        da_names: da.names,
     };
+    if da.unreadable {
+        for use_ in &mut collector.uses {
+            if use_.abstain.is_none() {
+                use_.abstain = Some(AbstainReason::DefaultAppearance);
+            }
+        }
+    }
     for (_, page_id) in doc.get_pages() {
         let resources = collector.page_resources(page_id);
         match doc.get_page_content(page_id) {
@@ -601,6 +650,27 @@ pub(crate) mod tests {
         (doc, font, program, page)
     }
 
+    fn second_font(doc: &mut Document) -> ObjectId {
+        let program = doc.add_object(Stream::new(Dictionary::new(), vec![4, 5, 6, 7]));
+        let descriptor = doc.add_object(dictionary! { "FontFile2" => program });
+        let cid = doc.add_object(dictionary! {
+            "Subtype" => "CIDFontType2", "FontDescriptor" => descriptor,
+            "CIDToGIDMap" => "Identity"
+        });
+        doc.add_object(dictionary! {
+            "Subtype" => "Type0", "Encoding" => "Identity-H",
+            "DescendantFonts" => vec![Object::Reference(cid)]
+        })
+    }
+
+    fn reason_for(doc: &Document, font: ObjectId) -> Option<AbstainReason> {
+        collect_font_usage(doc)
+            .into_iter()
+            .find(|use_| use_.font_id == font)
+            .unwrap()
+            .abstain
+    }
+
     #[test]
     fn da_parser_reads_last_tf_font_name() {
         assert_eq!(da_font_name(b"/Helv 0 Tf 0 g"), Some(b"Helv".to_vec()));
@@ -614,6 +684,94 @@ pub(crate) mod tests {
     fn da_parser_abstains_without_readable_tf() {
         assert_eq!(da_font_name(b"0 g 0 w"), None);
         assert_eq!(da_font_name(b"/F1 12 Tf ("), None);
+    }
+
+    #[test]
+    fn annotation_da_only_abstains_named_font() {
+        let (mut doc, f1, _, page) = fixture(b"BT /F1 12 Tf <0001> Tj ET");
+        let helv = second_font(&mut doc);
+        doc.get_dictionary_mut(page).unwrap().set(
+            "Resources",
+            dictionary! { "Font" => dictionary! { "F1" => f1, "Helv" => helv } },
+        );
+        let annot = doc.add_object(dictionary! {
+            "Type" => "Annot", "DA" => Object::string_literal("/Helv 0 Tf")
+        });
+        doc.get_dictionary_mut(page)
+            .unwrap()
+            .set("Annots", vec![Object::Reference(annot)]);
+        assert_eq!(reason_for(&doc, f1), None);
+        assert_eq!(
+            reason_for(&doc, helv),
+            Some(AbstainReason::DefaultAppearance)
+        );
+    }
+
+    #[test]
+    fn acroform_da_only_abstains_named_font() {
+        let (mut doc, f1, _, page) = fixture(b"BT /F1 12 Tf <0001> Tj ET");
+        let helv = second_font(&mut doc);
+        doc.get_dictionary_mut(page).unwrap().set(
+            "Resources",
+            dictionary! { "Font" => dictionary! { "F1" => f1, "Helv" => helv } },
+        );
+        let acro = doc.add_object(dictionary! { "DA" => Object::string_literal("/F1 0 Tf") });
+        doc.catalog_mut().unwrap().set("AcroForm", acro);
+        assert_eq!(reason_for(&doc, f1), Some(AbstainReason::DefaultAppearance));
+        assert_eq!(reason_for(&doc, helv), None);
+    }
+
+    #[test]
+    fn unreadable_da_still_abstains_every_font() {
+        let (mut doc, f1, _, page) = fixture(b"BT /F1 12 Tf <0001> Tj ET");
+        let helv = second_font(&mut doc);
+        doc.get_dictionary_mut(page).unwrap().set(
+            "Resources",
+            dictionary! { "Font" => dictionary! { "F1" => f1, "Helv" => helv } },
+        );
+        let annot = doc.add_object(dictionary! {
+            "Type" => "Annot", "DA" => Object::string_literal("/F1 0 Tf (")
+        });
+        doc.get_dictionary_mut(page)
+            .unwrap()
+            .set("Annots", vec![Object::Reference(annot)]);
+        assert_eq!(reason_for(&doc, f1), Some(AbstainReason::DefaultAppearance));
+        assert_eq!(
+            reason_for(&doc, helv),
+            Some(AbstainReason::DefaultAppearance)
+        );
+    }
+
+    #[test]
+    fn acroform_dr_still_abstains_its_font_without_da() {
+        let (mut doc, f1, _, page) = fixture(b"BT /F1 12 Tf <0001> Tj ET");
+        let helv = second_font(&mut doc);
+        doc.get_dictionary_mut(page).unwrap().set(
+            "Resources",
+            dictionary! { "Font" => dictionary! { "F1" => f1, "Helv" => helv } },
+        );
+        let acro = doc.add_object(dictionary! {
+            "DR" => dictionary! { "Font" => dictionary! { "Helv" => helv } }
+        });
+        doc.catalog_mut().unwrap().set("AcroForm", acro);
+        assert_eq!(reason_for(&doc, f1), None);
+        assert_eq!(reason_for(&doc, helv), Some(AbstainReason::AcroForm));
+    }
+
+    #[test]
+    fn untraversed_da_name_matches_page_resource() {
+        let (mut doc, f1, _, page) = fixture(b"BT /F1 12 Tf <0001> Tj ET");
+        let helv = second_font(&mut doc);
+        doc.get_dictionary_mut(page).unwrap().set(
+            "Resources",
+            dictionary! { "Font" => dictionary! { "F1" => f1, "Helv" => helv } },
+        );
+        doc.add_object(dictionary! { "DA" => Object::string_literal("/Helv 0 Tf") });
+        assert_eq!(reason_for(&doc, f1), None);
+        assert_eq!(
+            reason_for(&doc, helv),
+            Some(AbstainReason::DefaultAppearance)
+        );
     }
 
     #[test]
