@@ -118,6 +118,8 @@ fn candidate(doc: &Document, font_id: ObjectId, font: &Dictionary) -> Option<Fon
         .ok()
         .and_then(|obj| resolved(doc, obj))
     {
+        // ISO 32000-1, 9.7.4.2: si falta, el mapa por defecto es Identity.
+        None => CidMap::Identity,
         Some(Object::Name(name)) if name == b"Identity" => CidMap::Identity,
         Some(Object::Stream(stream)) => stream
             .decompressed_content()
@@ -669,6 +671,27 @@ pub(crate) mod tests {
         assert_eq!(programs.len(), 1);
         assert_eq!(programs[0].program_id, program);
         assert_eq!(programs[0].gids, BTreeSet::from([0, 1, 6]));
+    }
+
+    #[test]
+    fn missing_cid_to_gid_map_defaults_to_identity() {
+        // ISO 32000-1, 9.7.4.2: CIDToGIDMap ausente en una CIDFontType2 = Identity.
+        let (mut doc, font, _, _) = fixture(b"BT /F1 12 Tf <0001> Tj ET");
+        let descendant = doc
+            .get_dictionary(font)
+            .unwrap()
+            .get(b"DescendantFonts")
+            .unwrap()
+            .as_array()
+            .unwrap()[0]
+            .as_reference()
+            .unwrap();
+        doc.get_dictionary_mut(descendant)
+            .unwrap()
+            .remove(b"CIDToGIDMap");
+        let fonts = collect_font_usage(&doc);
+        assert_eq!(fonts[0].gids, BTreeSet::from([0, 1]));
+        assert_eq!(fonts[0].abstain, None);
     }
 
     #[test]
