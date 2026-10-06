@@ -40,11 +40,14 @@
 #   1b416de   subset TrueType/CID opt-in (0.8.0)           1562533  +74211     621458  +26752
 #             techo subido por decisión de HG (2026-10-04): −5,37 MB en el documento del
 #             corpus que más perdía contra Ghostscript, a cambio de +26,8 KB gzip (+4,5 %).
+#   01dc35f   DA por nombre + CIDToGIDMap ausente = Identity 1567790   +5257     623348   +1890
+#             techo subido por decisión de HG (2026-10-06): el subsetting llega a los PDF con
+#             formularios (−0,78 MB y −1,03 MB en los dos documentos que perdían contra Ghostscript).
 #
 # El grueso (+34198) entra cuando la inspección se conecta al borrado en la Task 7;
 # en la Task 5 el compilador la descartaba por código muerto.
 set -euo pipefail
-CEILING="${1:-1562533}"
+CEILING="${1:-1567790}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/crates/gema-wasm"
 wasm-pack build --target web >/dev/null 2>&1
