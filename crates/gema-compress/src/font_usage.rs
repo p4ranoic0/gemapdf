@@ -82,6 +82,20 @@ fn name_is(dict: &Dictionary, key: &[u8], value: &[u8]) -> bool {
         .is_ok_and(|name| name == value)
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // Se conecta al recolector en la tarea siguiente.
+fn da_font_name(bytes: &[u8]) -> Option<Vec<u8>> {
+    let content = Content::decode_strict(bytes).ok()?;
+    let tf = content
+        .operations
+        .iter()
+        .rev()
+        .find(|op| op.operator == "Tf")?;
+    if tf.operands.len() != 2 || !matches!(tf.operands[1], Object::Integer(_) | Object::Real(_)) {
+        return None;
+    }
+    Some(tf.operands[0].as_name().ok()?.to_vec())
+}
+
 fn candidate(doc: &Document, font_id: ObjectId, font: &Dictionary) -> Option<FontUse> {
     if !name_is(font, b"Subtype", b"Type0") {
         return None;
@@ -585,6 +599,21 @@ pub(crate) mod tests {
         let root = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages });
         doc.trailer.set("Root", root);
         (doc, font, program, page)
+    }
+
+    #[test]
+    fn da_parser_reads_last_tf_font_name() {
+        assert_eq!(da_font_name(b"/Helv 0 Tf 0 g"), Some(b"Helv".to_vec()));
+        assert_eq!(
+            da_font_name(b"0 g /F1 9 Tf /F2 12 Tf"),
+            Some(b"F2".to_vec())
+        );
+    }
+
+    #[test]
+    fn da_parser_abstains_without_readable_tf() {
+        assert_eq!(da_font_name(b"0 g 0 w"), None);
+        assert_eq!(da_font_name(b"/F1 12 Tf ("), None);
     }
 
     #[test]
