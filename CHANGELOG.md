@@ -3,6 +3,21 @@
 All notable changes to GemaPDF are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.8.1 — 2026-10-06
+
+### Fixed
+
+- Font subsetting no longer abstains on a `CIDFontType2` without `CIDToGIDMap`: the
+  missing entry means `Identity` (ISO 32000-1, 9.7.4.2).
+- A `/DA` default appearance now protects only the font resource it names (the last
+  `Tf` operand); an unreadable `/DA` keeps the previous document-wide abstention, and
+  `/AcroForm/DR` fonts stay untouched. Measured on the two corpus documents with forms
+  that abstained: −0.78 MB and −1.03 MB, with identical renders and extracted text.
+
+### Size
+
+- WASM 1,567,790 bytes raw (+5,257) and 623,341 with `gzip -9` (+1,883).
+
 ## 0.8.0 — 2026-10-04
 
 ### Breaking
