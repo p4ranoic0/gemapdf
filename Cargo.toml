@@ -10,7 +10,7 @@ exclude = ["fuzz"]
 
 [workspace.package]
 edition = "2021"
-version = "0.8.1"
+version = "0.8.2"
 rust-version = "1.97.1"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/p4ranoic0/gemapdf"
@@ -36,8 +36,8 @@ codegen-units = 1
 opt-level = 3
 
 [workspace.dependencies]
-gema-compress = { version = "0.8.1", path = "crates/gema-compress" }
-gema-edit = { version = "0.8.1", path = "crates/gema-edit" }
+gema-compress = { version = "0.8.2", path = "crates/gema-compress" }
+gema-edit = { version = "0.8.2", path = "crates/gema-edit" }
 lopdf = "0.43"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 flate2 = "1"

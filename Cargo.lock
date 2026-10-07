@@ -540,7 +540,7 @@ dependencies = [
 
 [[package]]
 name = "gema-cli"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "clap",
  "gema-compress",
@@ -552,7 +552,7 @@ dependencies = [
 
 [[package]]
 name = "gema-compress"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "fax",
  "flate2",
@@ -571,7 +571,7 @@ dependencies = [
 
 [[package]]
 name = "gema-edit"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "flate2",
  "lopdf",
@@ -582,7 +582,7 @@ dependencies = [
 
 [[package]]
 name = "gema-wasm"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "gema-compress",
  "gema-edit",

@@ -3,6 +3,21 @@
 All notable changes to GemaPDF are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.8.2 — 2026-10-06
+
+### Fixed
+
+- `dedupe_images` compares image dictionaries by resolved value instead of literally:
+  the optional `/Type` is ignored and references are resolved, so `/ColorSpace` written
+  as a name or as a reference to the same name, or as distinct ICC objects with equal
+  bytes, no longer keeps byte-identical images apart. Images with `/SMask`, preserved
+  images and soft masks are still excluded. Measured on the corpus document with repeated
+  images: 20.65 → 14.39 MB (ebook), renders and extracted text identical.
+
+### Size
+
+- WASM 1,574,732 bytes raw and 625,719 with `gzip -9`.
+
 ## 0.8.1 — 2026-10-06
 
 ### Fixed
