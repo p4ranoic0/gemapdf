@@ -43,11 +43,14 @@
 #   01dc35f   DA por nombre + CIDToGIDMap ausente = Identity 1567790   +5257     623348   +1890
 #             techo subido por decisión de HG (2026-10-06): el subsetting llega a los PDF con
 #             formularios (−0,78 MB y −1,03 MB en los dos documentos que perdían contra Ghostscript).
+#   (0.8.2)   dedupe de imágenes por valor canónico          1574732   +6942     625700  +2352
+#             techo subido por decisión de HG (2026-10-06): archivo diferencia 1 20,65 → 14,39 MB
+#             (ebook), con render idéntico en poppler y pdf.js.
 #
 # El grueso (+34198) entra cuando la inspección se conecta al borrado en la Task 7;
 # en la Task 5 el compilador la descartaba por código muerto.
 set -euo pipefail
-CEILING="${1:-1567790}"
+CEILING="${1:-1574732}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/crates/gema-wasm"
 wasm-pack build --target web >/dev/null 2>&1
