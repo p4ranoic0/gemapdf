@@ -138,6 +138,77 @@ pub fn dedupe_streams(doc: &mut Document) {
     }
 }
 
+/// Serialización canónica de un objeto para comparar por valor: resuelve
+/// referencias (con tope de profundidad) y ordena las claves de diccionario.
+/// Ante un ciclo o una referencia rota escribe un marcador que nunca coincide
+/// con un valor real, de modo que no fusiona por error.
+fn canonical_key(doc: &Document, obj: &Object, out: &mut Vec<u8>, depth: u8) {
+    if depth > 16 {
+        out.extend_from_slice(b"!deep");
+        return;
+    }
+    match obj {
+        Object::Reference(id) => match doc.get_object(*id) {
+            Ok(target) => canonical_key(doc, target, out, depth + 1),
+            Err(_) => {
+                out.extend_from_slice(b"!ref");
+                out.extend_from_slice(&id.0.to_le_bytes());
+                out.extend_from_slice(&id.1.to_le_bytes());
+            }
+        },
+        Object::Dictionary(dict) => {
+            let mut keys: Vec<&Vec<u8>> = dict.iter().map(|(k, _)| k).collect();
+            keys.sort();
+            out.push(b'<');
+            for key in keys {
+                out.push(b'/');
+                out.extend_from_slice(key);
+                out.push(b' ');
+                if let Ok(value) = dict.get(key) {
+                    canonical_key(doc, value, out, depth + 1);
+                }
+            }
+            out.push(b'>');
+        }
+        Object::Stream(stream) => {
+            let mut dict = stream.dict.clone();
+            dict.remove(b"Length");
+            out.extend_from_slice(b"stream");
+            canonical_key(doc, &Object::Dictionary(dict), out, depth + 1);
+            out.extend_from_slice(&(stream.content.len() as u64).to_le_bytes());
+            out.extend_from_slice(&stream.content);
+        }
+        Object::Array(items) => {
+            out.push(b'[');
+            for item in items {
+                canonical_key(doc, item, out, depth + 1);
+                out.push(b' ');
+            }
+            out.push(b']');
+        }
+        Object::Null => out.push(b'n'),
+        Object::Boolean(value) => out.extend_from_slice(if *value { b"T" } else { b"F" }),
+        Object::Integer(value) => {
+            out.push(b'i');
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        Object::Real(value) => {
+            out.push(b'r');
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        Object::Name(name) => {
+            out.push(b'/');
+            out.extend_from_slice(&(name.len() as u64).to_le_bytes());
+            out.extend_from_slice(name);
+        }
+        Object::String(bytes, _) => {
+            out.push(b'(');
+            out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+            out.extend_from_slice(bytes);
+        }
+    }
+}
+
 /// Resultado incremental de la deduplicación opt-in de XObjects de imagen.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ImageDedupeStats {
@@ -169,6 +240,7 @@ pub fn dedupe_images(
         // metainformación de aplicación/documento, no parámetros de pintura.
         for key in [
             b"Length".as_slice(),
+            b"Type",
             b"Name",
             b"Metadata",
             b"PieceInfo",
@@ -218,12 +290,16 @@ pub fn dedupe_images(
         if ids.len() < 2 {
             continue;
         }
-        let mut canonical: Vec<(ObjectId, lopdf::Dictionary)> = Vec::new();
+        let mut canonical: Vec<(ObjectId, Vec<u8>)> = Vec::new();
         for &id in ids {
             let Some(Object::Stream(stream)) = doc.objects.get(&id) else {
                 continue;
             };
-            let dict = render_dict(stream);
+            // Comparación por VALOR: las referencias se resuelven, así un
+            // ColorSpace nombre vs ref al mismo nombre, o dos ICC con los mismos
+            // bytes, cuentan como iguales.
+            let mut dict = Vec::new();
+            canonical_key(doc, &Object::Dictionary(render_dict(stream)), &mut dict, 0);
             if let Some(canonical_id) = canonical
                 .iter()
                 .find(|(_, candidate)| *candidate == dict)
@@ -508,6 +584,60 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn image_dedupe_compares_resolved_values_and_ignores_type() {
+        let mut doc = Document::with_version("1.5");
+        let bytes = b"identical encoded image";
+        let rgb_ref = doc.add_object(Object::Name(b"DeviceRGB".to_vec()));
+        let icc_a = doc.add_object(Stream::new(
+            dictionary! { "N" => 3 },
+            b"icc profile".to_vec(),
+        ));
+        let icc_b = doc.add_object(Stream::new(
+            dictionary! { "N" => 3 },
+            b"icc profile".to_vec(),
+        ));
+        let a = doc.add_object(image_stream(dictionary! { "Type" => "XObject" }, bytes));
+        let mut untyped = image_stream(dictionary! { "ColorSpace" => rgb_ref }, bytes);
+        untyped.dict.remove(b"Type");
+        let b = doc.add_object(untyped);
+        let c = doc.add_object(image_stream(
+            dictionary! { "ColorSpace" => vec![Object::Name(b"ICCBased".to_vec()), Object::Reference(icc_a)] },
+            b"icc image",
+        ));
+        let d = doc.add_object(image_stream(
+            dictionary! { "ColorSpace" => vec![Object::Name(b"ICCBased".to_vec()), Object::Reference(icc_b)] },
+            b"icc image",
+        ));
+        let root = doc.add_object(
+            dictionary! { "Type" => "Catalog", "A" => a, "B" => b, "C" => c, "D" => d },
+        );
+        doc.trailer.set("Root", root);
+
+        let stats = dedupe_images(&mut doc, &HashSet::new(), &HashSet::new());
+        assert_eq!(stats.images_removed, 2);
+        let catalog = doc.get_object(root).unwrap().as_dict().unwrap();
+        assert_eq!(catalog.get(b"A").unwrap(), catalog.get(b"B").unwrap());
+        assert_eq!(catalog.get(b"C").unwrap(), catalog.get(b"D").unwrap());
+    }
+
+    #[test]
+    fn image_dedupe_keeps_interpolate_and_decode_differences() {
+        let mut doc = Document::with_version("1.5");
+        let bytes = b"same bytes";
+        let a = doc.add_object(image_stream(dictionary! {}, bytes));
+        let b = doc.add_object(image_stream(dictionary! { "Interpolate" => true }, bytes));
+        let c = doc.add_object(image_stream(
+            dictionary! { "Decode" => vec![1.into(), 0.into(), 1.into(), 0.into(), 1.into(), 0.into()] },
+            bytes,
+        ));
+        let root =
+            doc.add_object(dictionary! { "Type" => "Catalog", "A" => a, "B" => b, "C" => c });
+        doc.trailer.set("Root", root);
+        let stats = dedupe_images(&mut doc, &HashSet::new(), &HashSet::new());
+        assert_eq!(stats, ImageDedupeStats::default());
     }
 
     #[test]
