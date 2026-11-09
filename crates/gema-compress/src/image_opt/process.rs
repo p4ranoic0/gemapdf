@@ -584,7 +584,7 @@ pub(crate) enum Prepared {
     /// Outcome final que NO requiere mutar el doc: preservada/omitida/`Kept`/
     /// máscara. Ya trae su `ImageStat` y warnings.
     Ready(ImageOutcome),
-    /// La recompresión mejora: hay que reescribir el stream (fase serial).
+    /// Hay que reescribir: ahorro en color o conversión gris solicitada.
     Write(WriteReq),
 }
 
@@ -617,8 +617,7 @@ pub(crate) fn commit_prepared(doc: &mut Document, prepared: Prepared) -> Option<
 /// DecodeParms). F2: sólo reportamos el tamaño menor si el reemplazo mutable
 /// realmente ocurrió; si falla, el original sigue intacto y reportamos `Skipped`
 /// (no mentir con el tamaño menor). El piso por-imagen (Kept si no mejora) ya lo
-/// resolvió [`prepare_image`]: aquí `encoded` siempre es más chico que el
-/// original.
+/// resolvió [`prepare_image`]. El gris solicitado se escribe incluso si crece.
 fn write_image(doc: &mut Document, w: WriteReq) -> ImageOutcome {
     let WriteReq {
         id,

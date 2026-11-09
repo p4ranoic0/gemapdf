@@ -449,7 +449,8 @@ pub fn compress_with_control(
     // el original sin aplanar— para que el documento sea universalmente visible
     // en Acrobat. Sin firmas (flattened == 0) la política es irrelevante y el
     // piso sigue aplicando.
-    let result = if output.len() > input.len() && flattened == 0 {
+    // Gris opt-in exige F10 aun con Flatten; sus avisos describen el original.
+    let result = if output.len() > input.len() && (flattened == 0 || opts.grayscale) {
         // La salida efectiva es el original, así que no reportamos objetos que
         // sólo se eliminaron en un candidato descartado.
         if let Some(warning) = report
@@ -458,6 +459,9 @@ pub fn compress_with_control(
             .find(|w| matches!(w, Warning::Grayscale { .. }))
         {
             *warning = crate::gray::unapplied_warning();
+        }
+        if opts.grayscale {
+            report.flattened_signatures = 0;
         }
         report.deduplicated_images = 0;
         report.deduplicated_image_bytes = 0;

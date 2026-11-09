@@ -545,3 +545,67 @@ fn decode_identidad_se_normaliza() {
         "un DeviceGray no conserva Decode de tres componentes"
     );
 }
+
+#[test]
+fn f10_gris_con_firma_aplanada() {
+    let noise: Vec<u8> = (0..160_000u32)
+        .flat_map(|i| {
+            let v = ((i * 73 + i / 400 * 137) % 256) as u8;
+            [v, v, v]
+        })
+        .collect();
+    let stream = image_stream(
+        "DCTDecode",
+        "DeviceRGB".into(),
+        padded(jpeg(&noise, jpeg_encoder::ColorType::Rgb, 20)),
+    );
+    let mut doc = Document::load_mem(&single(stream, 600, false)).unwrap();
+    let appearance=doc.add_object(Stream::new(dictionary! {"Type"=>"XObject","Subtype"=>"Form","BBox"=>vec![0.into(),0.into(),100.into(),100.into()],"Resources"=>dictionary! {}},b"0 0 50 50 re S".to_vec()));
+    let widget=doc.add_object(dictionary! {"Type"=>"Annot","Subtype"=>"Widget","FT"=>"Sig","Rect"=>vec![0.into(),0.into(),100.into(),100.into()],"AP"=>dictionary! {"N"=>appearance}});
+    let page = *doc.get_pages().values().next().unwrap();
+    doc.get_object_mut(page)
+        .unwrap()
+        .as_dict_mut()
+        .unwrap()
+        .set("Annots", vec![widget.into()]);
+    doc.catalog_mut().unwrap().set(
+        "AcroForm",
+        dictionary! {"SigFlags"=>3,"Fields"=>vec![widget.into()]},
+    );
+    let mut input = Vec::new();
+    doc.save_to(&mut input).unwrap();
+    let result = compress(&input, &options()).unwrap();
+    let color = compress(
+        &input,
+        &CompressOptions {
+            grayscale: false,
+            ..options()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        color.report.flattened_signatures, 1,
+        "el control sí pasó por Flatten"
+    );
+    assert_eq!(
+        result.report.flattened_signatures, 0,
+        "la salida efectiva es el original"
+    );
+    assert!(
+        result.output == input,
+        "F10 gris también conserva el original cuando Flatten generó sobrepeso"
+    );
+    #[cfg(feature = "serde")]
+    {
+        let json = gema_compress::ReportJson::from_report(
+            &result.report,
+            Some(gema_compress::SignaturePolicy::Flatten),
+        );
+        assert!(!json.document.document_modified);
+        assert!(json.document.cryptographic_validity_preserved);
+    }
+
+    assert!(
+        matches!(gray_warning(&result),Warning::Grayscale {applied:false,converted_images:0,oversize_images:0,oversize_bytes:0,residual_images:0,residual_pages,residual_reasons} if residual_pages.is_empty()&&residual_reasons.is_empty())
+    );
+}

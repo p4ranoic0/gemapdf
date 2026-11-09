@@ -190,7 +190,14 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
                 r.images.len()
             );
             if r.is_signed {
-                let message = match signatures {
+                let unapplied_gray = r
+                    .warnings
+                    .iter()
+                    .any(|w| matches!(w, gema_compress::Warning::Grayscale { applied: false, .. }));
+                let message = if unapplied_gray {
+                    "se conservó el documento firmado original; no se aplicó el modo gris"
+                } else {
+                    match signatures {
                     SignaturePolicy::Strict => {
                         "documento firmado conservado intacto; no se aplicó compresión"
                     }
@@ -200,6 +207,7 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
                     SignaturePolicy::Flatten => {
                         "la apariencia de la firma se conservó como contenido visual; su validez criptográfica se perdió"
                     }
+                }
                 };
                 println!("aviso: {message}");
             }

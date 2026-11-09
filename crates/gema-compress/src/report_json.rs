@@ -220,6 +220,10 @@ impl ReportJson {
             *slot += 1;
         }
 
+        let unmodified_gray = report
+            .warnings
+            .iter()
+            .any(|w| matches!(w, Warning::Grayscale { applied: false, .. }));
         let strict_blocked = report.is_signed && policy == Some(SignaturePolicy::Strict);
         let flattened = report.is_signed && policy == Some(SignaturePolicy::Flatten);
 
@@ -242,10 +246,18 @@ impl ReportJson {
                 } else {
                     0
                 },
-                visual_appearance_preserved: !report.is_signed || flattened || strict_blocked,
-                cryptographic_validity_preserved: !report.is_signed || strict_blocked,
+                visual_appearance_preserved: !report.is_signed
+                    || flattened
+                    || strict_blocked
+                    || unmodified_gray,
+                cryptographic_validity_preserved: !report.is_signed
+                    || strict_blocked
+                    || unmodified_gray,
                 operation_blocked: strict_blocked,
-                document_modified: report.is_signed && policy.is_some() && !strict_blocked,
+                document_modified: report.is_signed
+                    && policy.is_some()
+                    && !strict_blocked
+                    && !unmodified_gray,
             },
             images: ImagesJson {
                 total: report.images.len(),
