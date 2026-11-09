@@ -476,3 +476,51 @@ fn ciclo_forms() {
     );
     assert!(compress(&bytes, &options()).is_ok());
 }
+
+#[test]
+fn f10_devuelve_original() {
+    // Sin padding documental: el sobrepeso de imagen + branding activa F10.
+    let mut s = red_jpeg();
+    s.set_content(
+        mozjpeg_rs::Encoder::new(mozjpeg_rs::Preset::BaselineBalanced)
+            .quality(1)
+            .encode_rgb(&[255, 0, 0].repeat(160_000), 400, 400)
+            .unwrap(),
+    );
+    let input = single(s, 600, false);
+    let result = compress(&input, &options()).unwrap();
+    assert_eq!(result.output, input);
+    assert!(
+        matches!(gray_warning(&result),Warning::Grayscale {applied:false,converted_images:0,oversize_images:0,oversize_bytes:0,residual_images:0,residual_pages,residual_reasons} if residual_pages.is_empty()&&residual_reasons.is_empty())
+    );
+}
+
+#[test]
+fn strict_firmado() {
+    let mut doc = Document::load_mem(&single(red_jpeg(), 600, true)).unwrap();
+    let root = doc.catalog_mut().unwrap();
+    root.set("AcroForm", dictionary! {"SigFlags"=>3});
+    let mut input = Vec::new();
+    doc.save_to(&mut input).unwrap();
+    let result = compress(
+        &input,
+        &CompressOptions {
+            signatures: gema_compress::SignaturePolicy::Strict,
+            ..options()
+        },
+    )
+    .unwrap();
+    assert_eq!(result.output, input);
+    assert!(
+        matches!(gray_warning(&result),Warning::Grayscale {applied:false,converted_images:0,oversize_images:0,oversize_bytes:0,residual_images:0,residual_pages,residual_reasons} if residual_pages.is_empty()&&residual_reasons.is_empty())
+    );
+}
+
+#[test]
+fn determinista() {
+    let input = single(red_jpeg(), 144, true);
+    let a = compress(&input, &options()).unwrap();
+    let b = compress(&input, &options()).unwrap();
+    assert_eq!(a.output, b.output);
+    assert_eq!(a.report.warnings, b.report.warnings);
+}

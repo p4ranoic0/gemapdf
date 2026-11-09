@@ -11,6 +11,18 @@ pub(crate) fn to_luma8(image: &image::DynamicImage) -> image::GrayImage {
     })
 }
 
+pub(crate) fn unapplied_warning() -> crate::Warning {
+    crate::Warning::Grayscale {
+        applied: false,
+        converted_images: 0,
+        oversize_images: 0,
+        oversize_bytes: 0,
+        residual_images: 0,
+        residual_pages: vec![],
+        residual_reasons: vec![],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

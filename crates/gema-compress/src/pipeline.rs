@@ -128,7 +128,11 @@ pub fn compress_with_control(
             output: input.to_vec(),
             report: Report {
                 output_size: Some(input.len() as u64),
-                warnings: vec![Warning::SignedDocument],
+                warnings: if opts.grayscale {
+                    vec![Warning::SignedDocument, crate::gray::unapplied_warning()]
+                } else {
+                    vec![Warning::SignedDocument]
+                },
                 ..report0
             }
             .with_ratio(),
@@ -448,6 +452,13 @@ pub fn compress_with_control(
     let result = if output.len() > input.len() && flattened == 0 {
         // La salida efectiva es el original, así que no reportamos objetos que
         // sólo se eliminaron en un candidato descartado.
+        if let Some(warning) = report
+            .warnings
+            .iter_mut()
+            .find(|w| matches!(w, Warning::Grayscale { .. }))
+        {
+            *warning = crate::gray::unapplied_warning();
+        }
         report.deduplicated_images = 0;
         report.deduplicated_image_bytes = 0;
         if let Some(summary) = font_summary {

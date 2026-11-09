@@ -218,7 +218,11 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
                 );
             }
             for warning in &r.warnings {
-                if matches!(warning, gema_compress::Warning::FontSubsetting { .. }) {
+                if matches!(
+                    warning,
+                    gema_compress::Warning::FontSubsetting { .. }
+                        | gema_compress::Warning::Grayscale { .. }
+                ) {
                     println!("{warning}");
                 }
             }

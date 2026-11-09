@@ -171,3 +171,37 @@ fn compress_json_images_adds_the_detail_array() {
 
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn json_cli() {
+    let root = std::env::temp_dir().join(format!("gema-gray-json-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let source = root.join("in.pdf");
+    let output = root.join("out.pdf");
+    let mut doc = lopdf::Document::with_version("1.5");
+    let pages = doc.new_object_id();
+    let page=doc.add_object(lopdf::dictionary! {"Type"=>"Page","Parent"=>pages,"MediaBox"=>vec![0.into(),0.into(),600.into(),600.into()]});
+    doc.objects.insert(
+        pages,
+        lopdf::dictionary! {"Type"=>"Pages","Kids"=>vec![page.into()],"Count"=>1}.into(),
+    );
+    let catalog = doc.add_object(lopdf::dictionary! {"Type"=>"Catalog","Pages"=>pages});
+    doc.trailer.set("Root", catalog);
+    doc.save(&source).unwrap();
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_gema"))
+        .args([
+            "compress",
+            source.to_str().unwrap(),
+            output.to_str().unwrap(),
+            "--grayscale",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(result.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    let ws = v["warnings"].as_array().unwrap();
+    let w = ws.iter().find(|w| w["kind"] == "grayscale").unwrap();
+    assert!(w["grayscale"]["residual_pages"].is_array());
+}

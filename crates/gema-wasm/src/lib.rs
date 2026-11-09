@@ -44,7 +44,7 @@ pub fn analyze(input: &[u8]) -> Result<JsValue, JsError> {
 /// - `profile`: "screen" | "ebook" | "printer".
 /// - `options`: objeto `{ image_dpi?, jpeg_quality?, transcode_dpi?,
 ///   transcode_quality?, max_memory_bytes?, max_parallel_images?,
-///   max_image_bytes?, dedupe_images?, subset_fonts?,
+///   max_image_bytes?, dedupe_images?, subset_fonts?, grayscale?,
 ///   signatures?: "strict"|"ignore"|"flatten" }`.
 ///   Las `transcode_*` sólo afectan a escaneos que llegan sin pérdida y salen
 ///   como JPEG (ver ROADMAP §2.b).
