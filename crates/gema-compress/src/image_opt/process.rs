@@ -646,6 +646,12 @@ fn write_image(doc: &mut Document, w: WriteReq) -> ImageOutcome {
                 Object::Name(encoded.color_space.as_bytes().to_vec()),
             );
             stream.dict.remove(b"DecodeParms");
+            if gray_converted {
+                // La pre-flight sólo admite Decode identidad, pero su array
+                // conserva el número de componentes fuente (RGB/CMYK).
+                stream.dict.remove(b"Decode");
+                stream.dict.remove(b"DP");
+            }
             // NB: la entrada /SMask (si existe) se deja intacta a propósito:
             // la máscara sigue referenciada y prune no la borra (lever C).
             true

@@ -524,3 +524,19 @@ fn determinista() {
     assert_eq!(a.output, b.output);
     assert_eq!(a.report.warnings, b.report.warnings);
 }
+
+#[test]
+fn decode_identidad_se_normaliza() {
+    let mut s = red_jpeg();
+    s.dict.set(
+        "Decode",
+        vec![0.into(), 1.into(), 0.into(), 1.into(), 0.into(), 1.into()],
+    );
+    let out = compress(&single(s, 600, true), &options()).unwrap();
+    let gray = first_image(&out.output);
+    assert_gray(&gray);
+    assert!(
+        !gray.dict.has(b"Decode"),
+        "un DeviceGray no conserva Decode de tres componentes"
+    );
+}
