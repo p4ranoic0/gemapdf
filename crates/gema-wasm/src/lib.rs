@@ -186,6 +186,7 @@ fn to_js_report(r: &Report, policy: Option<SignaturePolicy>) -> ReportJson {
 /// `CompressOptions::default()`. Claves desconocidas se ignoran (serde).
 #[derive(Debug, Default, serde::Deserialize)]
 struct JsOptions {
+    grayscale: Option<bool>,
     image_dpi: Option<u32>,
     jpeg_quality: Option<u8>,
     /// Perillas sólo para escaneos que llegan sin pérdida (raster en Flate) y
@@ -215,6 +216,7 @@ fn to_compress_options(profile: &str, o: &JsOptions) -> Result<CompressOptions, 
     let defaults = CompressOptions::default();
     Ok(CompressOptions {
         profile,
+        grayscale: o.grayscale.unwrap_or(defaults.grayscale),
         image_dpi: o.image_dpi,
         jpeg_quality: o.jpeg_quality,
         transcode_dpi: o.transcode_dpi,
@@ -289,6 +291,20 @@ mod tests {
     /// El binding no reimplementa el mapeo (vive en core), pero sí tiene que
     /// seguir aceptando los mismos nombres y rechazando lo desconocido en vez
     /// de caer a un default silencioso.
+    #[test]
+    fn js_grayscale_mapea() {
+        assert!(
+            !to_compress_options("ebook", &JsOptions::default())
+                .unwrap()
+                .grayscale
+        );
+        let o = JsOptions {
+            grayscale: Some(true),
+            ..Default::default()
+        };
+        assert!(to_compress_options("ebook", &o).unwrap().grayscale);
+    }
+
     #[test]
     fn maps_profile_strings() {
         for (name, expected) in [

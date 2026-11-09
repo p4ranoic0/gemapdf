@@ -20,6 +20,9 @@ enum Cmd {
         output: String,
         #[arg(long, default_value = "ebook")]
         profile: String,
+        /// Convierte sólo las imágenes elegibles a escala de grises.
+        #[arg(long)]
+        grayscale: bool,
         /// Override del DPI objetivo de imagen (gana al perfil). Para calibración.
         #[arg(long)]
         image_dpi: Option<u32>,
@@ -120,6 +123,7 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
             input,
             output,
             profile,
+            grayscale,
             image_dpi,
             jpeg_quality,
             quality_target,
@@ -144,6 +148,7 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
                 &bytes,
                 &CompressOptions {
                     profile,
+                    grayscale,
                     image_dpi,
                     jpeg_quality,
                     quality_target,
@@ -714,5 +719,30 @@ mod tests {
             "compress", "in.pdf", "out.pdf", "--json"
         ])));
         assert!(!is_remove_text(args(&["--json"])));
+    }
+}
+
+#[cfg(test)]
+mod grayscale_tests {
+    use super::*;
+    #[test]
+    fn parse_grayscale() {
+        let cli =
+            Cli::try_parse_from(["gema", "compress", "in.pdf", "out.pdf", "--grayscale"]).unwrap();
+        assert!(matches!(
+            cli.cmd,
+            Cmd::Compress {
+                grayscale: true,
+                ..
+            }
+        ));
+        let cli = Cli::try_parse_from(["gema", "compress", "in.pdf", "out.pdf"]).unwrap();
+        assert!(matches!(
+            cli.cmd,
+            Cmd::Compress {
+                grayscale: false,
+                ..
+            }
+        ));
     }
 }

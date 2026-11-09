@@ -138,6 +138,23 @@ pub enum Warning {
         /// Programas preservados, agrupados por motivo estable.
         abstained_by_reason: Vec<(&'static str, usize)>,
     },
+    /// Resultado efectivo del modo gris de imágenes.
+    Grayscale {
+        /// La salida es el documento procesado (false con F10 o Strict).
+        applied: bool,
+        /// Imágenes de color convertidas.
+        converted_images: usize,
+        /// Conversiones cuyo stream no ahorró bytes.
+        oversize_images: usize,
+        /// Bytes adicionales de esas conversiones.
+        oversize_bytes: u64,
+        /// Imágenes de color que quedaron sin convertir.
+        residual_images: usize,
+        /// Páginas 1-based con residuales, ordenadas y únicas.
+        residual_pages: Vec<u32>,
+        /// Motivos estables, ordenados y sin duplicados.
+        residual_reasons: Vec<(&'static str, usize)>,
+    },
     /// Aviso sin estructura propia; el texto ya es legible.
     Other(String),
 }
@@ -163,6 +180,17 @@ impl std::fmt::Display for Warning {
                     write!(f, " [{reason}]={count}")?;
                 }
                 Ok(())
+            }
+            Warning::Grayscale {
+                applied,
+                converted_images,
+                oversize_images,
+                oversize_bytes,
+                residual_images,
+                residual_pages,
+                residual_reasons,
+            } => {
+                write!(f, "gris de imágenes: aplicado={applied}; convertidas={converted_images}; sobrepeso={oversize_images} (+{oversize_bytes} bytes); residuales={residual_images}; páginas={residual_pages:?}; motivos={residual_reasons:?}")
             }
             Warning::Other(msg) => f.write_str(msg),
         }

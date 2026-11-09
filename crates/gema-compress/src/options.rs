@@ -108,6 +108,8 @@ pub struct ProfileParams {
 /// tal en el versionado.
 #[derive(Debug, Clone)]
 pub struct CompressOptions {
+    /// Convierte a gris las imágenes de color elegibles. Opt-in; texto y vectores conservan su color.
+    pub grayscale: bool,
     /// Preajuste base de DPI y calidad.
     pub profile: Profile,
     /// Sobreescribe el DPI objetivo del perfil. `None` = usar el del perfil.
@@ -188,6 +190,7 @@ pub struct CompressOptions {
 impl Default for CompressOptions {
     fn default() -> Self {
         Self {
+            grayscale: false,
             profile: Profile::Ebook,
             image_dpi: None,
             jpeg_quality: None,

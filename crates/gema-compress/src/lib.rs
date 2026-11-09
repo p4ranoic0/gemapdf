@@ -54,9 +54,11 @@ pub use report::{ImageAction, ImageSkipReason, ImageSkipSummary, ImageStat, Repo
 
 mod report_json;
 pub use report_json::{
-    ByActionJson, DocumentJson, ImageStatJson, ImagesJson, InputJson, OutputJson, ReportJson,
-    SkipSummaryJson, WarningJson, REPORT_SCHEMA_VERSION,
+    ByActionJson, DocumentJson, GrayscaleJson, ImageStatJson, ImagesJson, InputJson, OutputJson,
+    ReportJson, SkipSummaryJson, WarningJson, REPORT_SCHEMA_VERSION,
 };
+
+mod gray;
 
 mod options;
 pub use options::{CompressOptions, Profile, ProfileParams, SignaturePolicy};

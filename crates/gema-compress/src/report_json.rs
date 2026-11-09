@@ -155,6 +155,29 @@ pub struct WarningJson {
     pub object_id: Option<u32>,
     /// Texto legible. **No es superficie estable**: puede cambiar de redacción.
     pub message: String,
+    /// Presente únicamente para `kind = "grayscale"`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub grayscale: Option<GrayscaleJson>,
+}
+
+/// Resumen numérico del modo gris, compartido por CLI y WASM.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct GrayscaleJson {
+    /// El PDF procesado es la salida efectiva.
+    pub applied: bool,
+    /// Imágenes convertidas.
+    pub converted_images: usize,
+    /// Imágenes con stream gris mayor o igual al original.
+    pub oversize_images: usize,
+    /// Bytes adicionales en esos streams.
+    pub oversize_bytes: u64,
+    /// XObjects de color sin convertir.
+    pub residual_images: usize,
+    /// Páginas con imágenes residuales, incluidas inline.
+    pub residual_pages: Vec<u32>,
+    /// Conteos por motivo estable.
+    pub residual_reasons: Vec<(&'static str, usize)>,
 }
 
 /// Nombre estable de una acción.
@@ -263,6 +286,7 @@ impl ReportJson {
                         Warning::ImageSkipped(_) => "image_skipped",
                         Warning::StreamsSkipped { .. } => "streams_skipped",
                         Warning::FontSubsetting { .. } => "font_subsetting",
+                        Warning::Grayscale { .. } => "grayscale",
                         Warning::Other(_) => "other",
                     },
                     object_id: match w {
@@ -270,6 +294,26 @@ impl ReportJson {
                         _ => None,
                     },
                     message: w.to_string(),
+                    grayscale: match w {
+                        Warning::Grayscale {
+                            applied,
+                            converted_images,
+                            oversize_images,
+                            oversize_bytes,
+                            residual_images,
+                            residual_pages,
+                            residual_reasons,
+                        } => Some(GrayscaleJson {
+                            applied: *applied,
+                            converted_images: *converted_images,
+                            oversize_images: *oversize_images,
+                            oversize_bytes: *oversize_bytes,
+                            residual_images: *residual_images,
+                            residual_pages: residual_pages.clone(),
+                            residual_reasons: residual_reasons.clone(),
+                        }),
+                        _ => None,
+                    },
                 })
                 .collect(),
         }
@@ -458,5 +502,38 @@ mod tests {
         let v = serde_json::to_value(ReportJson::from_report(&r, None)).unwrap();
         assert!(v.get("output").is_none(), "`output` debe estar ausente");
         assert!(v["document"].get("signature_policy").is_none());
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod grayscale_tests {
+    use super::*;
+    #[test]
+    fn json_grayscale() {
+        let report = Report {
+            warnings: vec![
+                Warning::Grayscale {
+                    applied: true,
+                    converted_images: 2,
+                    oversize_images: 1,
+                    oversize_bytes: 33,
+                    residual_images: 3,
+                    residual_pages: vec![1, 3],
+                    residual_reasons: vec![("jpx", 3)],
+                },
+                Warning::SignedDocument,
+            ],
+            ..Default::default()
+        };
+        let v = serde_json::to_value(ReportJson::from_report(&report, None)).unwrap();
+        assert_eq!(v["warnings"][0]["kind"], "grayscale");
+        assert_eq!(
+            v["warnings"][0]["grayscale"],
+            serde_json::json!({
+                "applied": true, "converted_images": 2, "oversize_images": 1, "oversize_bytes": 33,
+                "residual_images": 3, "residual_pages": [1, 3], "residual_reasons": [["jpx", 3]],
+            })
+        );
+        assert!(v["warnings"][1].get("grayscale").is_none());
     }
 }
