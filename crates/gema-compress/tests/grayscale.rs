@@ -479,14 +479,19 @@ fn ciclo_forms() {
 
 #[test]
 fn f10_devuelve_original() {
-    // Sin padding documental: el sobrepeso de imagen + branding activa F10.
-    let mut s = red_jpeg();
-    s.set_content(
-        mozjpeg_rs::Encoder::new(mozjpeg_rs::Preset::BaselineBalanced)
-            .quality(1)
-            .encode_rgb(&[255, 0, 0].repeat(160_000), 400, 400)
-            .unwrap(),
+    // Mismo caso de sobrepeso que oversize_cuenta; sin slack documental.
+    let noise: Vec<u8> = (0..160_000u32)
+        .flat_map(|i| {
+            let v = ((i * 73 + i / 400 * 137) % 256) as u8;
+            [v, v, v]
+        })
+        .collect();
+    let s = image_stream(
+        "DCTDecode",
+        "DeviceRGB".into(),
+        padded(jpeg(&noise, jpeg_encoder::ColorType::Rgb, 20)),
     );
+    assert!(s.content.len() > 50 * 1024);
     let input = single(s, 600, false);
     let result = compress(&input, &options()).unwrap();
     assert_eq!(result.output, input);
