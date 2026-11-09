@@ -27,6 +27,7 @@ use lopdf::{Document, Object, Stream};
 /// (canal alfa descartado, imagen no soportada/omitida, etc.). Siempre se
 /// produce un `stat` para que las imágenes omitidas tengan señal en el reporte.
 pub(crate) struct ImageOutcome {
+    pub(crate) gray_converted: bool,
     pub(crate) stat: ImageStat,
     pub(crate) warnings: Vec<Warning>,
 }
@@ -34,6 +35,7 @@ pub(crate) struct ImageOutcome {
 /// Construye un outcome que marca la imagen como omitida (no soportada).
 fn skipped(id: lopdf::ObjectId, orig_len: u64, reason: ImageSkipReason) -> ImageOutcome {
     ImageOutcome {
+        gray_converted: false,
         stat: ImageStat {
             object_id: id.0,
             original_bytes: orig_len,
@@ -52,6 +54,7 @@ fn memory_skipped(
     limit: u64,
 ) -> ImageOutcome {
     ImageOutcome {
+        gray_converted: false,
         stat: ImageStat {
             object_id: id.0,
             original_bytes: orig_len,
@@ -70,6 +73,7 @@ fn memory_skipped(
 /// resumen tras el bucle para no hacer ruido.
 fn preserved(id: lopdf::ObjectId, orig_len: u64) -> ImageOutcome {
     ImageOutcome {
+        gray_converted: false,
         stat: ImageStat {
             object_id: id.0,
             original_bytes: orig_len,
@@ -95,6 +99,7 @@ fn smask_skip(
     why: &str,
 ) -> ImageOutcome {
     ImageOutcome {
+        gray_converted: false,
         stat: ImageStat {
             object_id: id.0,
             original_bytes: orig_len,
@@ -593,6 +598,7 @@ pub(crate) struct WriteReq {
     orig_len: u64,
     action: ImageAction,
     warnings: Vec<Warning>,
+    gray_converted: bool,
 }
 
 /// Etapa 5 (serial) — traduce un [`Prepared`] en `ImageOutcome`, mutando el doc
@@ -622,6 +628,7 @@ fn write_image(doc: &mut Document, w: WriteReq) -> ImageOutcome {
         orig_len,
         action,
         mut warnings,
+        gray_converted,
     } = w;
     // F5: guardamos la longitud antes de mover `bytes` (sin clonar).
     let new_len = encoded.bytes.len() as u64;
@@ -650,6 +657,7 @@ fn write_image(doc: &mut Document, w: WriteReq) -> ImageOutcome {
         // el reemplazo no se aplicó: original intacto → omitida
         warnings.push(Warning::ImageSkipped(id.0));
         return ImageOutcome {
+            gray_converted: false,
             stat: ImageStat {
                 object_id: id.0,
                 original_bytes: orig_len,
@@ -662,6 +670,7 @@ fn write_image(doc: &mut Document, w: WriteReq) -> ImageOutcome {
     }
 
     ImageOutcome {
+        gray_converted,
         stat: ImageStat {
             object_id: id.0,
             original_bytes: orig_len,
@@ -674,7 +683,10 @@ fn write_image(doc: &mut Document, w: WriteReq) -> ImageOutcome {
 }
 
 /// Parámetros por-imagen que el bucle del pipeline pasa a [`prepare_image`].
+#[derive(Clone, Copy)]
 pub(crate) struct ImageParams {
+    pub(crate) grayscale: bool,
+    pub(crate) gray_eligible: bool,
     pub(crate) quality: u8,
     /// Modo perceptual: SSIM2 objetivo (spec 2026-07-11). `Some(τ)` solo si la
     /// imagen es elegible (el pipeline ya filtró tamaño mínimo); la etapa
@@ -783,6 +795,36 @@ pub(crate) fn prepare_image(
         _ => p.quality,
     };
 
+    let gray_converted = p.grayscale
+        && p.gray_eligible
+        && !matches!(
+            decoded.image,
+            image::DynamicImage::ImageLuma8(_) | image::DynamicImage::ImageLumaA8(_)
+        );
+    // El piso COLOR decide la geometría efectiva. No existe una cota entre
+    // tamaños JPEG color/gris que permita deducir Kept del tamaño gris.
+    let color_kept = gray_converted
+        && p.downsample
+        && !p.is_smask
+        && p.effective_dpi
+            .is_some_and(|dpi| dpi.is_finite() && dpi > target_dpi as f32 * 1.05)
+        && !matches!(
+            prepare_image(
+                doc,
+                id,
+                &ImageParams {
+                    grayscale: false,
+                    ..*p
+                },
+                #[cfg(feature = "perceptual")]
+                cache,
+            ),
+            Prepared::Write(_)
+        );
+    if gray_converted {
+        decoded.image = image::DynamicImage::ImageLuma8(crate::gray::to_luma8(&decoded.image));
+    }
+
     let Transformed {
         image,
         codec,
@@ -793,7 +835,7 @@ pub(crate) fn prepare_image(
     } = transform(
         decoded,
         &src,
-        p.downsample && !p.is_smask,
+        p.downsample && !p.is_smask && !color_kept,
         target_dpi,
         p.effective_dpi,
     );
@@ -815,6 +857,7 @@ pub(crate) fn prepare_image(
                 match crate::image_opt::perceptual::encode_jpeg_at_target_cached(
                     cache,
                     bytes_only.then(|| crate::image_opt::perceptual::CacheKeySrc {
+                        grayscale: gray_converted,
                         raw_bytes: &src.raw_bytes,
                         filter: src.stream_for_flate.dict.get(b"Filter").ok().cloned(),
                         decode_parms: src.stream_for_flate.dict.get(b"DecodeParms").ok().cloned(),
@@ -860,8 +903,9 @@ pub(crate) fn prepare_image(
     // Piso por-imagen (antes en `finalize`, ahora read-only): si el output no es
     // más chico que el original, conservamos el original (`Kept`) — no hace falta
     // mutar el doc, así que es un outcome final sin fase de escritura.
-    if encoded.bytes.len() as u64 >= src.orig_len {
+    if !gray_converted && encoded.bytes.len() as u64 >= src.orig_len {
         return Prepared::Ready(ImageOutcome {
+            gray_converted: false,
             stat: ImageStat {
                 object_id: id.0,
                 original_bytes: src.orig_len,
@@ -881,6 +925,7 @@ pub(crate) fn prepare_image(
         orig_len: src.orig_len,
         action,
         warnings,
+        gray_converted,
     })
 }
 

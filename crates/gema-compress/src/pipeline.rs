@@ -183,11 +183,16 @@ pub fn compress_with_control(
     // Pre-pasada de máscaras (lever C): imágenes usadas como /SMask.
     let smask_ids = crate::image_opt::masks::collect_smask_ids(&doc);
 
+    let mut converted_images = 0;
+    let mut oversize_images = 0;
+    let mut oversize_bytes = 0;
     let mut stats = Vec::new();
     let mut img_warnings = Vec::new();
 
     // Parámetros por-imagen: lookups read-only en los mapas ya construidos.
     let mk_params = |id: lopdf::ObjectId| ImageParams {
+        grayscale: opts.grayscale,
+        gray_eligible: true,
         quality: params.jpeg_quality,
         quality_target: opts.quality_target,
         target_dpi: params.image_dpi,
@@ -291,6 +296,13 @@ pub fn compress_with_control(
         // mismos eventos de progreso que antes del presupuesto.
         for prep in prepared {
             if let Some(outcome) = commit_prepared(&mut doc, prep) {
+                if outcome.gray_converted {
+                    converted_images += 1;
+                    if outcome.stat.output_bytes >= outcome.stat.original_bytes {
+                        oversize_images += 1;
+                        oversize_bytes += outcome.stat.output_bytes - outcome.stat.original_bytes;
+                    }
+                }
                 stats.push(outcome.stat);
                 img_warnings.extend(outcome.warnings);
             }
@@ -332,6 +344,17 @@ pub fn compress_with_control(
         });
     }
     report.images = stats;
+    if opts.grayscale {
+        report.warnings.push(Warning::Grayscale {
+            applied: true,
+            converted_images,
+            oversize_images,
+            oversize_bytes,
+            residual_images: 0,
+            residual_pages: vec![],
+            residual_reasons: vec![],
+        });
+    }
     let mut skip_totals = std::collections::BTreeMap::new();
     for stat in &report.images {
         if let Some(reason) = stat.skip_reason {

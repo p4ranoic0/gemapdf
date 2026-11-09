@@ -1,10 +1,8 @@
 //! Conversión sobre el RGB que ya interpreta el motor, sin gestión ICC adicional.
-#[allow(dead_code)] // Cableado al pipeline en la tarea 2.
 pub(crate) fn rgb8_to_gray8(r: u8, g: u8, b: u8) -> u8 {
     ((30 * u32::from(r) + 59 * u32::from(g) + 11 * u32::from(b) + 50) / 100) as u8
 }
 
-#[allow(dead_code)]
 pub(crate) fn to_luma8(image: &image::DynamicImage) -> image::GrayImage {
     let rgb = image.to_rgb8();
     image::GrayImage::from_fn(rgb.width(), rgb.height(), |x, y| {

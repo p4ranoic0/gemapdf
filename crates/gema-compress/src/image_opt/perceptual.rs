@@ -246,6 +246,7 @@ pub(crate) const CACHE_MAX_BYTES: u64 = 128 * 1024 * 1024;
 /// distintos). Solo la ruta DCT construye una — la ruta Flate pasa `None` al
 /// wrapper y va directo a la búsqueda.
 pub(crate) struct CacheKeySrc<'a> {
+    pub(crate) grayscale: bool,
     pub(crate) raw_bytes: &'a [u8],
     pub(crate) filter: Option<lopdf::Object>,
     pub(crate) decode_parms: Option<lopdf::Object>,
@@ -253,6 +254,7 @@ pub(crate) struct CacheKeySrc<'a> {
 }
 
 struct CacheEntry {
+    grayscale: bool,
     raw: Vec<u8>,
     filter: Option<lopdf::Object>,
     decode_parms: Option<lopdf::Object>,
@@ -303,7 +305,8 @@ pub(crate) fn encode_jpeg_at_target_cached(
     {
         let entries = cache.entries.lock().expect("cache lock");
         if let Some(e) = entries.iter().find(|e| {
-            e.target_bits == target_bits
+            e.grayscale == src.grayscale
+                && e.target_bits == target_bits
                 && e.w == w
                 && e.h == h
                 && e.raw == src.raw_bytes
@@ -329,6 +332,7 @@ pub(crate) fn encode_jpeg_at_target_cached(
     if cache.stored_bytes.load(Relaxed) + entry_bytes <= cache.max_bytes {
         cache.stored_bytes.fetch_add(entry_bytes, Relaxed);
         entries.push(CacheEntry {
+            grayscale: src.grayscale,
             raw: src.raw_bytes.to_vec(),
             filter: src.filter,
             decode_parms: src.decode_parms,
@@ -479,6 +483,7 @@ mod tests {
         let filt = || Some(lopdf::Object::Name(b"DCTDecode".to_vec()));
         let src = |bytes: &'static [u8]| {
             Some(CacheKeySrc {
+                grayscale: false,
                 raw_bytes: bytes,
                 filter: filt(),
                 decode_parms: None,
@@ -505,6 +510,7 @@ mod tests {
         assert_eq!(cache.hits(), 1, "stream distinto no puede hacer hit");
         // cadena /Filter distinta → miss (des-encadena a bytes distintos)
         let src_flate = Some(CacheKeySrc {
+            grayscale: false,
             raw_bytes: b"STREAMBYTES",
             filter: Some(lopdf::Object::Array(vec![
                 lopdf::Object::Name(b"FlateDecode".to_vec()),
@@ -528,6 +534,7 @@ mod tests {
             "Columns" => 400,
         });
         let src_parms = Some(CacheKeySrc {
+            grayscale: false,
             raw_bytes: b"STREAMBYTES",
             filter: filt(),
             decode_parms: Some(parms),
@@ -549,6 +556,7 @@ mod tests {
         let cache = SearchCache::new();
         let src = || {
             Some(CacheKeySrc {
+                grayscale: false,
                 raw_bytes: b"STREAMBYTES",
                 filter: Some(lopdf::Object::Name(b"DCTDecode".to_vec())),
                 decode_parms: None,
@@ -569,6 +577,7 @@ mod tests {
         let raw = photo();
         let mk = |bytes: &'static [u8]| {
             Some(CacheKeySrc {
+                grayscale: false,
                 raw_bytes: bytes,
                 filter: Some(lopdf::Object::Name(b"DCTDecode".to_vec())),
                 decode_parms: None,
@@ -701,5 +710,27 @@ mod tests {
             image::load_from_memory(&e.bytes).is_ok(),
             "zune abre gris mozjpeg"
         );
+    }
+    #[test]
+    fn cache_compartido_separa_luma_y_color() {
+        let cache = SearchCache::new();
+        let rgb = photo();
+        let gray = RawImage {
+            image: image::DynamicImage::ImageLuma8(crate::gray::to_luma8(&rgb.image)),
+        };
+        let source = |grayscale| {
+            Some(CacheKeySrc {
+                grayscale,
+                raw_bytes: b"same-source",
+                filter: None,
+                decode_parms: None,
+                dp: None,
+            })
+        };
+        let (color, _) = encode_jpeg_at_target_cached(&cache, source(false), &rgb, 55.0).unwrap();
+        let (gray, _) = encode_jpeg_at_target_cached(&cache, source(true), &gray, 55.0).unwrap();
+        assert_eq!(cache.hits(), 0);
+        assert_eq!(color.color_space, "DeviceRGB");
+        assert_eq!(gray.color_space, "DeviceGray");
     }
 }
