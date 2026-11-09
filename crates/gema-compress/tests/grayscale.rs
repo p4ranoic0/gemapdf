@@ -618,3 +618,40 @@ fn f10_gris_con_firma_aplanada() {
         matches!(gray_warning(&result),Warning::Grayscale {applied:false,converted_images:0,oversize_images:0,oversize_bytes:0,residual_images:0,residual_pages,residual_reasons} if residual_pages.is_empty()&&residual_reasons.is_empty())
     );
 }
+
+#[test]
+fn colorspace_ciclica_termina() {
+    let mut doc = Document::with_version("1.5");
+    let cs = doc.new_object_id();
+    doc.objects.insert(
+        cs,
+        vec![
+            Object::Name(b"Indexed".to_vec()),
+            cs.into(),
+            0.into(),
+            Object::String(vec![0], lopdf::StringFormat::Literal),
+        ]
+        .into(),
+    );
+    let id = doc.add_object(image_stream(
+        "FlateDecode",
+        cs.into(),
+        flate(&vec![0; 160_000]),
+    ));
+    let input = pdf(
+        doc,
+        vec![dictionary! {"XObject"=>dictionary! {"Im"=>id}}],
+        vec![b"/Im Do".to_vec()],
+        true,
+    );
+    let out = compress(&input, &options()).unwrap();
+    residual(&out, "image_unsupported", &[1], 1);
+}
+
+#[test]
+fn imagen_sin_dimensiones_residual() {
+    let mut s = red_jpeg();
+    s.dict.remove(b"Width");
+    let out = compress(&single(s, 600, true), &options()).unwrap();
+    residual(&out, "image_unsupported", &[1], 1);
+}

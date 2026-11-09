@@ -21,6 +21,13 @@ fn dict<'a>(doc: &'a Document, value: &'a Object) -> Option<&'a Dictionary> {
 }
 
 pub(crate) fn is_gray(doc: &Document, cs: &Object) -> bool {
+    is_gray_at_depth(doc, cs, 0)
+}
+
+fn is_gray_at_depth(doc: &Document, cs: &Object, depth: usize) -> bool {
+    if depth >= 32 {
+        return false;
+    }
     match resolve(doc, cs) {
         Some(Object::Name(n)) => matches!(n.as_slice(), b"DeviceGray" | b"G" | b"CalGray"),
         Some(Object::Array(a)) => match a.first().and_then(|o| o.as_name().ok()) {
@@ -32,7 +39,9 @@ pub(crate) fn is_gray(doc: &Document, cs: &Object) -> bool {
                     .and_then(|o| o.as_i64().ok())
                     == Some(1)
             }
-            Some(b"Indexed" | b"I") => a.get(1).is_some_and(|o| is_gray(doc, o)),
+            Some(b"Indexed" | b"I") => a
+                .get(1)
+                .is_some_and(|o| is_gray_at_depth(doc, o, depth + 1)),
             _ => false,
         },
         _ => false,
@@ -238,6 +247,15 @@ pub(crate) fn gray_plan(
             .is_some_and(|o| matches!(o, Object::Array(_)))
         {
             Some("color_key_mask")
+        } else if ![b"Width".as_slice(), b"Height".as_slice()]
+            .iter()
+            .all(|key| {
+                d.get(key)
+                    .and_then(Object::as_i64)
+                    .is_ok_and(|value| (1..=100_000).contains(&value))
+            })
+        {
+            Some("image_unsupported")
         } else {
             None
         };
