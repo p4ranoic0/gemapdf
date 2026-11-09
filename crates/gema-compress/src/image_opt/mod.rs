@@ -2,6 +2,8 @@ pub(crate) mod classify;
 pub(crate) mod colorspace;
 pub(crate) mod decode;
 pub(crate) mod flate;
+pub(crate) mod gray_eligibility;
+pub(crate) mod inline;
 pub mod jpeg;
 pub(crate) mod masks;
 #[cfg(feature = "perceptual")]

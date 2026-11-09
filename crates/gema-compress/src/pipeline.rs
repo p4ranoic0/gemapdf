@@ -182,6 +182,9 @@ pub fn compress_with_control(
 
     // Pre-pasada de máscaras (lever C): imágenes usadas como /SMask.
     let smask_ids = crate::image_opt::masks::collect_smask_ids(&doc);
+    let mut gray_plan = opts
+        .grayscale
+        .then(|| crate::image_opt::gray_eligibility::gray_plan(&doc, &preserve, &smask_ids));
 
     let mut converted_images = 0;
     let mut oversize_images = 0;
@@ -192,7 +195,13 @@ pub fn compress_with_control(
     // Parámetros por-imagen: lookups read-only en los mapas ya construidos.
     let mk_params = |id: lopdf::ObjectId| ImageParams {
         grayscale: opts.grayscale,
-        gray_eligible: true,
+        gray_preserve: !preserve.contains(&id)
+            && gray_plan
+                .as_ref()
+                .is_some_and(|plan| plan.residual.contains_key(&id)),
+        gray_eligible: gray_plan
+            .as_ref()
+            .is_some_and(|plan| plan.eligible.contains(&id)),
         quality: params.jpeg_quality,
         quality_target: opts.quality_target,
         target_dpi: params.image_dpi,
@@ -311,6 +320,46 @@ pub fn compress_with_control(
         }
     }
 
+    if let Some(plan) = gray_plan.as_mut() {
+        for stat in &stats {
+            if stat.action == ImageAction::Skipped {
+                let id = image_ids.iter().find(|id| id.0 == stat.object_id).copied();
+                if let Some(id) = id.filter(|id| plan.eligible.contains(id)) {
+                    plan.residual.entry(id).or_insert(
+                        if stat.skip_reason == Some(crate::ImageSkipReason::Jpx) {
+                            "jpx"
+                        } else {
+                            "image_unsupported"
+                        },
+                    );
+                }
+            }
+        }
+    }
+    let gray_warning = gray_plan.map(|plan| {
+        let mut pages = crate::image_opt::gray_eligibility::pages_using(
+            &doc,
+            &plan.residual.keys().copied().collect(),
+        );
+        pages.extend(&plan.residual_pages_inline);
+        let mut reasons = std::collections::BTreeMap::new();
+        for reason in plan.residual.values() {
+            *reasons.entry(*reason).or_insert(0usize) += 1;
+        }
+        if !plan.residual_pages_inline.is_empty() {
+            reasons.insert("inline_image", plan.residual_pages_inline.len());
+        }
+        Warning::Grayscale {
+            applied: true,
+            converted_images,
+            oversize_images,
+            oversize_bytes,
+            residual_images: plan.residual.len(),
+            residual_pages: pages.into_iter().collect(),
+            residual_reasons: reasons.into_iter().collect(),
+        }
+    });
+
     if cancel.is_cancelled() {
         return Err(GemaError::Cancelled);
     }
@@ -344,16 +393,8 @@ pub fn compress_with_control(
         });
     }
     report.images = stats;
-    if opts.grayscale {
-        report.warnings.push(Warning::Grayscale {
-            applied: true,
-            converted_images,
-            oversize_images,
-            oversize_bytes,
-            residual_images: 0,
-            residual_pages: vec![],
-            residual_reasons: vec![],
-        });
+    if let Some(warning) = gray_warning {
+        report.warnings.push(warning);
     }
     let mut skip_totals = std::collections::BTreeMap::new();
     for stat in &report.images {

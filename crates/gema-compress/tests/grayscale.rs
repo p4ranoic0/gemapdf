@@ -295,7 +295,7 @@ fn oversize_cuenta() {
             [v, v, v]
         })
         .collect();
-    s.content = padded(jpeg(&noise, jpeg_encoder::ColorType::Rgb, 20));
+    s.set_content(padded(jpeg(&noise, jpeg_encoder::ColorType::Rgb, 20)));
     let result = compress(&single(s, 600, true), &options()).unwrap();
     assert_gray(&first_image(&result.output));
     assert!(result.report.images[0].output_bytes >= result.report.images[0].original_bytes);
@@ -306,4 +306,173 @@ fn oversize_cuenta() {
             ..
         }
     )));
+}
+
+fn gray_warning(result: &gema_compress::CompressResult) -> &Warning {
+    let ws: Vec<_> = result
+        .report
+        .warnings
+        .iter()
+        .filter(|w| matches!(w, Warning::Grayscale { .. }))
+        .collect();
+    assert_eq!(ws.len(), 1);
+    ws[0]
+}
+fn residual(result: &gema_compress::CompressResult, reason: &str, pages: &[u32], count: usize) {
+    match gray_warning(result) {
+        Warning::Grayscale {
+            residual_images,
+            residual_pages,
+            residual_reasons,
+            ..
+        } => {
+            assert_eq!(*residual_images, count);
+            assert_eq!(residual_pages, pages);
+            assert!(residual_reasons.iter().any(|(r, n)| *r == reason
+                && *n
+                    == if reason == "inline_image" {
+                        pages.len()
+                    } else {
+                        count
+                    }));
+        }
+        _ => unreachable!(),
+    }
+}
+#[test]
+fn residual_compartida_pags() {
+    let mut doc = Document::with_version("1.5");
+    let id = doc.add_object(image_stream(
+        "JPXDecode",
+        "DeviceRGB".into(),
+        vec![0; 60_000],
+    ));
+    let form=doc.add_object(Stream::new(dictionary! { "Type"=>"XObject", "Subtype"=>"Form", "BBox"=>vec![0.into(),0.into(),1.into(),1.into()], "Resources"=>dictionary! {"XObject"=>dictionary! {"Im"=>id}} },b"/Im Do".to_vec()));
+    let res = dictionary! { "XObject"=>dictionary! {"F"=>form}};
+    let bytes = pdf(
+        doc,
+        vec![res.clone(), dictionary! {}, res],
+        vec![b"/F Do".to_vec(), vec![], b"/F Do".to_vec()],
+        true,
+    );
+    let result = compress(&bytes, &options()).unwrap();
+    residual(&result, "jpx", &[1, 3], 1);
+}
+#[test]
+fn sello_preservado() {
+    let mut s = red_jpeg();
+    s.dict.set("Width", 200);
+    s.dict.set("Height", 100);
+    let mut data = s.content.clone();
+    data.resize(20_000, 0);
+    s.set_content(data);
+    let data = s.content.clone();
+    let result = compress(&single(s, 600, true), &options()).unwrap();
+    assert_eq!(first_image(&result.output).content, data);
+    residual(&result, "preserved_stamp", &[1], 1);
+}
+#[test]
+fn mask_group_intacta() {
+    let mut doc = Document::with_version("1.5");
+    let s = red_jpeg();
+    let data = s.content.clone();
+    let id = doc.add_object(s);
+    let form=doc.add_object(Stream::new(dictionary! {"Type"=>"XObject","Subtype"=>"Form","BBox"=>vec![0.into(),0.into(),400.into(),400.into()],"Group"=>dictionary! {"S"=>"Transparency","CS"=>"DeviceRGB"},"Resources"=>dictionary! {"XObject"=>dictionary! {"Im"=>id}}},b"q 400 0 0 400 0 0 cm /Im Do Q".to_vec()));
+    let state = doc.add_object(
+        dictionary! {"Type"=>"ExtGState","SMask"=>dictionary! {"S"=>"Luminosity","G"=>form}},
+    );
+    let bytes = pdf(
+        doc,
+        vec![dictionary! {"ExtGState"=>dictionary! {"GS"=>state}}],
+        vec![b"/GS gs 0 0 400 400 re f".to_vec()],
+        true,
+    );
+    let result = compress(&bytes, &options()).unwrap();
+    assert_eq!(first_image(&result.output).content, data);
+    residual(&result, "mask_group", &[1], 1);
+}
+#[test]
+fn decode_residual() {
+    let mut s = red_jpeg();
+    s.dict.set(
+        "Decode",
+        vec![1.into(), 0.into(), 1.into(), 0.into(), 1.into(), 0.into()],
+    );
+    let data = s.content.clone();
+    let result = compress(&single(s, 600, true), &options()).unwrap();
+    assert_eq!(first_image(&result.output).content, data);
+    residual(&result, "decode", &[1], 1);
+}
+#[test]
+fn color_key_residual() {
+    let mut s = red_jpeg();
+    s.dict.set(
+        "Mask",
+        vec![
+            250.into(),
+            255.into(),
+            0.into(),
+            5.into(),
+            0.into(),
+            5.into(),
+        ],
+    );
+    let data = s.content.clone();
+    let result = compress(&single(s, 600, true), &options()).unwrap();
+    assert_eq!(first_image(&result.output).content, data);
+    residual(&result, "color_key_mask", &[1], 1);
+}
+#[test]
+fn imagemask_no_cuenta() {
+    let mut s = image_stream("FlateDecode", "DeviceRGB".into(), flate(&vec![0; 20_000]));
+    s.dict.remove(b"ColorSpace");
+    s.dict.set("ImageMask", true);
+    s.dict.set("BitsPerComponent", 1);
+    let result = compress(&single(s, 600, true), &options()).unwrap();
+    assert!(
+        matches!(gray_warning(&result),Warning::Grayscale {residual_images:0,residual_pages,residual_reasons,..} if residual_pages.is_empty()&&residual_reasons.is_empty())
+    );
+}
+#[test]
+fn inline_residual() {
+    for cs in ["RGB", "G"] {
+        let data = if cs == "RGB" {
+            vec![255, 0, 0]
+        } else {
+            vec![77]
+        };
+        let mut content = format!("q BI /W 1 /H 1 /BPC 8 /CS /{cs} ID ").into_bytes();
+        content.extend(data);
+        content.extend_from_slice(b" EI Q");
+        let input = pdf(
+            Document::with_version("1.5"),
+            vec![dictionary! {}],
+            vec![content],
+            true,
+        );
+        let result = compress(&input, &options()).unwrap();
+        if cs == "RGB" {
+            residual(&result, "inline_image", &[1], 0);
+        } else {
+            assert!(
+                matches!(gray_warning(&result),Warning::Grayscale {residual_images:0,residual_pages,residual_reasons,..} if residual_pages.is_empty()&&residual_reasons.is_empty())
+            );
+        }
+    }
+}
+#[test]
+fn ciclo_forms() {
+    let mut doc = Document::with_version("1.5");
+    let a = doc.new_object_id();
+    let b = doc.new_object_id();
+    for (id, other) in [(a, b), (b, a)] {
+        doc.objects.insert(id,Stream::new(dictionary! {"Type"=>"XObject","Subtype"=>"Form","BBox"=>vec![0.into(),0.into(),1.into(),1.into()],"Resources"=>dictionary! {"XObject"=>dictionary! {"F"=>other}}},b"/F Do".to_vec()).into());
+    }
+    let bytes = pdf(
+        doc,
+        vec![dictionary! {"XObject"=>dictionary! {"F"=>a}}],
+        vec![b"/F Do".to_vec()],
+        true,
+    );
+    assert!(compress(&bytes, &options()).is_ok());
 }

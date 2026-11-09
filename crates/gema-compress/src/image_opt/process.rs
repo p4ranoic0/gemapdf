@@ -687,6 +687,7 @@ fn write_image(doc: &mut Document, w: WriteReq) -> ImageOutcome {
 pub(crate) struct ImageParams {
     pub(crate) grayscale: bool,
     pub(crate) gray_eligible: bool,
+    pub(crate) gray_preserve: bool,
     pub(crate) quality: u8,
     /// Modo perceptual: SSIM2 objetivo (spec 2026-07-11). `Some(τ)` solo si la
     /// imagen es elegible (el pipeline ya filtró tamaño mínimo); la etapa
@@ -728,6 +729,13 @@ pub(crate) fn prepare_image(
     p: &ImageParams,
     #[cfg(feature = "perceptual")] cache: &crate::image_opt::perceptual::SearchCache,
 ) -> Prepared {
+    if p.gray_preserve {
+        if let Ok(stream) = doc.get_object(id).and_then(Object::as_stream) {
+            let mut outcome = preserved(id, stream.content.len() as u64);
+            outcome.stat.action = ImageAction::Kept;
+            return Prepared::Ready(outcome);
+        }
+    }
     let src = match load(doc, id, p.preserve, p.max_image_bytes) {
         Load::NotImage => return Prepared::Skip,
         Load::Done(outcome) => return Prepared::Ready(outcome),
@@ -857,7 +865,7 @@ pub(crate) fn prepare_image(
                 match crate::image_opt::perceptual::encode_jpeg_at_target_cached(
                     cache,
                     bytes_only.then(|| crate::image_opt::perceptual::CacheKeySrc {
-                        grayscale: gray_converted,
+                        grayscale: p.grayscale,
                         raw_bytes: &src.raw_bytes,
                         filter: src.stream_for_flate.dict.get(b"Filter").ok().cloned(),
                         decode_parms: src.stream_for_flate.dict.get(b"DecodeParms").ok().cloned(),
