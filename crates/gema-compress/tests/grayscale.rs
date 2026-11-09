@@ -360,12 +360,21 @@ fn residual_compartida_pags() {
 }
 #[test]
 fn sello_preservado() {
-    let mut s = red_jpeg();
+    let mut data = Vec::new();
+    jpeg_encoder::Encoder::new(&mut data, 95)
+        .encode(
+            &[255, 0, 0].repeat(200 * 100),
+            200,
+            100,
+            jpeg_encoder::ColorType::Rgb,
+        )
+        .unwrap();
+    data.resize(20_000, 0);
+    let mut s = image_stream("DCTDecode", "DeviceRGB".into(), data);
     s.dict.set("Width", 200);
     s.dict.set("Height", 100);
-    let mut data = s.content.clone();
-    data.resize(20_000, 0);
-    s.set_content(data);
+    let decoded = image::load_from_memory(&s.content).unwrap();
+    assert_eq!((decoded.width(), decoded.height()), (200, 100));
     let data = s.content.clone();
     let result = compress(&single(s, 600, true), &options()).unwrap();
     assert_eq!(first_image(&result.output).content, data);
