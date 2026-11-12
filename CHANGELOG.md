@@ -3,6 +3,37 @@
 All notable changes to GemaPDF are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.9.0 — 2026-11-12
+
+### Breaking
+
+- `CompressOptions` gains the exhaustive `grayscale` field (default `false`).
+  Full struct literals must add it; `..Default::default()` callers are unaffected.
+
+### Added
+
+- Opt-in grayscale conversion of eligible color image XObjects, exposed by
+  `--grayscale` in the CLI and `grayscale` in WASM options. Text and vectors keep
+  their colors. Conversion uses the RGB decoded by the existing engine and
+  rounded luma `0.30 R + 0.59 G + 0.11 B`, at the same dimensions as color output.
+- Eligible color images that color would keep unchanged remain byte-identical
+  in grayscale mode and are reported as `kept_original`. Signature/seal images, unsupported images,
+  non-identity Decode, color-key masks and soft-mask groups are also residuals;
+  inline images are reported by page. Already-gray images keep their existing path.
+- `Warning::Grayscale` and the optional JSON `grayscale` payload report converted
+  images, oversize versus the color candidate, residual reasons and all pages that
+  reach residual images. F10 and strict-signature returns report `applied: false`
+  with zero counters. Reports without the option retain their existing JSON shape.
+
+### Validation
+
+- On 25 scanned documents (2,857 pages), grayscale saves 5.229% against color at
+  identical settings and dimensions; the 12 additional documents save 5.313%.
+  All six predeclared quality/OCR criteria pass, using an OCR noise floor frozen
+  before grayscale compression. CPU is 1.634 times color and remains a trade-off
+  for the caller. This is a local release preparation; WASM package size is not
+  claimed until its separate gate can run with the required local tools.
+
 ## 0.8.2 — 2026-10-06
 
 ### Fixed

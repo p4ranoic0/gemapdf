@@ -152,6 +152,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 `downsample`/`recompress_streams`/`remove_metadata`. The opt-in
 `dedupe_images` flag collapses byte-identical image XObjects when their render
 semantics match; signature/seal images and transparency masks are excluded.
+The opt-in `grayscale: true` option converts eligible color image XObjects to
+rounded luma (`0.30 R + 0.59 G + 0.11 B`) at the same dimensions as color output.
+Text and vectors keep their colors. Color images that color mode would keep
+unchanged stay byte-identical and remain in color (`kept_original`); signature/seal images,
+masks, inline images and unsupported encodings may also remain in color.
+`Warning::Grayscale` reports converted images, residual reasons and pages, and
+oversize versus the color candidate. F10 or a strict-signature return reports
+`applied: false` and zero counters. The default is `false`.
+
 See
 `crates/gema-compress/src/options.rs` for the full set and their profile
 defaults (Screen 72dpi/q40, Ebook 150dpi/q65, Printer 300dpi/q80).
@@ -188,6 +197,9 @@ gema compress in.pdf out.pdf --profile ebook --signatures strict
 # Bound concurrent image work and reject single images over 256 MiB:
 gema compress in.pdf out.pdf --max-memory-mib 512 --max-parallel-images 4 \
   --max-image-mib 256
+
+# Convert eligible color images to gray; text/vectors and residuals keep color:
+gema compress in.pdf out.pdf --grayscale --json
 
 # Collapse repeated byte-identical letterheads/stamps when safe:
 gema compress in.pdf out.pdf --dedupe-images
@@ -275,11 +287,20 @@ bytes, no report/options/progress — kept for a simpler v1-style call) and
 `analyze(input)` (inspects a PDF without compressing it, e.g. to show page
 count and signature status before the user commits to compressing).
 
+The WASM options also accept `grayscale: true`, with the same image-only
+conversion and residual reporting as the Rust API and CLI.
+
 ### JSON report
 
 `gema compress --json` and `gema analyze --json` print the report to stdout as
 JSON. The WASM binding emits this same versioned schema since 0.4.0. Human
 output stays the default.
+
+With `--grayscale`, a warning with `kind: "grayscale"` carries a `grayscale`
+object containing `applied`, `converted_images`, `oversize_images`,
+`oversize_bytes`, `residual_images`, `residual_pages`, and `residual_reasons`.
+Reasons and page numbers are sorted and unique. With grayscale off, that payload
+is absent and the existing report shape is preserved.
 
 Add `--json-images` to `compress` for a per-image `images.detail` array. It is
 opt-in because `object_id` refers to the *input* document.
@@ -349,6 +370,10 @@ private.
   report fixtures with struct literals. `#[non_exhaustive]` on a struct forbids
   the literal from another crate *even with* `..Default::default()`, so it is not
   used. Adding a field is a breaking change.
+
+Version 0.9.0 adds the exhaustive `CompressOptions.grayscale` field, default
+`false`. Full struct literals must include it; callers using
+`..Default::default()` need no change.
 
 Version 0.5.0 adds the exhaustive `CompressOptions` fields `max_pages`,
 `max_objects`, `max_stream_bytes`, and `max_total_work_bytes`; this is the
