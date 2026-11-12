@@ -144,7 +144,7 @@ pub enum Warning {
         applied: bool,
         /// Imágenes de color convertidas.
         converted_images: usize,
-        /// Conversiones cuyo stream no ahorró bytes.
+        /// Conversiones cuyo stream pesa al menos lo que el candidato color.
         oversize_images: usize,
         /// Bytes adicionales de esas conversiones.
         oversize_bytes: u64,

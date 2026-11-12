@@ -28,6 +28,8 @@ use lopdf::{Document, Object, Stream};
 /// produce un `stat` para que las imágenes omitidas tengan señal en el reporte.
 pub(crate) struct ImageOutcome {
     pub(crate) gray_converted: bool,
+    /// Tamaño del candidato color para medir sobrepeso gris (v3).
+    pub(crate) gray_color_bytes: Option<u64>,
     pub(crate) stat: ImageStat,
     pub(crate) warnings: Vec<Warning>,
 }
@@ -36,6 +38,7 @@ pub(crate) struct ImageOutcome {
 fn skipped(id: lopdf::ObjectId, orig_len: u64, reason: ImageSkipReason) -> ImageOutcome {
     ImageOutcome {
         gray_converted: false,
+        gray_color_bytes: None,
         stat: ImageStat {
             object_id: id.0,
             original_bytes: orig_len,
@@ -55,6 +58,7 @@ fn memory_skipped(
 ) -> ImageOutcome {
     ImageOutcome {
         gray_converted: false,
+        gray_color_bytes: None,
         stat: ImageStat {
             object_id: id.0,
             original_bytes: orig_len,
@@ -74,6 +78,7 @@ fn memory_skipped(
 fn preserved(id: lopdf::ObjectId, orig_len: u64) -> ImageOutcome {
     ImageOutcome {
         gray_converted: false,
+        gray_color_bytes: None,
         stat: ImageStat {
             object_id: id.0,
             original_bytes: orig_len,
@@ -100,6 +105,7 @@ fn smask_skip(
 ) -> ImageOutcome {
     ImageOutcome {
         gray_converted: false,
+        gray_color_bytes: None,
         stat: ImageStat {
             object_id: id.0,
             original_bytes: orig_len,
@@ -599,6 +605,7 @@ pub(crate) struct WriteReq {
     action: ImageAction,
     warnings: Vec<Warning>,
     gray_converted: bool,
+    gray_color_bytes: Option<u64>,
 }
 
 /// Etapa 5 (serial) — traduce un [`Prepared`] en `ImageOutcome`, mutando el doc
@@ -628,6 +635,7 @@ fn write_image(doc: &mut Document, w: WriteReq) -> ImageOutcome {
         action,
         mut warnings,
         gray_converted,
+        gray_color_bytes,
     } = w;
     // F5: guardamos la longitud antes de mover `bytes` (sin clonar).
     let new_len = encoded.bytes.len() as u64;
@@ -663,6 +671,7 @@ fn write_image(doc: &mut Document, w: WriteReq) -> ImageOutcome {
         warnings.push(Warning::ImageSkipped(id.0));
         return ImageOutcome {
             gray_converted: false,
+            gray_color_bytes: None,
             stat: ImageStat {
                 object_id: id.0,
                 original_bytes: orig_len,
@@ -676,6 +685,7 @@ fn write_image(doc: &mut Document, w: WriteReq) -> ImageOutcome {
 
     ImageOutcome {
         gray_converted,
+        gray_color_bytes,
         stat: ImageStat {
             object_id: id.0,
             original_bytes: orig_len,
@@ -814,26 +824,26 @@ pub(crate) fn prepare_image(
             decoded.image,
             image::DynamicImage::ImageLuma8(_) | image::DynamicImage::ImageLumaA8(_)
         );
-    // El piso COLOR decide la geometría efectiva. No existe una cota entre
-    // tamaños JPEG color/gris que permita deducir Kept del tamaño gris.
-    let color_kept = gray_converted
-        && p.downsample
-        && !p.is_smask
-        && p.effective_dpi
-            .is_some_and(|dpi| dpi.is_finite() && dpi > target_dpi as f32 * 1.05)
-        && !matches!(
-            prepare_image(
-                doc,
-                id,
-                &ImageParams {
-                    grayscale: false,
-                    ..*p
-                },
-                #[cfg(feature = "perceptual")]
-                cache,
-            ),
-            Prepared::Write(_)
-        );
+    // La decisión COLOR es el contrato: si no escribe, el gris tampoco
+    // recodifica. Se consulta incluso sin downsampling (escaneos de bajo DPI).
+    // Con Write, ambas rutas usan el mismo transform y las mismas perillas.
+    let gray_color_bytes = if gray_converted {
+        match prepare_image(
+            doc,
+            id,
+            &ImageParams {
+                grayscale: false,
+                ..*p
+            },
+            #[cfg(feature = "perceptual")]
+            cache,
+        ) {
+            Prepared::Write(color) => Some(color.encoded.bytes.len() as u64),
+            unchanged => return unchanged,
+        }
+    } else {
+        None
+    };
     if gray_converted {
         decoded.image = image::DynamicImage::ImageLuma8(crate::gray::to_luma8(&decoded.image));
     }
@@ -848,7 +858,7 @@ pub(crate) fn prepare_image(
     } = transform(
         decoded,
         &src,
-        p.downsample && !p.is_smask && !color_kept,
+        p.downsample && !p.is_smask,
         target_dpi,
         p.effective_dpi,
     );
@@ -919,6 +929,7 @@ pub(crate) fn prepare_image(
     if !gray_converted && encoded.bytes.len() as u64 >= src.orig_len {
         return Prepared::Ready(ImageOutcome {
             gray_converted: false,
+            gray_color_bytes: None,
             stat: ImageStat {
                 object_id: id.0,
                 original_bytes: src.orig_len,
@@ -939,6 +950,7 @@ pub(crate) fn prepare_image(
         action,
         warnings,
         gray_converted,
+        gray_color_bytes,
     })
 }
 

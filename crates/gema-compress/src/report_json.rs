@@ -168,7 +168,7 @@ pub struct GrayscaleJson {
     pub applied: bool,
     /// Imágenes convertidas.
     pub converted_images: usize,
-    /// Imágenes con stream gris mayor o igual al original.
+    /// Imágenes con stream gris mayor o igual al candidato color.
     pub oversize_images: usize,
     /// Bytes adicionales en esos streams.
     pub oversize_bytes: u64,

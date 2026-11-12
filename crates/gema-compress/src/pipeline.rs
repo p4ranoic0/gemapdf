@@ -311,9 +311,11 @@ pub fn compress_with_control(
             if let Some(outcome) = commit_prepared(&mut doc, prep) {
                 if outcome.gray_converted {
                     converted_images += 1;
-                    if outcome.stat.output_bytes >= outcome.stat.original_bytes {
-                        oversize_images += 1;
-                        oversize_bytes += outcome.stat.output_bytes - outcome.stat.original_bytes;
+                    if let Some(color_bytes) = outcome.gray_color_bytes {
+                        if outcome.stat.output_bytes >= color_bytes {
+                            oversize_images += 1;
+                            oversize_bytes += outcome.stat.output_bytes - color_bytes;
+                        }
                     }
                 }
                 stats.push(outcome.stat);
@@ -326,6 +328,13 @@ pub fn compress_with_control(
 
     if let Some(plan) = gray_plan.as_mut() {
         for stat in &stats {
+            if stat.action == ImageAction::Kept {
+                if let Some(id) = image_ids.iter().find(|id| id.0 == stat.object_id) {
+                    if plan.eligible.contains(id) {
+                        plan.residual.entry(*id).or_insert("kept_original");
+                    }
+                }
+            }
             if stat.action == ImageAction::Skipped {
                 let id = image_ids.iter().find(|id| id.0 == stat.object_id).copied();
                 if let Some(id) = id.filter(|id| plan.eligible.contains(id)) {

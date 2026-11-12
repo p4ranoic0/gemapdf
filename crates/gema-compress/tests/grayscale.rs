@@ -248,8 +248,10 @@ fn minimal_jpeg() -> Stream {
 }
 
 #[test]
-fn geometria_kept() {
-    let input = single(minimal_jpeg(), 600, true);
+fn gris_kept_queda_intacta() {
+    let original = minimal_jpeg();
+    assert!(original.content.len() > 50 * 1024);
+    let input = single(original.clone(), 600, true);
     let color = compress(
         &input,
         &CompressOptions {
@@ -260,8 +262,43 @@ fn geometria_kept() {
     .unwrap();
     assert_eq!(color.report.images[0].action, ImageAction::Kept);
     let gray = compress(&input, &options()).unwrap();
-    assert_gray(&first_image(&gray.output));
-    assert_eq!(dims(&first_image(&gray.output)), (400, 400));
+    let output = first_image(&gray.output);
+    assert_eq!(output.content, original.content);
+    assert_eq!(
+        output.dict.get(b"ColorSpace").unwrap().as_name().unwrap(),
+        b"DeviceRGB"
+    );
+    residual(&gray, "kept_original", &[1], 1);
+    assert!(matches!(
+        gray_warning(&gray),
+        Warning::Grayscale {
+            converted_images: 0,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn geometria_kept() {
+    let original = minimal_jpeg();
+    let input = single(original.clone(), 600, true);
+    let color = compress(
+        &input,
+        &CompressOptions {
+            grayscale: false,
+            ..options()
+        },
+    )
+    .unwrap();
+    assert_eq!(color.report.images[0].action, ImageAction::Kept);
+    let gray = compress(&input, &options()).unwrap();
+    let output = first_image(&gray.output);
+    assert_eq!(output.content, original.content);
+    assert_eq!(
+        output.dict.get(b"ColorSpace").unwrap().as_name().unwrap(),
+        b"DeviceRGB"
+    );
+    assert_eq!(dims(&output), dims(&first_image(&color.output)));
 }
 
 #[test]
@@ -286,26 +323,49 @@ fn geometria_downsample() {
 
 #[test]
 fn oversize_cuenta() {
-    // Fuente q1 con textura de baja frecuencia: re-encode q45 requiere más bytes.
-    let mut s = minimal_jpeg();
-    // Se usa q100 en origen y un patrón q1 que el decoder conserva: verificar el caso real.
-    let noise: Vec<u8> = (0..160_000u32)
+    // Croma alternada a 4:4:4. Tras remuestrear, el candidato color es
+    // menor que el gris: el sobrepeso v3 se mide contra COLOR, no la fuente.
+    let pixels: Vec<u8> = (0..160_000u32)
         .flat_map(|i| {
-            let v = ((i * 73 + i / 400 * 137) % 256) as u8;
-            [v, v, v]
+            if (i % 400 + i / 400) % 2 == 0 {
+                [128, 45, 75]
+            } else {
+                [128, 210, 180]
+            }
         })
         .collect();
-    s.set_content(padded(jpeg(&noise, jpeg_encoder::ColorType::Rgb, 20)));
-    let result = compress(&single(s, 600, true), &options()).unwrap();
-    assert_gray(&first_image(&result.output));
-    assert!(result.report.images[0].output_bytes >= result.report.images[0].original_bytes);
-    assert!(result.report.warnings.iter().any(|w| matches!(
-        w,
-        Warning::Grayscale {
-            oversize_images: 1,
-            ..
-        }
-    )));
+    let mut bytes = Vec::new();
+    let mut enc = jpeg_encoder::Encoder::new(&mut bytes, 100);
+    enc.set_sampling_factor(jpeg_encoder::SamplingFactor::F_1_1);
+    enc.encode(&pixels, 400, 400, jpeg_encoder::ColorType::Ycbcr)
+        .unwrap();
+    let source = image_stream("DCTDecode", "DeviceRGB".into(), padded(bytes));
+    assert!(source.content.len() > 50 * 1024);
+    let input = single(source, 200, true);
+    let opts = CompressOptions {
+        jpeg_quality: Some(100),
+        ..options()
+    };
+    let color = compress(
+        &input,
+        &CompressOptions {
+            grayscale: false,
+            ..opts.clone()
+        },
+    )
+    .unwrap();
+    assert_eq!(color.report.images[0].action, ImageAction::Downsampled);
+    let result = compress(&input, &opts).unwrap();
+    let output = first_image(&result.output);
+    assert_gray(&output);
+    assert_eq!(dims(&output), dims(&first_image(&color.output)));
+    let gray_len = result.report.images[0].output_bytes;
+    let color_len = color.report.images[0].output_bytes;
+    assert!(gray_len >= color_len);
+    assert!(gray_len < result.report.images[0].original_bytes);
+    assert!(matches!(gray_warning(&result), Warning::Grayscale {
+        oversize_images: 1, oversize_bytes, ..
+    } if *oversize_bytes == gray_len - color_len));
 }
 
 fn gray_warning(result: &gema_compress::CompressResult) -> &Warning {
