@@ -6,6 +6,11 @@
 # Para saltarlo deliberadamente: git commit --no-verify
 set -euo pipefail
 source "$HOME/.cargo/env" 2>/dev/null || true
+# git exporta GIT_DIR/GIT_INDEX_FILE a los hooks. cargo-deny actualiza su base de
+# avisos con el git del sistema, que las hereda: hacía `reset --hard FETCH_HEAD`
+# sobre ESTE repo (rama movida a un commit viejo) y volcaba el árbol en la caché
+# ~/.cargo/advisory-dbs. Este hook no usa git, así que se limpian todas.
+unset $(git rev-parse --local-env-vars)
 
 echo "→ pre-commit: fmt + tests + clippy + dependencias…"
 cargo fmt --all --check
