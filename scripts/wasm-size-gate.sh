@@ -46,11 +46,16 @@
 #   (0.8.2)   dedupe de imágenes por valor canónico          1574732   +6942     625700  +2352
 #             techo subido por decisión de HG (2026-10-06): archivo diferencia 1 20,65 → 14,39 MB
 #             (ebook), con render idéntico en poppler y pdf.js.
+#   2a42dcc   modo gris de imágenes (0.9.0)                  1608557  +33825     638465 +12765
+#             techo subido por decisión de HG (2026-11-14): −5,23 % frente al modo color sin
+#             tocar los dpi. +31 KB son los residuales (032d75a: qué imágenes no convertir y su
+#             aviso), no la conversión (+1,3 KB); dejar el gris inalcanzable sólo ahorra 28 bytes.
+#             Medido en el CI (Linux); en macOS el mismo commit da 1608988.
 #
 # El grueso (+34198) entra cuando la inspección se conecta al borrado en la Task 7;
 # en la Task 5 el compilador la descartaba por código muerto.
 set -euo pipefail
-CEILING="${1:-1574732}"
+CEILING="${1:-1608557}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/crates/gema-wasm"
 wasm-pack build --target web >/dev/null 2>&1
