@@ -30,6 +30,11 @@ pub mod options;
 pub use options::{EditOptions, ObjectBudget};
 
 mod inspect;
+mod pages;
+pub use pages::{
+    arrange_pages, ArrangeReport, ArrangeResult, CatalogEntry, PagePlanError, PageSpec, Rotation,
+    PAGES_REPORT_SCHEMA_VERSION,
+};
 pub(crate) mod matrix;
 mod replacement;
 mod report;

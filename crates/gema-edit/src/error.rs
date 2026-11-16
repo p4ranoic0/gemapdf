@@ -23,6 +23,12 @@ pub enum EditError {
     /// no producen este error: dejan `inspection_incomplete`.
     #[error("limit exceeded: {0}")]
     LimitExceeded(LimitKind),
+    /// El plan de [`crate::arrange_pages`] no se puede aplicar.
+    #[error("invalid page plan: {0}")]
+    PagePlan(crate::PagePlanError),
+    /// El documento está cifrado; las operaciones de páginas no lo tocan.
+    #[error("the document is encrypted")]
+    Encrypted,
 }
 
 /// Qué límite se superó.
