@@ -39,3 +39,10 @@ path = "fuzz_targets/edit_text.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "arrange_pages"
+path = "fuzz_targets/arrange_pages.rs"
+test = false
+doc = false
+bench = false

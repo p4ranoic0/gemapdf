@@ -127,11 +127,11 @@ jobs:
       # útiles en 120 s (medido en local el 2026-09-20).
       - name: sembrar el corpus con el fixture del repo
         run: |
-          for t in analyze compress compress_with_control edit_text; do
+          for t in analyze compress compress_with_control edit_text arrange_pages; do
             mkdir -p "fuzz/corpus/$t"
             cp crates/gema-edit/tests/fixtures/editor-fuentes.pdf "fuzz/corpus/$t/"
           done
-      - name: los cuatro targets compilan
+      - name: los cinco targets compilan
         run: cargo +nightly fuzz build
       # 120 s por target: suficiente para que un crash reproducible aparezca en
       # la corrida diaria sin convertir el job en una maratón.
@@ -143,6 +143,8 @@ jobs:
         run: cargo +nightly fuzz run compress_with_control -- -max_total_time=120
       - name: edit_text
         run: cargo +nightly fuzz run edit_text -- -max_total_time=120
+      - name: arrange_pages
+        run: cargo +nightly fuzz run arrange_pages -- -max_total_time=120
       # Sin esto un crash queda sólo en el log y hay que adivinar la entrada.
       - name: guardar el caso que rompió
         if: failure()
