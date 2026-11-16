@@ -19,6 +19,33 @@ export function analyze(input) {
 }
 
 /**
+ * Selecciona, ordena y rota páginas de un documento sin rehacerlo.
+ *
+ * `plan`: array de `{ source, rotate? }`: `source` es el índice 0-based de la
+ * página original y `rotate` (`"r0"` | `"r90"` | `"r180"` | `"r270"`, por
+ * defecto `"r0"`) se suma a la rotación que ya tiene. La salida tiene esas
+ * páginas en ese orden; las demás se quitan. Devuelve
+ * `{ output: Uint8Array, report: {...} }`. El informe cuenta lo que se
+ * perdió al quitar páginas: `outline_items_cleared`, `named_dests_removed`,
+ * `links_cleared`, `form_fields_removed`, `other_refs_cleared`,
+ * `page_labels` y `struct_tree` (`"absent"` | `"kept"` | `"dropped"`), además
+ * de `pages_out`, `dropped` y `signatures`. Lanza con un plan vacío, fuera
+ * de rango o con páginas repetidas, y con documentos cifrados.
+ * @param {Uint8Array} input
+ * @param {any} plan
+ * @returns {any}
+ */
+export function arrange_pages(input, plan) {
+    const ptr0 = passArray8ToWasm0(input, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.arrange_pages(ptr0, len0, plan);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
  * Comprime un PDF. `profile`: "screen" | "ebook" | "printer".
  * Devuelve los bytes del PDF optimizado. (API v1: se mantiene sin cambios;
  * para reporte/opciones/progreso usa `compress_with_report`.)
@@ -46,7 +73,7 @@ export function compress(input, profile) {
  * - `profile`: "screen" | "ebook" | "printer".
  * - `options`: objeto `{ image_dpi?, jpeg_quality?, transcode_dpi?,
  *   transcode_quality?, max_memory_bytes?, max_parallel_images?,
- *   max_image_bytes?, dedupe_images?, subset_fonts?,
+ *   max_image_bytes?, dedupe_images?, subset_fonts?, grayscale?,
  *   signatures?: "strict"|"ignore"|"flatten" }`.
  *   Las `transcode_*` sólo afectan a escaneos que llegan sin pérdida y salen
  *   como JPEG (ver ROADMAP §2.b).
@@ -186,6 +213,10 @@ function __wbg_get_imports() {
             const ret = typeof(val) === 'object' && val !== null;
             return ret;
         },
+        __wbg___wbindgen_is_string_ea5e6cc2e4141dfe: function(arg0) {
+            const ret = typeof(arg0) === 'string';
+            return ret;
+        },
         __wbg___wbindgen_is_undefined_c05833b95a3cf397: function(arg0) {
             const ret = arg0 === undefined;
             return ret;
@@ -227,9 +258,17 @@ function __wbg_get_imports() {
             const ret = arg0.done;
             return ret;
         },
+        __wbg_entries_015dc610cd81ede0: function(arg0) {
+            const ret = Object.entries(arg0);
+            return ret;
+        },
         __wbg_getRandomValues_cc7f052a444bb2ce: function() { return handleError(function (arg0, arg1) {
             globalThis.crypto.getRandomValues(getArrayU8FromWasm0(arg0, arg1));
         }, arguments); },
+        __wbg_get_507a50627bffa49b: function(arg0, arg1) {
+            const ret = arg0[arg1 >>> 0];
+            return ret;
+        },
         __wbg_get_c7eb1f358a7654df: function() { return handleError(function (arg0, arg1) {
             const ret = Reflect.get(arg0, arg1);
             return ret;

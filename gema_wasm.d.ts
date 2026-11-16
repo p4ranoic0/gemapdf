@@ -10,6 +10,22 @@
 export function analyze(input: Uint8Array): any;
 
 /**
+ * Selecciona, ordena y rota páginas de un documento sin rehacerlo.
+ *
+ * `plan`: array de `{ source, rotate? }`: `source` es el índice 0-based de la
+ * página original y `rotate` (`"r0"` | `"r90"` | `"r180"` | `"r270"`, por
+ * defecto `"r0"`) se suma a la rotación que ya tiene. La salida tiene esas
+ * páginas en ese orden; las demás se quitan. Devuelve
+ * `{ output: Uint8Array, report: {...} }`. El informe cuenta lo que se
+ * perdió al quitar páginas: `outline_items_cleared`, `named_dests_removed`,
+ * `links_cleared`, `form_fields_removed`, `other_refs_cleared`,
+ * `page_labels` y `struct_tree` (`"absent"` | `"kept"` | `"dropped"`), además
+ * de `pages_out`, `dropped` y `signatures`. Lanza con un plan vacío, fuera
+ * de rango o con páginas repetidas, y con documentos cifrados.
+ */
+export function arrange_pages(input: Uint8Array, plan: any): any;
+
+/**
  * Comprime un PDF. `profile`: "screen" | "ebook" | "printer".
  * Devuelve los bytes del PDF optimizado. (API v1: se mantiene sin cambios;
  * para reporte/opciones/progreso usa `compress_with_report`.)
@@ -22,7 +38,7 @@ export function compress(input: Uint8Array, profile: string): Uint8Array;
  * - `profile`: "screen" | "ebook" | "printer".
  * - `options`: objeto `{ image_dpi?, jpeg_quality?, transcode_dpi?,
  *   transcode_quality?, max_memory_bytes?, max_parallel_images?,
- *   max_image_bytes?, dedupe_images?, subset_fonts?,
+ *   max_image_bytes?, dedupe_images?, subset_fonts?, grayscale?,
  *   signatures?: "strict"|"ignore"|"flatten" }`.
  *   Las `transcode_*` sólo afectan a escaneos que llegan sin pérdida y salen
  *   como JPEG (ver ROADMAP §2.b).
@@ -74,6 +90,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly analyze: (a: number, b: number) => [number, number, number];
+    readonly arrange_pages: (a: number, b: number, c: any) => [number, number, number];
     readonly compress: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly compress_with_report: (a: number, b: number, c: number, d: number, e: any, f: number) => [number, number, number];
     readonly remove_text_glyphs: (a: number, b: number, c: any) => [number, number, number];
