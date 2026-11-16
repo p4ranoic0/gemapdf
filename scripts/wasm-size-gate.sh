@@ -51,11 +51,15 @@
 #             tocar los dpi. +31 KB son los residuales (032d75a: qué imágenes no convertir y su
 #             aviso), no la conversión (+1,3 KB); dejar el gris inalcanzable sólo ahorra 28 bytes.
 #             Medido en el CI (Linux); en macOS el mismo commit da 1608988.
+#   1aad827   arrange_pages: ordenar, rotar y quitar páginas  1664352  +55364     655730 +16776
+#             techo subido por decisión de HG (2026-11-15): Reordenar conserva marcadores, destinos,
+#             enlaces, capas, XMP y estructura que pdf-lib perdía, y no deja páginas quitadas ocultas.
+#             ~25 KB son el módulo y ~14 KB la escritura con object streams. Medido en macOS.
 #
 # El grueso (+34198) entra cuando la inspección se conecta al borrado en la Task 7;
 # en la Task 5 el compilador la descartaba por código muerto.
 set -euo pipefail
-CEILING="${1:-1608557}"
+CEILING="${1:-1664352}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/crates/gema-wasm"
 wasm-pack build --target web >/dev/null 2>&1
