@@ -13,12 +13,13 @@ A pure-Rust, portable PDF compression engine. It ships as four crates:
   the same source.
 - **`gema-edit`** — regional text editing: removes glyphs from requested regions,
   replaces text inside content streams, and reports what may survive; it is not a
-  redaction primitive.
+  redaction primitive. It also selects, orders and rotates pages in place
+  (`arrange_pages`), keeping the document catalog.
 - **`gema-cli`** — a command-line tool (`gema`) built on `gema-compress` and
   `gema-edit`.
 - **`gema-wasm`** — WebAssembly bindings (via `wasm-bindgen`) so the same
   engine runs in a browser tab, client-side, with no server round-trip, including
-  `replace_text_glyphs`.
+  `replace_text_glyphs` and `arrange_pages`.
 
 Project license: **MIT OR Apache-2.0** (see [`LICENSE-MIT`](LICENSE-MIT) and
 [`LICENSE-APACHE`](LICENSE-APACHE)) — **no AGPL, anywhere in the dependency
@@ -41,11 +42,11 @@ GemaPDF takes a different approach: implement the actual PDF image-compression
 pipeline (parse, decode, downsample, re-encode, rewrite) in pure Rust, with no
 GPL/AGPL code anywhere in the tree. The payoff:
 
-- **WASM bundle size:** 1.50 MB pre-gzip (1,574,732 bytes), 0.60 MB with
-  `gzip -9` (625,719 bytes), versus ~14 MB for
+- **WASM bundle size:** 1.59 MB pre-gzip (1,664,350 bytes), 0.63 MB with
+  `gzip -9` (655,750 bytes), versus ~14 MB for
   `ghostscript-wasm` (measured on the `wasm-pack build --target web` output of
-  `crates/gema-wasm` at 0.8.2 — `pkg/gema_wasm_bg.wasm`, the artifact published
-  as `wasm-v0.8.2`; MB here
+  `crates/gema-wasm` at 0.10.0 — `pkg/gema_wasm_bg.wasm`, the artifact published
+  as `wasm-v0.10.0`; MB here
   means MiB; there is no Ghostscript in the dependency graph to
   compare against, so the 14 MB figure is the published size of AGPL
   ghostscript-wasm builds).
@@ -112,9 +113,9 @@ design rationale
 | Crate | What it is | Targets |
 |---|---|---|
 | [`gema-compress`](crates/gema-compress) | The compression engine: PDF parsing (via `lopdf`), image decode/downsample/recompress pipeline, progress reporting. | `wasm32-unknown-unknown` + native |
-| [`gema-edit`](crates/gema-edit) | Removes glyphs, replaces text inside content streams, and reports residual risks and inspection gaps; it is not a redaction primitive. | native + `wasm32-unknown-unknown` |
+| [`gema-edit`](crates/gema-edit) | Removes glyphs, replaces text inside content streams, and reports residual risks and inspection gaps; it is not a redaction primitive. Selects, orders and rotates pages in place. | native + `wasm32-unknown-unknown` |
 | [`gema-cli`](crates/gema-cli) | `gema` binary: compress/analyze a PDF and run `remove-text` from the command line. | native |
-| [`gema-wasm`](crates/gema-wasm) | `wasm-bindgen` bindings exposing `compress`, `analyze`, `compress_with_report`, and `replace_text_glyphs` to JS. | `wasm32-unknown-unknown` |
+| [`gema-wasm`](crates/gema-wasm) | `wasm-bindgen` bindings exposing `compress`, `analyze`, `compress_with_report`, `replace_text_glyphs`, and `arrange_pages` to JS. | `wasm32-unknown-unknown` |
 
 ## Usage
 
@@ -290,6 +291,13 @@ count and signature status before the user commits to compressing).
 The WASM options also accept `grayscale: true`, with the same image-only
 conversion and residual reporting as the Rust API and CLI.
 
+`arrange_pages(input, plan)` keeps, orders and rotates pages of one document:
+`plan` is an array of `{ source, rotate? }` (0-based page index; `"r0"`,
+`"r90"`, `"r180"` or `"r270"`, added to the current rotation). It returns
+`{ output, report }`; the report counts outline items, links, named destinations
+and form fields affected by dropped pages, and whether page labels and the
+structure tree were kept. Plans with repeated or out-of-range pages throw.
+
 ### JSON report
 
 `gema compress --json` and `gema analyze --json` print the report to stdout as
@@ -370,6 +378,9 @@ private.
   report fixtures with struct literals. `#[non_exhaustive]` on a struct forbids
   the literal from another crate *even with* `..Default::default()`, so it is not
   used. Adding a field is a breaking change.
+
+Version 0.10.0 adds `gema_edit::arrange_pages` and two `EditError` variants
+(`PagePlan`, `Encrypted`); `EditError` is `#[non_exhaustive]`, so this is additive.
 
 Version 0.9.0 adds the exhaustive `CompressOptions.grayscale` field, default
 `false`. Full struct literals must include it; callers using

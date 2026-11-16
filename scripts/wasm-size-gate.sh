@@ -54,12 +54,13 @@
 #   1aad827   arrange_pages: ordenar, rotar y quitar páginas  1664352  +55364     655730 +16776
 #             techo subido por decisión de HG (2026-11-15): Reordenar conserva marcadores, destinos,
 #             enlaces, capas, XMP y estructura que pdf-lib perdía, y no deja páginas quitadas ocultas.
-#             ~25 KB son el módulo y ~14 KB la escritura con object streams. Medido en macOS.
+#             ~25 KB son el módulo y ~14 KB la escritura con object streams. Medido en macOS;
+#             el CI (Linux) dio 1663918 en c25a117, que es el techo.
 #
 # El grueso (+34198) entra cuando la inspección se conecta al borrado en la Task 7;
 # en la Task 5 el compilador la descartaba por código muerto.
 set -euo pipefail
-CEILING="${1:-1664352}"
+CEILING="${1:-1663918}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/crates/gema-wasm"
 wasm-pack build --target web >/dev/null 2>&1

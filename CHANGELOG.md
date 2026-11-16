@@ -3,6 +3,40 @@
 All notable changes to GemaPDF are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.10.0 — 2026-11-15
+
+### Added
+
+- `gema_edit::arrange_pages` selects, orders and rotates the pages of one
+  document by replacing its page tree instead of rebuilding the document, so
+  everything hanging from the catalog (outlines, named destinations, links,
+  optional content, XMP, Info, AcroForm, structure tree) is kept. Inherited
+  `Resources`, `MediaBox`, `CropBox` and `Rotate` are pushed down to each page;
+  the requested rotation is added to the page's own.
+- When pages are dropped, `ArrangeReport` counts what stops making sense:
+  outline items and links left without a destination, named destinations
+  removed, form fields left without widgets, and any other reference to a dropped
+  page, which is set to null. Page labels are dropped whenever the order or count
+  changes, and the structure tree with `MarkInfo` whenever pages are dropped. No
+  dropped page stays inside the file.
+- Empty plans, out-of-range or repeated pages, and encrypted documents are
+  rejected with `EditError::PagePlan` and `EditError::Encrypted`.
+- `gema-wasm` exports `arrange_pages(input, plan)` returning `{ output, report }`.
+- A daily `arrange_pages` fuzz target.
+
+### Validation
+
+- Against the pdf-lib path the site used, on synthetic documents: identical
+  order, rotation and page boxes, pdf.js renders identical to the rotated source
+  (0 differing pixels) and a clean `qpdf --check`, while keeping the catalog
+  entries pdf-lib dropped. About 2x faster on 72-81 MB scans, but with about 4x
+  the additional memory (the input is copied into WASM memory and fully loaded).
+- WASM package: 1,664,350 bytes, 655,750 with `gzip -9` (+55 KB raw, +16.8 KB
+  gzip over 0.9.0).
+
+0.9.0 was prepared but never tagged or published; 0.10.0 is the first release
+that carries it.
+
 ## 0.9.0 — 2026-11-12
 
 ### Breaking
