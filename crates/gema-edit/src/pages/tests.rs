@@ -527,3 +527,17 @@ fn firma_se_informa() {
     let out = run(&mut fx, &order(&[1, 0]));
     assert!(out.report.signatures.sig_flags);
 }
+
+#[cfg(feature = "serde")]
+#[test]
+fn plan_desde_json() {
+    let plan: Vec<PageSpec> =
+        serde_json::from_str(r#"[{"source":1,"rotate":"r90"},{"source":0}]"#).unwrap();
+    assert_eq!(plan, plan_ref());
+    assert!(serde_json::from_str::<Vec<PageSpec>>(r#"[{"source":0,"rotate":"r45"}]"#).is_err());
+}
+
+#[cfg(feature = "serde")]
+fn plan_ref() -> Vec<PageSpec> {
+    plan(&[(1, Rotation::R90), (0, Rotation::R0)])
+}

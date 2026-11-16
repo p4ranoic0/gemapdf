@@ -2,7 +2,7 @@ use gema_compress::{
     compress as core_compress, compress_with_progress, CompressOptions, Phase, Profile, Report,
     ReportJson, SignaturePolicy,
 };
-use gema_edit::{TextRegion, TextReplacement};
+use gema_edit::{PageSpec, TextRegion, TextReplacement};
 use serde_wasm_bindgen::Serializer;
 use wasm_bindgen::prelude::*;
 
@@ -166,6 +166,37 @@ pub fn replace_text_glyphs(input: &[u8], replacements: JsValue) -> Result<JsValu
             .map_err(|e| JsError::new(&e.to_string()))?;
 
     let report = to_js_object(&result.report())?;
+    let out = js_sys::Object::new();
+    js_sys::Reflect::set(
+        &out,
+        &JsValue::from_str("output"),
+        &js_sys::Uint8Array::from(&result.output[..]),
+    )
+    .map_err(|_| JsError::new("no se pudo construir el objeto resultado"))?;
+    js_sys::Reflect::set(&out, &JsValue::from_str("report"), &report)
+        .map_err(|_| JsError::new("no se pudo construir el objeto resultado"))?;
+    Ok(out.into())
+}
+
+/// Selecciona, ordena y rota páginas de un documento sin rehacerlo.
+///
+/// `plan`: array de `{ source, rotate? }`: `source` es el índice 0-based de la
+/// página original y `rotate` (`"r0"` | `"r90"` | `"r180"` | `"r270"`, por
+/// defecto `"r0"`) se suma a la rotación que ya tiene. La salida tiene esas
+/// páginas en ese orden; las demás se quitan. Devuelve
+/// `{ output: Uint8Array, report: {...} }`. El informe cuenta lo que se
+/// perdió al quitar páginas: `outline_items_cleared`, `named_dests_removed`,
+/// `links_cleared`, `form_fields_removed`, `other_refs_cleared`,
+/// `page_labels` y `struct_tree` (`"absent"` | `"kept"` | `"dropped"`), además
+/// de `pages_out`, `dropped` y `signatures`. Lanza con un plan vacío, fuera
+/// de rango o con páginas repetidas, y con documentos cifrados.
+#[wasm_bindgen]
+pub fn arrange_pages(input: &[u8], plan: JsValue) -> Result<JsValue, JsError> {
+    let plan: Vec<PageSpec> = serde_wasm_bindgen::from_value(plan)
+        .map_err(|e| JsError::new(&format!("plan de páginas inválido: {e}")))?;
+    let result = gema_edit::arrange_pages(input, &plan, &gema_edit::EditOptions::default())
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let report = to_js_object(&result.report)?;
     let out = js_sys::Object::new();
     js_sys::Reflect::set(
         &out,

@@ -162,3 +162,75 @@ fn remove_text_glyphs_rejects_malformed_regions() {
     let input = pdf_with_text(b"BT /F1 12 Tf 1 0 0 1 100 700 Tm (Hola) Tj ET");
     assert!(gema_wasm::remove_text_glyphs(&input, JsValue::from_str("no es un array")).is_err());
 }
+
+fn two_pages() -> Vec<u8> {
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    let kids: Vec<Object> = [
+        b"BT /F1 12 Tf 10 10 Td (UNO) Tj ET".to_vec(),
+        b"BT /F1 12 Tf 10 10 Td (DOS) Tj ET".to_vec(),
+    ]
+    .into_iter()
+    .map(|ops| {
+        let content = doc.add_object(Stream::new(dictionary! {}, ops));
+        doc.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages_id, "Contents" => content,
+            "MediaBox" => vec![0.into(), 0.into(), 100.into(), 100.into()],
+        })
+        .into()
+    })
+    .collect();
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! { "Type" => "Pages", "Kids" => kids, "Count" => 2 }),
+    );
+    let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog_id);
+    let mut bytes = Vec::new();
+    doc.save_to(&mut bytes).unwrap();
+    bytes
+}
+
+#[wasm_bindgen_test]
+fn arrange_pages_speaks_plain_js() {
+    let spec = |source: f64, rotate: Option<&str>| {
+        let o = js_sys::Object::new();
+        js_sys::Reflect::set(&o, &"source".into(), &JsValue::from_f64(source)).unwrap();
+        if let Some(r) = rotate {
+            js_sys::Reflect::set(&o, &"rotate".into(), &r.into()).unwrap();
+        }
+        o
+    };
+    let plan = js_sys::Array::of2(&spec(1.0, Some("r90")), &spec(0.0, None));
+    let result = gema_wasm::arrange_pages(&two_pages(), plan.into()).unwrap();
+    let output = js_sys::Reflect::get(&result, &"output".into()).unwrap();
+    let doc = Document::load_mem(&js_sys::Uint8Array::new(&output).to_vec()).unwrap();
+    let pages = doc.get_pages();
+    let first = doc.get_page_content(pages[&1]).unwrap();
+    assert!(first.windows(3).any(|w| w == b"DOS"));
+    let rotate = doc
+        .get_dictionary(pages[&1])
+        .unwrap()
+        .get(b"Rotate")
+        .unwrap()
+        .as_i64()
+        .unwrap();
+    assert_eq!(rotate, 90);
+    let report = js_sys::Reflect::get(&result, &"report".into()).unwrap();
+    let field = |name: &str| js_sys::Reflect::get(&report, &name.into()).unwrap();
+    assert_eq!(field("pages_out").as_f64(), Some(2.0));
+    assert_eq!(field("page_labels").as_string().as_deref(), Some("absent"));
+    assert!(js_sys::Array::is_array(&field("dropped")));
+}
+
+#[wasm_bindgen_test]
+fn arrange_pages_rejects_bad_plans() {
+    assert!(gema_wasm::arrange_pages(&two_pages(), JsValue::from_str("no")).is_err());
+    let dup = js_sys::Array::new();
+    for _ in 0..2 {
+        let o = js_sys::Object::new();
+        js_sys::Reflect::set(&o, &"source".into(), &JsValue::from_f64(0.0)).unwrap();
+        dup.push(&o);
+    }
+    assert!(gema_wasm::arrange_pages(&two_pages(), dup.into()).is_err());
+}
